@@ -1,24 +1,27 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
-body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+html, body {
+  width: 100%;
+  height: 100%;
   background: transparent;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   color: #e0e0e0;
   user-select: none;
   -webkit-user-select: none;
+  overflow: hidden;
 }
 
-/* Widget */
+/* Widget — fills the entire window so the dark bar is always visible */
 .widget {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  background: rgba(22, 33, 62, 0.92);
+  background: rgba(22, 33, 62, 0.95);
   border-radius: 12px;
-  backdrop-filter: blur(8px);
   border: 1px solid rgba(15, 52, 96, 0.8);
-  width: fit-content;
+  width: 100%;
+  height: 100%;
 }
 
 .group-btn {
@@ -34,6 +37,7 @@ body {
   cursor: pointer;
   min-width: 70px;
   transition: background 0.15s;
+  flex-shrink: 0;
 }
 
 .group-btn:hover { background: rgba(15, 52, 96, 1); }
@@ -43,11 +47,12 @@ body {
 
 .add-btn {
   border-style: dashed;
-  opacity: 0.55;
+  opacity: 0.8;
   font-size: 1.4rem;
   min-width: 50px;
+  flex-shrink: 0;
 }
-.add-btn:hover { opacity: 0.85; }
+.add-btn:hover { opacity: 1; }
 
 /* Config window */
 .config-window {
