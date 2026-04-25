@@ -36,7 +36,7 @@ async function render() {
 
   const addBtn = document.createElement('div');
   addBtn.className = 'group-btn add-btn';
-  addBtn.innerHTML = `<span>＋</span>`;
+  addBtn.textContent = '+';
   addBtn.addEventListener('click', () => openConfig(null));
   widget.appendChild(addBtn);
 

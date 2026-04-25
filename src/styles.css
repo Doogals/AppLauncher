@@ -46,13 +46,17 @@ html, body {
 .group-btn .label { font-size: 0.7rem; color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 68px; }
 
 .add-btn {
-  border-style: dashed;
-  opacity: 0.8;
-  font-size: 1.4rem;
+  border: 1.5px dashed rgba(255, 255, 255, 0.4);
+  background: rgba(255, 255, 255, 0.05);
+  color: #e0e0e0;
+  font-size: 1.2rem;
   min-width: 50px;
   flex-shrink: 0;
 }
-.add-btn:hover { opacity: 1; }
+.add-btn:hover {
+  border-color: rgba(255, 255, 255, 0.75);
+  background: rgba(255, 255, 255, 0.1);
+}
 
 /* Config window */
 .config-window {
