@@ -10,9 +10,18 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "applauncher",
-        "width": 800,
-        "height": 600
+        "label": "widget",
+        "url": "widget.html",
+        "title": "App Launcher",
+        "width": 420,
+        "height": 90,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": false,
+        "skipTaskbar": true,
+        "x": 100,
+        "y": 900
       }
     ],
     "security": {
