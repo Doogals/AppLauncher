@@ -11,17 +11,17 @@ html, body {
   overflow: hidden;
 }
 
-/* Widget — fit-content so JS can auto-resize the window to match */
+/* Widget — fills the window; Rust resize_widget keeps window width in sync with content */
 .widget {
-  display: inline-flex;
+  display: flex;
+  width: 100%;
+  height: 100%;
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
   background: rgba(22, 33, 62, 0.95);
   border-radius: 12px;
   border: 1px solid rgba(15, 52, 96, 0.8);
-  height: 100%;
-  white-space: nowrap;
 }
 
 .group-btn {
