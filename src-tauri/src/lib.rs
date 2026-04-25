@@ -2,17 +2,90 @@ mod config;
 mod launcher;
 mod license;
 
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+use config::{AppConfig, Group, Item};
+use std::sync::Mutex;
+use tauri::State;
+
+struct AppState(Mutex<AppConfig>);
+
 #[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
+fn get_config(state: State<AppState>) -> AppConfig {
+    state.0.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn save_group(group: Group, state: State<AppState>) -> Result<(), String> {
+    let mut config = state.0.lock().unwrap();
+    let limit = license::group_limit(&config.license_key);
+    if let Some(pos) = config.groups.iter().position(|g| g.id == group.id) {
+        config.groups[pos] = group;
+    } else {
+        if config.groups.len() >= limit {
+            return Err(format!(
+                "Free tier limited to {} groups. Upgrade to add more.",
+                limit
+            ));
+        }
+        config.groups.push(group);
+    }
+    config::save_config(&config)
+}
+
+#[tauri::command]
+fn delete_group(group_id: String, state: State<AppState>) -> Result<(), String> {
+    let mut config = state.0.lock().unwrap();
+    config.groups.retain(|g| g.id != group_id);
+    config::save_config(&config)
+}
+
+#[tauri::command]
+fn launch_group(group_id: String, state: State<AppState>) -> Result<(), String> {
+    let config = state.0.lock().unwrap().clone();
+    launcher::launch_group(&group_id, &config)
+}
+
+#[tauri::command]
+fn set_preferred_browser(path: String, state: State<AppState>) -> Result<(), String> {
+    let mut config = state.0.lock().unwrap();
+    config.preferred_browser = Some(path);
+    config::save_config(&config)
+}
+
+#[tauri::command]
+fn activate_license(key: String, state: State<AppState>) -> Result<(), String> {
+    if !license::validate_key(&key) {
+        return Err("Invalid license key.".to_string());
+    }
+    let mut config = state.0.lock().unwrap();
+    config.license_key = Some(key);
+    config::save_config(&config)
+}
+
+#[tauri::command]
+fn reorder_items(group_id: String, items: Vec<Item>, state: State<AppState>) -> Result<(), String> {
+    let mut config = state.0.lock().unwrap();
+    if let Some(group) = config.groups.iter_mut().find(|g| g.id == group_id) {
+        group.items = items;
+    }
+    config::save_config(&config)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let config = config::load_config();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![greet])
+        .manage(AppState(Mutex::new(config)))
+        .invoke_handler(tauri::generate_handler![
+            get_config,
+            save_group,
+            delete_group,
+            launch_group,
+            set_preferred_browser,
+            activate_license,
+            reorder_items,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
