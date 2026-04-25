@@ -71,6 +71,32 @@ fn reorder_items(group_id: String, items: Vec<Item>, state: State<AppState>) -> 
 }
 
 #[cfg(target_os = "windows")]
+fn register_autostart(exe_path: &str) {
+    use windows::core::HSTRING;
+    use windows::Win32::System::Registry::{RegOpenKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_WRITE, REG_SZ};
+
+    let key_path = HSTRING::from("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
+    let value_name = HSTRING::from("AppLauncher");
+    let value_data: Vec<u16> = exe_path.encode_utf16().chain(std::iter::once(0)).collect();
+
+    unsafe {
+        let mut hkey = HKEY::default();
+        if RegOpenKeyExW(HKEY_CURRENT_USER, &key_path, 0, KEY_WRITE, &mut hkey).is_ok() {
+            let _ = RegSetValueExW(
+                hkey,
+                &value_name,
+                0,
+                REG_SZ,
+                Some(std::slice::from_raw_parts(
+                    value_data.as_ptr() as *const u8,
+                    value_data.len() * 2,
+                )),
+            );
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn set_widget_behind_all(window: &tauri::WebviewWindow) {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -105,6 +131,9 @@ pub fn run() {
                             set_widget_behind_all(&widget_clone);
                         }
                     });
+                }
+                if let Ok(exe) = std::env::current_exe() {
+                    register_autostart(&exe.to_string_lossy());
                 }
             }
             Ok(())
