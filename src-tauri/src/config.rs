@@ -44,6 +44,8 @@ pub struct AppConfig {
     pub preferred_browser: Option<String>,
     pub license_key: Option<String>,
     pub groups: Vec<Group>,
+    pub widget_x: Option<i32>,
+    pub widget_y: Option<i32>,
 }
 
 

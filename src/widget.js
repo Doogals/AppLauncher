@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 
 const widget = document.getElementById('widget');
 const contextMenu = document.getElementById('context-menu');
@@ -71,6 +72,15 @@ async function openConfig(groupId) {
   });
   win.once('tauri://destroyed', () => render());
 }
+
+// Save window position after user drags it (debounced to avoid spamming saves)
+let savePosTimer = null;
+getCurrentWindow().onMoved(({ payload: { x, y } }) => {
+  clearTimeout(savePosTimer);
+  savePosTimer = setTimeout(() => {
+    invoke('save_widget_position', { x, y });
+  }, 400);
+});
 
 document.addEventListener('click', hideContextMenu);
 render();

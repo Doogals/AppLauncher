@@ -21,7 +21,7 @@
         "alwaysOnTop": false,
         "skipTaskbar": true,
         "x": 100,
-        "y": 900
+        "y": 100
       }
     ],
     "security": {
