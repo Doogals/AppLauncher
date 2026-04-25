@@ -5,6 +5,8 @@
   "windows": ["widget", "config"],
   "permissions": [
     "core:default",
+    "core:webview:allow-create-webview-window",
+    "core:window:allow-create",
     "dialog:default"
   ]
 }

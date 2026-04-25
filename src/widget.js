@@ -1,8 +1,16 @@
 import { invoke } from '@tauri-apps/api/core';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 
 const widget = document.getElementById('widget');
 const contextMenu = document.getElementById('context-menu');
+
+// Drag the window by clicking the widget background (not on any button)
+widget.addEventListener('mousedown', (e) => {
+  if (e.target === widget) {
+    getCurrentWindow().startDragging();
+  }
+});
 
 // Button dimensions must match styles.css values:
 // .group-btn: padding 8px 14px = 28px horizontal, min-width 70px → ~98px per button
@@ -93,14 +101,11 @@ async function openConfig(groupId) {
 
 document.addEventListener('click', hideContextMenu);
 
-// Render first, then attach position-saving listener (non-critical)
-render()
-  .then(() => import('@tauri-apps/api/window'))
-  .then(({ getCurrentWindow }) => {
-    let t = null;
-    getCurrentWindow().onMoved(({ payload: { x, y } }) => {
-      clearTimeout(t);
-      t = setTimeout(() => invoke('save_widget_position', { x, y }), 400);
-    });
-  })
-  .catch(e => console.error('Widget init error:', e));
+// Position saving after render
+render().then(() => {
+  let t = null;
+  getCurrentWindow().onMoved(({ payload: { x, y } }) => {
+    clearTimeout(t);
+    t = setTimeout(() => invoke('save_widget_position', { x, y }), 400);
+  });
+}).catch(e => console.error('Widget init error:', e));
