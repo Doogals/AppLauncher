@@ -4,7 +4,7 @@ mod license;
 
 use config::{AppConfig, Group, Item};
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{Manager, State};
 
 struct AppState(Mutex<AppConfig>);
 
@@ -70,12 +70,45 @@ fn reorder_items(group_id: String, items: Vec<Item>, state: State<AppState>) -> 
     config::save_config(&config)
 }
 
+#[cfg(target_os = "windows")]
+fn set_widget_behind_all(window: &tauri::WebviewWindow) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_BOTTOM, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    };
+    if let Ok(hwnd) = window.hwnd() {
+        unsafe {
+            let _ = SetWindowPos(
+                HWND(hwnd.0 as _),
+                HWND_BOTTOM,
+                0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let config = config::load_config();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            #[cfg(target_os = "windows")]
+            {
+                if let Some(widget) = app.get_webview_window("widget") {
+                    set_widget_behind_all(&widget);
+                    let widget_clone = widget.clone();
+                    widget.on_window_event(move |event| {
+                        if let tauri::WindowEvent::Focused(true) = event {
+                            set_widget_behind_all(&widget_clone);
+                        }
+                    });
+                }
+            }
+            Ok(())
+        })
         .manage(AppState(Mutex::new(config)))
         .invoke_handler(tauri::generate_handler![
             get_config,
