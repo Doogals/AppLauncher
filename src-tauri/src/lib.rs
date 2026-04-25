@@ -78,6 +78,16 @@ fn save_widget_position(x: i32, y: i32, state: State<AppState>) -> Result<(), St
     config::save_config(&config)
 }
 
+#[tauri::command]
+fn resize_widget(width: u32, height: u32, app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("widget") {
+        window
+            .set_size(tauri::LogicalSize::new(width as f64, height as f64))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "windows")]
 fn register_autostart(exe_path: &str) {
     use windows::core::HSTRING;
@@ -140,6 +150,7 @@ pub fn run() {
             activate_license,
             reorder_items,
             save_widget_position,
+            resize_widget,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

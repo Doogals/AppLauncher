@@ -1,10 +1,23 @@
 import { invoke } from '@tauri-apps/api/core';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
-import { getCurrentWindow } from '@tauri-apps/api/window';
-import { LogicalSize } from '@tauri-apps/api/dpi';
 
 const widget = document.getElementById('widget');
 const contextMenu = document.getElementById('context-menu');
+
+// Button dimensions must match styles.css values:
+// .group-btn: padding 8px 14px = 28px horizontal, min-width 70px → ~98px per button
+// .add-btn:   min-width 50px + 28px padding → ~78px
+// .widget:    padding 8px 12px = 24px horizontal, gap 8px
+const BTN_W   = 98;
+const ADD_W   = 78;
+const GAP     = 8;
+const PAD     = 24;
+const WIN_H   = 80;
+
+function widgetWidth(groupCount) {
+  if (groupCount === 0) return PAD + ADD_W;
+  return PAD + groupCount * BTN_W + groupCount * GAP + ADD_W;
+}
 
 let activeGroupId = null;
 
@@ -27,15 +40,10 @@ async function render() {
   addBtn.addEventListener('click', () => openConfig(null));
   widget.appendChild(addBtn);
 
-  await resizeToContent();
-}
-
-async function resizeToContent() {
-  // Let the browser lay out the new content before measuring
-  await new Promise(r => requestAnimationFrame(r));
-  const w = Math.max(widget.offsetWidth, 80);
-  const h = Math.max(widget.offsetHeight, 60);
-  await getCurrentWindow().setSize(new LogicalSize(w, h));
+  await invoke('resize_widget', {
+    width: widgetWidth(config.groups.length),
+    height: WIN_H,
+  });
 }
 
 async function launchGroup(groupId) {
@@ -56,8 +64,7 @@ function showContextMenu(e, groupId) {
   contextMenu.style.display = 'block';
   contextMenu.style.left = e.clientX + 'px';
   contextMenu.style.top = e.clientY + 'px';
-
-  document.getElementById('cm-edit').onclick = () => { hideContextMenu(); openConfig(groupId); };
+  document.getElementById('cm-edit').onclick   = () => { hideContextMenu(); openConfig(groupId); };
   document.getElementById('cm-delete').onclick = () => { hideContextMenu(); deleteGroup(groupId); };
 }
 
@@ -86,13 +93,14 @@ async function openConfig(groupId) {
 
 document.addEventListener('click', hideContextMenu);
 
-// Render first, then set up position-saving listener
-render().then(() => {
-  let savePosTimer = null;
-  getCurrentWindow().onMoved(({ payload: { x, y } }) => {
-    clearTimeout(savePosTimer);
-    savePosTimer = setTimeout(() => {
-      invoke('save_widget_position', { x, y });
-    }, 400);
-  });
-}).catch(e => console.error('Init failed:', e));
+// Render first, then attach position-saving listener (non-critical)
+render()
+  .then(() => import('@tauri-apps/api/window'))
+  .then(({ getCurrentWindow }) => {
+    let t = null;
+    getCurrentWindow().onMoved(({ payload: { x, y } }) => {
+      clearTimeout(t);
+      t = setTimeout(() => invoke('save_widget_position', { x, y }), 400);
+    });
+  })
+  .catch(e => console.error('Widget init error:', e));
