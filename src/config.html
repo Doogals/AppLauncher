@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="styles.css" />
+  <title>Edit Group</title>
+</head>
+<body>
+  <div class="config-window">
+    <div class="config-header">
+      <input type="text" class="icon-picker" id="icon-input" value="📁" maxlength="2" title="Click to change emoji" />
+      <input type="text" class="name-input" id="name-input" placeholder="Group name..." />
+    </div>
+
+    <p class="section-label">Items</p>
+    <div class="items-list" id="items-list"></div>
+
+    <div id="add-item-area">
+      <div class="add-item-btn" id="add-item-btn">+ Add Item</div>
+      <div id="add-type-menu" style="display:none; background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:4px 0; margin-bottom:10px;">
+        <div class="context-menu-item" data-type="app">🖥️ App / Executable</div>
+        <div class="context-menu-item" data-type="file">📄 File</div>
+        <div class="context-menu-item" data-type="url">🌐 URL</div>
+        <div class="context-menu-item" data-type="folder">📁 Folder</div>
+        <div class="context-menu-item" data-type="script">⚡ Script (.bat / .ps1)</div>
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn btn-cancel" id="cancel-btn">Cancel</button>
+      <button class="btn btn-save" id="save-btn">Save</button>
+    </div>
+
+    <details style="margin-top: 16px; border-top: 1px solid #0f3460; padding-top: 12px;">
+      <summary style="cursor:pointer; color:#888; font-size:0.8rem;">License</summary>
+      <div style="margin-top:10px; display:flex; gap:8px;">
+        <input type="text" id="license-input" placeholder="XXXX-XXXX-XXXX-XXXX"
+          style="flex:1; background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:8px; color:#e0e0e0; font-size:0.85rem; outline:none;" />
+        <button class="btn btn-save" id="activate-btn" style="padding: 8px 14px; font-size:0.85rem;">Activate</button>
+      </div>
+      <p id="license-status" style="margin-top:6px; font-size:0.75rem; color:#888;"></p>
+    </details>
+  </div>
+  <script type="module" src="config.js"></script>
+</body>
+</html>
