@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { LogicalSize } from '@tauri-apps/api/dpi';
 
 const widget = document.getElementById('widget');
 const contextMenu = document.getElementById('context-menu');
@@ -25,6 +26,16 @@ async function render() {
   addBtn.innerHTML = `<span>＋</span>`;
   addBtn.addEventListener('click', () => openConfig(null));
   widget.appendChild(addBtn);
+
+  await resizeToContent();
+}
+
+async function resizeToContent() {
+  // Let the browser lay out the new content before measuring
+  await new Promise(r => requestAnimationFrame(r));
+  const w = Math.max(widget.offsetWidth, 80);
+  const h = Math.max(widget.offsetHeight, 60);
+  await getCurrentWindow().setSize(new LogicalSize(w, h));
 }
 
 async function launchGroup(groupId) {
@@ -73,14 +84,15 @@ async function openConfig(groupId) {
   win.once('tauri://destroyed', () => render());
 }
 
-// Save window position after user drags it (debounced to avoid spamming saves)
-let savePosTimer = null;
-getCurrentWindow().onMoved(({ payload: { x, y } }) => {
-  clearTimeout(savePosTimer);
-  savePosTimer = setTimeout(() => {
-    invoke('save_widget_position', { x, y });
-  }, 400);
-});
-
 document.addEventListener('click', hideContextMenu);
-render();
+
+// Render first, then set up position-saving listener
+render().then(() => {
+  let savePosTimer = null;
+  getCurrentWindow().onMoved(({ payload: { x, y } }) => {
+    clearTimeout(savePosTimer);
+    savePosTimer = setTimeout(() => {
+      invoke('save_widget_position', { x, y });
+    }, 400);
+  });
+}).catch(e => console.error('Init failed:', e));
