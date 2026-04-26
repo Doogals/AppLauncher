@@ -49,6 +49,67 @@ const groupId = params.get('id');
 let currentItems = [];
 let existingGroup = null;
 
+async function showWinAppPicker() {
+  const modal = document.createElement('div');
+  modal.className = 'winapp-modal';
+  modal.innerHTML = `
+    <div class="winapp-card">
+      <div class="winapp-header">
+        <input type="text" id="winapp-search" placeholder="Search apps..." autocomplete="off" />
+        <button class="winapp-close" id="winapp-close">✕</button>
+      </div>
+      <div class="winapp-list" id="winapp-list">
+        <div class="winapp-empty">Loading...</div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  const closeModal = () => modal.remove();
+  document.getElementById('winapp-close').addEventListener('click', closeModal);
+  modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+
+  let apps;
+  try {
+    apps = await invoke('get_installed_apps');
+  } catch (e) {
+    document.getElementById('winapp-list').innerHTML =
+      '<div class="winapp-empty">Failed to load apps.</div>';
+    return;
+  }
+
+  function renderApps(filter) {
+    const list = document.getElementById('winapp-list');
+    if (!list) return;
+    const filtered = filter
+      ? apps.filter(a => a.name.toLowerCase().includes(filter.toLowerCase()))
+      : apps;
+
+    if (filtered.length === 0) {
+      list.innerHTML = '<div class="winapp-empty">No apps found</div>';
+      return;
+    }
+
+    list.innerHTML = '';
+    filtered.forEach(app => {
+      const row = document.createElement('div');
+      row.className = 'winapp-row';
+      row.textContent = app.name;
+      row.addEventListener('click', () => {
+        currentItems.push({ item_type: 'app', path: app.path, value: null });
+        renderItems();
+        closeModal();
+      });
+      list.appendChild(row);
+    });
+  }
+
+  renderApps('');
+  const searchInput = document.getElementById('winapp-search');
+  searchInput.addEventListener('input', (e) => renderApps(e.target.value));
+  searchInput.focus();
+}
+
 async function init() {
   initEmojiPicker();
 
@@ -112,6 +173,11 @@ document.querySelectorAll('[data-type]').forEach(el => {
 
 async function addItem(type) {
   document.getElementById('add-type-menu').style.display = 'none';
+
+  if (type === 'winapp') {
+    showWinAppPicker();
+    return;
+  }
 
   if (type === 'url') {
     const url = window.prompt('Enter URL:');
