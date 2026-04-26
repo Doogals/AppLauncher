@@ -2,6 +2,44 @@ import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
+const EMOJIS = [
+  '💼','📁','🗂️','🖥️','🌐','📧','📅','📝','🔧','⚙️',
+  '🚀','🎮','🎵','🎬','📷','💰','🏠','🏢','📚','🔬',
+  '🧪','🛒','🤝','📊','📈','⚡','🔒','🛡️','📌','🔗',
+  '💡','🎯','🧩','🐍','🦀','🌙','☀️','🔔','📣','🗺️',
+  '🎨','🖊️','📦','🧰','🖱️',
+];
+
+function buildEmojiGrid() {
+  const grid = document.getElementById('emoji-grid');
+  EMOJIS.forEach(emoji => {
+    const btn = document.createElement('button');
+    btn.className = 'emoji-btn';
+    btn.textContent = emoji;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      document.getElementById('icon-input').value = emoji;
+      grid.style.display = 'none';
+    });
+    grid.appendChild(btn);
+  });
+}
+
+document.getElementById('icon-input').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const grid = document.getElementById('emoji-grid');
+  const rect = e.target.getBoundingClientRect();
+  grid.style.top = (rect.bottom + 4) + 'px';
+  grid.style.left = rect.left + 'px';
+  grid.style.display = grid.style.display === 'none' ? 'grid' : 'none';
+});
+
+document.addEventListener('click', () => {
+  document.getElementById('emoji-grid').style.display = 'none';
+});
+
+buildEmojiGrid();
+
 const params = new URLSearchParams(window.location.search);
 const groupId = params.get('id');
 

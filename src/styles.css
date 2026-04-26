@@ -167,3 +167,109 @@ html, body {
 
 .context-menu-item:hover { background: #0f3460; }
 .context-menu-item.danger { color: #e94560; }
+
+/* Emoji picker */
+.emoji-grid {
+  position: fixed;
+  display: grid;
+  grid-template-columns: repeat(9, 1fr);
+  gap: 4px;
+  background: #16213e;
+  border: 1px solid #0f3460;
+  border-radius: 8px;
+  padding: 8px;
+  z-index: 100;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+}
+
+.emoji-btn {
+  background: none;
+  border: none;
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  line-height: 1;
+}
+
+.emoji-btn:hover { background: #0f3460; }
+
+/* Windows Apps picker modal */
+.winapp-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+
+.winapp-card {
+  background: #1a1a2e;
+  border: 1px solid #0f3460;
+  border-radius: 10px;
+  width: 360px;
+  max-height: 380px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.winapp-header {
+  display: flex;
+  gap: 8px;
+  padding: 12px;
+  border-bottom: 1px solid #0f3460;
+  flex-shrink: 0;
+}
+
+.winapp-header input {
+  flex: 1;
+  background: #16213e;
+  border: 1px solid #0f3460;
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: #e0e0e0;
+  font-size: 0.9rem;
+  outline: none;
+}
+
+.winapp-header input:focus { border-color: #e94560; }
+
+.winapp-close {
+  background: none;
+  border: none;
+  color: #888;
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.winapp-close:hover { color: #e94560; }
+
+.winapp-list {
+  overflow-y: auto;
+  flex: 1;
+  padding: 4px 0;
+}
+
+.winapp-row {
+  padding: 8px 16px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: #e0e0e0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.winapp-row:hover { background: #0f3460; }
+
+.winapp-empty {
+  padding: 20px;
+  color: #888;
+  text-align: center;
+  font-size: 0.85rem;
+}
