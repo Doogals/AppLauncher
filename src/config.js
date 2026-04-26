@@ -25,20 +25,23 @@ function buildEmojiGrid() {
   });
 }
 
-document.getElementById('icon-input').addEventListener('click', (e) => {
-  e.stopPropagation();
-  const grid = document.getElementById('emoji-grid');
-  const rect = e.target.getBoundingClientRect();
-  grid.style.top = (rect.bottom + 4) + 'px';
-  grid.style.left = rect.left + 'px';
-  grid.style.display = grid.style.display === 'none' ? 'grid' : 'none';
-});
+function initEmojiPicker() {
+  buildEmojiGrid();
 
-document.addEventListener('click', () => {
-  document.getElementById('emoji-grid').style.display = 'none';
-});
+  document.getElementById('icon-input').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const grid = document.getElementById('emoji-grid');
+    const rect = e.target.getBoundingClientRect();
+    const left = Math.min(rect.left, window.innerWidth - grid.offsetWidth - 8);
+    grid.style.top = (rect.bottom + 4) + 'px';
+    grid.style.left = left + 'px';
+    grid.style.display = grid.style.display === 'none' ? 'grid' : 'none';
+  });
 
-buildEmojiGrid();
+  document.addEventListener('click', () => {
+    document.getElementById('emoji-grid').style.display = 'none';
+  });
+}
 
 const params = new URLSearchParams(window.location.search);
 const groupId = params.get('id');
@@ -47,6 +50,8 @@ let currentItems = [];
 let existingGroup = null;
 
 async function init() {
+  initEmojiPicker();
+
   if (groupId) {
     const config = await invoke('get_config');
     existingGroup = config.groups.find(g => g.id === groupId);
