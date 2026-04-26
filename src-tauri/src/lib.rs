@@ -1,8 +1,10 @@
 mod config;
 mod launcher;
 mod license;
+mod apps;
 
 use config::{AppConfig, Group, Item};
+use apps::InstalledApp;
 use std::sync::Mutex;
 use tauri::{Manager, State};
 
@@ -79,6 +81,11 @@ fn save_widget_position(x: i32, y: i32, state: State<AppState>) -> Result<(), St
 }
 
 #[tauri::command]
+fn get_installed_apps() -> Vec<InstalledApp> {
+    apps::get_installed_apps()
+}
+
+#[tauri::command]
 fn resize_widget(width: u32, height: u32, app: tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("widget") {
         window
@@ -151,6 +158,7 @@ pub fn run() {
             reorder_items,
             save_widget_position,
             resize_widget,
+            get_installed_apps,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
