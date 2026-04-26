@@ -7,7 +7,7 @@ const contextMenu = document.getElementById('context-menu');
 
 // Drag the window by clicking the widget background (not on any button)
 widget.addEventListener('mousedown', (e) => {
-  if (!e.target.closest('.group-btn')) {
+  if (e.button === 0 && !e.target.closest('.group-btn')) {
     getCurrentWindow().startDragging();
   }
 });
