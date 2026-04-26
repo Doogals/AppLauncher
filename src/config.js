@@ -102,7 +102,7 @@ async function showWinAppPicker() {
       row.textContent = app.name;
       row.addEventListener('click', () => {
         if (!currentItems.some(i => i.path === app.path)) {
-          currentItems.push({ item_type: 'app', path: app.path, value: null });
+          currentItems.push({ item_type: 'app', path: app.path, value: app.args || null });
         }
         renderItems();
         closeModal();

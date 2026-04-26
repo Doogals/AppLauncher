@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 pub struct InstalledApp {
     pub name: String,
     pub path: String,
+    pub args: String,
 }
 
 pub fn get_installed_apps() -> Vec<InstalledApp> {
@@ -39,9 +40,9 @@ pub fn get_installed_apps() -> Vec<InstalledApp> {
         .iter()
         .filter_map(|lnk| {
             let name = lnk.file_stem()?.to_string_lossy().into_owned();
-            let target = resolve_lnk(lnk)?;
+            let (target, args) = resolve_lnk(lnk)?;
             if seen.insert(target.to_ascii_lowercase()) {
-                Some(InstalledApp { name, path: target })
+                Some(InstalledApp { name, path: target, args })
             } else {
                 None
             }
@@ -69,7 +70,7 @@ fn collect_lnk_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn resolve_lnk(lnk_path: &Path) -> Option<String> {
+fn resolve_lnk(lnk_path: &Path) -> Option<(String, String)> {
     use windows::{
         core::{Interface, PCWSTR},
         Win32::Storage::FileSystem::WIN32_FIND_DATAW,
@@ -91,9 +92,7 @@ fn resolve_lnk(lnk_path: &Path) -> Option<String> {
 
         let mut buf = [0u16; 1024]; // INFOTIPSIZE — Shell-recommended buffer for GetPath
         let mut find_data = WIN32_FIND_DATAW::default();
-        shell_link
-            .GetPath(&mut buf, &mut find_data, 0)
-            .ok()?;
+        shell_link.GetPath(&mut buf, &mut find_data, 0).ok()?;
 
         let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
         let target = String::from_utf16_lossy(&buf[..end]);
@@ -101,7 +100,14 @@ fn resolve_lnk(lnk_path: &Path) -> Option<String> {
         if target.is_empty() || !target.to_ascii_lowercase().ends_with(".exe") {
             return None;
         }
-        Some(target)
+
+        // Retrieve arguments — required for apps like Discord (Update.exe --processStart Discord.exe)
+        let mut arg_buf = [0u16; 1024];
+        let _ = shell_link.GetArguments(&mut arg_buf);
+        let arg_end = arg_buf.iter().position(|&c| c == 0).unwrap_or(arg_buf.len());
+        let args = String::from_utf16_lossy(&arg_buf[..arg_end]).trim().to_owned();
+
+        Some((target, args))
     }
 }
 

@@ -18,8 +18,13 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
     match &item.item_type {
         ItemType::App => {
             let path = item.path.as_ref().ok_or("App item is missing a path")?;
-            Command::new(path)
-                .spawn()
+            let mut cmd = Command::new(path);
+            if let Some(args) = &item.value {
+                if !args.is_empty() {
+                    cmd.args(args.split_whitespace());
+                }
+            }
+            cmd.spawn()
                 .map_err(|e| format!("Failed to launch app '{}': {}", path, e))?;
         }
         ItemType::File | ItemType::Folder => {
