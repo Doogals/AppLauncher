@@ -65,17 +65,22 @@ async function showWinAppPicker() {
   `;
   document.body.appendChild(modal);
 
-  const closeModal = () => modal.remove();
+  const onKeyDown = (e) => { if (e.key === 'Escape') closeModal(); };
+  const closeModal = () => {
+    document.removeEventListener('keydown', onKeyDown);
+    modal.remove();
+  };
   document.getElementById('winapp-close').addEventListener('click', closeModal);
   modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+  document.addEventListener('keydown', onKeyDown);
 
   let apps;
   try {
     apps = await invoke('get_installed_apps');
   } catch (e) {
+    apps = [];
     document.getElementById('winapp-list').innerHTML =
       '<div class="winapp-empty">Failed to load apps.</div>';
-    return;
   }
 
   function renderApps(filter) {
@@ -96,7 +101,9 @@ async function showWinAppPicker() {
       row.className = 'winapp-row';
       row.textContent = app.name;
       row.addEventListener('click', () => {
-        currentItems.push({ item_type: 'app', path: app.path, value: null });
+        if (!currentItems.some(i => i.path === app.path)) {
+          currentItems.push({ item_type: 'app', path: app.path, value: null });
+        }
         renderItems();
         closeModal();
       });
@@ -175,7 +182,7 @@ async function addItem(type) {
   document.getElementById('add-type-menu').style.display = 'none';
 
   if (type === 'winapp') {
-    showWinAppPicker();
+    await showWinAppPicker();
     return;
   }
 
