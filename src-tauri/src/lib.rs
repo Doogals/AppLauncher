@@ -2,6 +2,7 @@ mod config;
 mod launcher;
 mod license;
 mod apps;
+mod browsers;
 
 use config::{AppConfig, Group, Item};
 use apps::InstalledApp;
@@ -83,6 +84,16 @@ fn save_widget_position(x: i32, y: i32, state: State<AppState>) -> Result<(), St
 #[tauri::command]
 fn get_installed_apps() -> Vec<InstalledApp> {
     apps::get_installed_apps()
+}
+
+#[tauri::command]
+fn get_installed_browsers() -> Vec<browsers::BrowserInfo> {
+    browsers::get_installed_browsers()
+}
+
+#[tauri::command]
+fn get_browser_bookmarks(browser_path: String) -> Vec<browsers::BookmarkItem> {
+    browsers::get_browser_bookmarks(&browser_path)
 }
 
 #[tauri::command]
@@ -231,6 +242,8 @@ pub fn run() {
             resize_widget,
             get_installed_apps,
             show_group_context_menu,
+            get_installed_browsers,
+            get_browser_bookmarks,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
