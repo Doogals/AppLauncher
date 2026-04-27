@@ -153,6 +153,9 @@ pub fn run() {
                     if let Some(window) = app.get_webview_window("widget") {
                         let _ = window.emit("context-menu:delete", group_id);
                     }
+                } else {
+                    #[cfg(debug_assertions)]
+                    eprintln!("[menu] unhandled event id: {:?}", id);
                 }
             });
 
@@ -163,7 +166,7 @@ pub fn run() {
 
             // Create tray icon
             TrayIconBuilder::new()
-                .icon(app.default_window_icon().unwrap().clone())
+                .icon(app.default_window_icon().ok_or("no default window icon configured")?.clone())
                 .menu(&tray_menu)
                 .show_menu_on_left_click(false)
                 .build(app)?;
