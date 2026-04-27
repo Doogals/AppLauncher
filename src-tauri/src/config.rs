@@ -43,6 +43,8 @@ impl Group {
 pub struct AppConfig {
     pub preferred_browser: Option<String>,
     pub license_key: Option<String>,
+    pub license_instance_id: Option<String>,
+    pub license_machine_name: Option<String>,
     pub groups: Vec<Group>,
     pub widget_x: Option<i32>,
     pub widget_y: Option<i32>,
@@ -128,5 +130,23 @@ mod tests {
     fn test_load_config_returns_default_when_file_missing() {
         let result = serde_json::from_str::<AppConfig>("{}");
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_config_has_license_instance_fields() {
+        let mut config = AppConfig::default();
+        assert!(config.license_instance_id.is_none());
+        assert!(config.license_machine_name.is_none());
+        config.license_instance_id = Some("inst-123".to_string());
+        config.license_machine_name = Some("My PC".to_string());
+        // Use a separate temp path to avoid racing with test_config_roundtrip_serialization
+        let dir = std::env::temp_dir().join("app_launcher_license_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let data = serde_json::to_string_pretty(&config).unwrap();
+        std::fs::write(&path, &data).unwrap();
+        let loaded: AppConfig = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(loaded.license_instance_id, Some("inst-123".to_string()));
+        assert_eq!(loaded.license_machine_name, Some("My PC".to_string()));
     }
 }
