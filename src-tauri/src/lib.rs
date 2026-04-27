@@ -6,7 +6,7 @@ mod apps;
 use config::{AppConfig, Group, Item};
 use apps::InstalledApp;
 use std::sync::Mutex;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 struct AppState(Mutex<AppConfig>);
 
@@ -128,6 +128,46 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            use tauri::menu::{Menu, MenuItem};
+            use tauri::tray::TrayIconBuilder;
+
+            // Global menu event handler — handles tray menu AND popup context menus
+            app.on_menu_event(|app, event| {
+                let id = event.id().as_ref();
+                if id == "quit" {
+                    app.exit(0);
+                } else if id == "show_hide" {
+                    if let Some(window) = app.get_webview_window("widget") {
+                        if window.is_visible().unwrap_or(false) {
+                            let _ = window.hide();
+                        } else {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                } else if let Some(group_id) = id.strip_prefix("ctx-edit:") {
+                    if let Some(window) = app.get_webview_window("widget") {
+                        let _ = window.emit("context-menu:edit", group_id);
+                    }
+                } else if let Some(group_id) = id.strip_prefix("ctx-delete:") {
+                    if let Some(window) = app.get_webview_window("widget") {
+                        let _ = window.emit("context-menu:delete", group_id);
+                    }
+                }
+            });
+
+            // Build tray menu
+            let show_hide = MenuItem::with_id(app, "show_hide", "Show/Hide Widget", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(app, &[&show_hide, &quit])?;
+
+            // Create tray icon
+            TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .menu(&tray_menu)
+                .show_menu_on_left_click(false)
+                .build(app)?;
+
             // Restore saved widget position
             {
                 let state = app.state::<AppState>();
@@ -138,6 +178,7 @@ pub fn run() {
                     }
                 }
             }
+
             // Register auto-start only in release builds
             #[cfg(all(target_os = "windows", not(debug_assertions)))]
             {
@@ -145,6 +186,7 @@ pub fn run() {
                     register_autostart(&exe.to_string_lossy());
                 }
             }
+
             Ok(())
         })
         .manage(AppState(Mutex::new(config)))
