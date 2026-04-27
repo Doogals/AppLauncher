@@ -1,4 +1,6 @@
 const LS_BASE = 'https://api.lemonsqueezy.com/v1/licenses';
+// @ts-ignore — LS_API_KEY is injected by Cloudflare as an environment variable
+const LS_API_KEY = globalThis['LS_API_KEY'];
 
 addEventListener('fetch', event => {
   event.respondWith(handleRequest(event.request));
