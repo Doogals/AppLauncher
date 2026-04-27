@@ -64,7 +64,7 @@ async function openConfig(groupId) {
     url: groupId ? `config.html?id=${groupId}` : 'config.html',
     title: groupId ? 'Edit Group' : 'New Group',
     width: 420,
-    height: 520,
+    height: 460,
     decorations: true,
     resizable: false,
     alwaysOnTop: true,

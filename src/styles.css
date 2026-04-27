@@ -63,7 +63,9 @@ html, body {
 .config-window {
   background: #1a1a2e;
   padding: 20px;
-  min-height: 100vh;
+  height: 100vh;
+  box-sizing: border-box;
+  overflow-y: auto;
 }
 
 .config-header {
@@ -146,6 +148,86 @@ html, body {
 .btn-save:hover { background: #c73652; }
 
 .section-label { font-size: 0.75rem; color: #888; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
+
+/* Config window bottom bar — license (left) + feedback button (right) */
+.config-bottom {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 12px;
+  border-top: 1px solid #0f3460;
+  padding-top: 10px;
+}
+
+.license-details { flex: 1; min-width: 0; }
+
+.license-details summary {
+  cursor: pointer;
+  color: #888;
+  font-size: 0.78rem;
+  list-style: none;
+  user-select: none;
+}
+.license-details summary::-webkit-details-marker { display: none; }
+.license-details[open] summary { color: #aaa; }
+
+.license-row { display: flex; gap: 6px; margin-top: 7px; }
+
+.license-input {
+  flex: 1;
+  background: #16213e;
+  border: 1px solid #0f3460;
+  border-radius: 6px;
+  padding: 6px 8px;
+  color: #e0e0e0;
+  font-size: 0.78rem;
+  outline: none;
+}
+.license-input:focus { border-color: #e94560; }
+
+.license-activate { padding: 6px 10px; font-size: 0.78rem; }
+
+.license-status { margin-top: 5px; font-size: 0.73rem; color: #888; }
+
+.feedback-btn {
+  background: none;
+  border: 1px solid #0f3460;
+  border-radius: 6px;
+  color: #888;
+  font-size: 0.75rem;
+  cursor: pointer;
+  padding: 4px 10px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  align-self: flex-start;
+}
+.feedback-btn:hover { color: #e0e0e0; border-color: #e94560; }
+
+/* Feedback modal */
+.feedback-card {
+  background: #1a1a2e;
+  border: 1px solid #0f3460;
+  border-radius: 10px;
+  width: 320px;
+  overflow: hidden;
+}
+
+.feedback-textarea {
+  width: 100%;
+  height: 110px;
+  background: #16213e;
+  border: 1px solid #0f3460;
+  border-radius: 6px;
+  padding: 10px;
+  color: #e0e0e0;
+  font-size: 0.85rem;
+  font-family: inherit;
+  resize: vertical;
+  outline: none;
+  box-sizing: border-box;
+}
+.feedback-textarea:focus { border-color: #e94560; }
 
 .context-menu-item {
   padding: 8px 16px;

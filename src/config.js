@@ -419,4 +419,41 @@ if (activateBtn) {
   };
 }
 
+document.getElementById('feedback-btn').addEventListener('click', () => {
+  const modal = document.createElement('div');
+  modal.className = 'winapp-modal';
+  modal.innerHTML = `
+    <div class="feedback-card">
+      <div class="winapp-header">
+        <span class="url-step-title">Send Feedback</span>
+        <button class="winapp-close" id="fb-close">✕</button>
+      </div>
+      <div style="padding: 12px 12px 8px;">
+        <p style="font-size:0.78rem; color:#888; margin-bottom:8px;">We read every message. Thank you!</p>
+        <textarea class="feedback-textarea" id="fb-text" placeholder="Tell us what you think, report a bug, or suggest a feature..."></textarea>
+      </div>
+      <div style="display:flex; gap:8px; padding: 0 12px 12px;">
+        <button class="btn btn-cancel" id="fb-cancel" style="flex:1;">Cancel</button>
+        <button class="btn btn-save" id="fb-submit" style="flex:1;">Submit</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  const close = () => modal.remove();
+  document.getElementById('fb-close').addEventListener('click', close);
+  document.getElementById('fb-cancel').addEventListener('click', close);
+  modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+
+  document.getElementById('fb-submit').addEventListener('click', async () => {
+    const text = document.getElementById('fb-text').value.trim();
+    if (!text) return;
+    const mailto = `mailto:tonictech.inquiry@gmail.com?subject=${encodeURIComponent('App Launcher Feedback')}&body=${encodeURIComponent(text)}`;
+    await invoke('open_url', { url: mailto }).catch(console.error);
+    close();
+  });
+
+  document.getElementById('fb-text').focus();
+});
+
 init();

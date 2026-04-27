@@ -97,6 +97,11 @@ fn get_browser_bookmarks(browser_path: String) -> Vec<browsers::BookmarkItem> {
 }
 
 #[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    open::that(&url).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn resize_widget(width: u32, height: u32, app: tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("widget") {
         window
@@ -244,6 +249,7 @@ pub fn run() {
             show_group_context_menu,
             get_installed_browsers,
             get_browser_bookmarks,
+            open_url,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
