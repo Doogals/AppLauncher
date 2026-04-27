@@ -198,7 +198,7 @@ html, body {
   border: 1px solid #0f3460;
   border-radius: 10px;
   width: 360px;
-  max-height: 380px;
+  max-height: 460px;
   display: flex;
   flex-direction: column;
   overflow: hidden;

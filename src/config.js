@@ -146,6 +146,7 @@ async function showUrlPicker() {
   try {
     browsers = await invoke('get_installed_browsers');
   } catch (e) {
+    console.error('get_installed_browsers failed:', e);
     browsers = [];
     document.getElementById('url-browser-list').innerHTML =
       '<div class="winapp-empty">Could not detect browsers.</div>';
@@ -171,10 +172,11 @@ async function showUrlPicker() {
 
 async function showBookmarkStep(modal, browser, closeModal) {
   const card = modal.querySelector('.winapp-card');
+  const safeBrowserName = browser.name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   card.innerHTML = `
     <div class="winapp-header">
       <button class="url-back-btn" id="url-back">←</button>
-      <span class="url-step-title">${browser.name} Bookmarks</span>
+      <span class="url-step-title">${safeBrowserName} Bookmarks</span>
       <button class="winapp-close" id="url-close2">✕</button>
     </div>
     <div class="url-custom">
@@ -209,6 +211,7 @@ async function showBookmarkStep(modal, browser, closeModal) {
   try {
     bookmarks = await invoke('get_browser_bookmarks', { browserPath: browser.path });
   } catch (e) {
+    console.error('get_browser_bookmarks failed:', e);
     bookmarks = [];
   }
 
@@ -250,7 +253,8 @@ async function showBookmarkStep(modal, browser, closeModal) {
   });
 
   addBtn.addEventListener('click', () => {
-    const checked = [...modal.querySelectorAll('.bookmark-checkbox:checked')];
+    const checked = [...modal.querySelectorAll('.bookmark-checkbox:checked')]
+      .filter(cb => cb.closest('.bookmark-row')?.style.display !== 'none');
     checked.forEach(cb => {
       const url = cb.dataset.url;
       if (url && !currentItems.some(i => i.value === url)) {
