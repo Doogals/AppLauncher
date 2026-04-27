@@ -279,15 +279,14 @@ async function showBookmarkStep(modal, browser, closeModal) {
   customInput.focus();
 }
 
+async function fitWindow() {
+  await new Promise(resolve => requestAnimationFrame(resolve));
+  const h = document.documentElement.scrollHeight;
+  await getCurrentWindow().setSize(new LogicalSize(420, h));
+}
+
 async function init() {
   initEmojiPicker();
-
-  // Resize window to fit content — called after any layout change
-  async function fitWindow() {
-    await new Promise(resolve => requestAnimationFrame(resolve));
-    const h = document.documentElement.scrollHeight;
-    await getCurrentWindow().setSize(new LogicalSize(420, h));
-  }
 
   document.querySelector('.license-details').addEventListener('toggle', fitWindow);
 
@@ -301,8 +300,22 @@ async function init() {
       renderItems();
     }
   }
-  await updateLicenseStatus();
-  fitWindow();
+  await renderLicenseSection();
+
+  // Silent background validation — check if license is still valid on LS
+  invoke('check_license_status').then(status => {
+    if (status === 'revoked') {
+      const summary = document.getElementById('license-summary');
+      if (summary) summary.textContent = '⚠ License Revoked';
+      const content = document.getElementById('license-content');
+      if (content) content.innerHTML = `
+        <p style="font-size:0.78rem; color:#e94560; margin-top:6px;">
+          Your license has been revoked. Please contact support.
+        </p>
+      `;
+      fitWindow();
+    }
+  }).catch(() => {}); // Unreachable = offline, ignore silently
 }
 
 function renderItems() {
@@ -401,32 +414,77 @@ document.getElementById('cancel-btn').onclick = async () => {
   await getCurrentWindow().close();
 };
 
-async function updateLicenseStatus() {
-  const config = await invoke('get_config');
-  const status = document.getElementById('license-status');
-  if (!status) return;
-  if (config.license_key) {
-    status.textContent = '✓ Licensed — unlimited groups';
-    status.style.color = '#4caf50';
-  } else {
-    status.textContent = 'Free tier: up to 2 groups';
-    status.style.color = '#888';
-  }
-}
+// Store URL — update after creating your LemonSqueezy product
+const STORE_URL = 'https://app-launcher.lemonsqueezy.com/buy/YOUR_PRODUCT_ID';
 
-const activateBtn = document.getElementById('activate-btn');
-if (activateBtn) {
-  activateBtn.onclick = async () => {
-    const key = document.getElementById('license-input').value.trim();
-    try {
-      await invoke('activate_license', { key });
-      document.getElementById('license-status').textContent = '✓ Activated!';
-      document.getElementById('license-status').style.color = '#4caf50';
-    } catch (e) {
-      document.getElementById('license-status').textContent = e;
-      document.getElementById('license-status').style.color = '#e94560';
-    }
-  };
+async function renderLicenseSection() {
+  const config = await invoke('get_config');
+  const content = document.getElementById('license-content');
+  const summary = document.getElementById('license-summary');
+  if (!content || !summary) return;
+
+  if (config.license_key && config.license_instance_id) {
+    summary.textContent = '✓ Licensed';
+    content.innerHTML = `
+      <div class="license-row" style="margin-top: 7px; align-items: center;">
+        <span style="flex:1; font-size:0.78rem; color:#4caf50;">
+          Active on ${config.license_machine_name || 'this machine'}
+        </span>
+        <button class="btn btn-cancel license-activate" id="transfer-btn">Transfer</button>
+      </div>
+    `;
+    document.getElementById('transfer-btn').addEventListener('click', async () => {
+      const btn = document.getElementById('transfer-btn');
+      btn.textContent = 'Deactivating...';
+      btn.disabled = true;
+      try {
+        await invoke('deactivate_license');
+        await renderLicenseSection();
+        fitWindow();
+      } catch (e) {
+        btn.textContent = 'Transfer';
+        btn.disabled = false;
+        const errEl = content.querySelector('.license-err') || document.createElement('p');
+        errEl.className = 'license-err license-status';
+        errEl.style.color = '#e94560';
+        errEl.textContent = typeof e === 'string' ? e : 'Deactivation failed.';
+        content.appendChild(errEl);
+      }
+    });
+  } else {
+    summary.textContent = '🔑 License';
+    content.innerHTML = `
+      <div class="license-row">
+        <input type="text" class="license-input" id="license-input"
+          placeholder="XXXX-XXXX-XXXX-XXXX" autocomplete="off" />
+        <button class="btn btn-save license-activate" id="activate-btn">Activate</button>
+      </div>
+      <p id="license-status" class="license-status"></p>
+      <a href="${STORE_URL}" target="_blank" class="buy-link">Buy a license →</a>
+    `;
+    document.getElementById('activate-btn').addEventListener('click', async () => {
+      const key = document.getElementById('license-input').value.trim();
+      if (!key) return;
+      const btn = document.getElementById('activate-btn');
+      btn.textContent = 'Activating...';
+      btn.disabled = true;
+      try {
+        await invoke('activate_license', { key });
+        await renderLicenseSection();
+        fitWindow();
+      } catch (e) {
+        btn.textContent = 'Activate';
+        btn.disabled = false;
+        const status = document.getElementById('license-status');
+        if (status) {
+          status.textContent = typeof e === 'string' ? e : 'Activation failed.';
+          status.style.color = '#e94560';
+        }
+      }
+    });
+  }
+
+  fitWindow();
 }
 
 document.getElementById('feedback-btn').addEventListener('click', () => {
