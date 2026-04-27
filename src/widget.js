@@ -34,7 +34,8 @@ async function render() {
     btn.addEventListener('click', () => launchGroup(group.id));
     btn.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      invoke('show_group_context_menu', { groupId: group.id });
+      invoke('show_group_context_menu', { groupId: group.id })
+        .catch(err => console.error('Context menu error:', err));
     });
     widget.appendChild(btn);
   }

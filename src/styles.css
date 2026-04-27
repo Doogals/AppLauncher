@@ -155,7 +155,6 @@ html, body {
 }
 
 .context-menu-item:hover { background: #0f3460; }
-.context-menu-item.danger { color: #e94560; }
 
 /* Emoji picker */
 .emoji-grid {
