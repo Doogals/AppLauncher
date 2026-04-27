@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
-import { getCurrentWindow } from '@tauri-apps/api/window';
+import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 
 const EMOJIS = [
   '💼','📁','🗂️','🖥️','🌐','📧','📅','📝','🔧','⚙️',
@@ -282,6 +282,12 @@ async function showBookmarkStep(modal, browser, closeModal) {
 async function init() {
   initEmojiPicker();
 
+  // Expand/shrink window when license section is toggled
+  document.querySelector('.license-details').addEventListener('toggle', async (e) => {
+    const h = e.target.open ? 530 : 460;
+    await getCurrentWindow().setSize(new LogicalSize(420, h));
+  });
+
   if (groupId) {
     const config = await invoke('get_config');
     existingGroup = config.groups.find(g => g.id === groupId);
@@ -448,9 +454,21 @@ document.getElementById('feedback-btn').addEventListener('click', () => {
   document.getElementById('fb-submit').addEventListener('click', async () => {
     const text = document.getElementById('fb-text').value.trim();
     if (!text) return;
-    const mailto = `mailto:tonictech.inquiry@gmail.com?subject=${encodeURIComponent('App Launcher Feedback')}&body=${encodeURIComponent(text)}`;
-    await invoke('open_url', { url: mailto }).catch(console.error);
-    close();
+    const submitBtn = document.getElementById('fb-submit');
+    submitBtn.textContent = 'Sending...';
+    submitBtn.disabled = true;
+    try {
+      await invoke('send_feedback', { message: text });
+      submitBtn.textContent = '✓ Sent!';
+      setTimeout(close, 1000);
+    } catch (e) {
+      submitBtn.textContent = 'Submit';
+      submitBtn.disabled = false;
+      const err = document.createElement('p');
+      err.style.cssText = 'color:#e94560; font-size:0.75rem; margin:4px 12px 0;';
+      err.textContent = 'Failed to send. Please try again.';
+      submitBtn.closest('div').before(err);
+    }
   });
 
   document.getElementById('fb-text').focus();

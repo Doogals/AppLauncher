@@ -96,9 +96,39 @@ fn get_browser_bookmarks(browser_path: String) -> Vec<browsers::BookmarkItem> {
     browsers::get_browser_bookmarks(&browser_path)
 }
 
+const FEEDBACK_EMAIL: &str = "tonictech.inquiry@gmail.com";
+const FEEDBACK_SMTP_PASS: &str = "REDACTED";
+
 #[tauri::command]
-fn open_url(url: String) -> Result<(), String> {
-    open::that(&url).map_err(|e| e.to_string())
+fn send_feedback(message: String) -> Result<(), String> {
+    use lettre::{
+        transport::smtp::authentication::Credentials,
+        Message, SmtpTransport, Transport,
+    };
+
+    if message.trim().is_empty() {
+        return Err("Message is empty.".to_string());
+    }
+
+    let email = Message::builder()
+        .from(format!("App Launcher <{}>", FEEDBACK_EMAIL)
+            .parse().map_err(|e: lettre::address::AddressError| e.to_string())?)
+        .to(FEEDBACK_EMAIL.parse()
+            .map_err(|e: lettre::address::AddressError| e.to_string())?)
+        .subject("App Launcher Feedback")
+        .body(message)
+        .map_err(|e| e.to_string())?;
+
+    let mailer = SmtpTransport::relay("smtp.gmail.com")
+        .map_err(|e| e.to_string())?
+        .credentials(Credentials::new(
+            FEEDBACK_EMAIL.to_string(),
+            FEEDBACK_SMTP_PASS.to_string(),
+        ))
+        .build();
+
+    mailer.send(&email).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -249,7 +279,7 @@ pub fn run() {
             show_group_context_menu,
             get_installed_browsers,
             get_browser_bookmarks,
-            open_url,
+            send_feedback,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

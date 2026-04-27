@@ -27,6 +27,7 @@ dirs = "5"
 open = "5"
 sha2 = "0.10"
 rusqlite = { version = "0.31", features = ["bundled"] }
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "rustls-tls", "builder"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
