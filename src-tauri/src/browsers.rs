@@ -30,62 +30,54 @@ pub fn get_browser_bookmarks(browser_path: &str) -> Vec<BookmarkItem> {
 }
 
 fn browser_candidates() -> Vec<BrowserInfo> {
+    let local = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let appdata = std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+
+    // Each browser lists candidate paths in priority order (per-user first, then system installs).
+    // The first existing path wins — ensures only one entry per browser regardless of install type.
+    let defs: Vec<(&str, Vec<String>)> = vec![
+        ("Google Chrome", vec![
+            local.join(r"Google\Chrome\Application\chrome.exe").to_string_lossy().into_owned(),
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe".to_string(),
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe".to_string(),
+        ]),
+        ("Microsoft Edge", vec![
+            local.join(r"Microsoft\Edge\Application\msedge.exe").to_string_lossy().into_owned(),
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe".to_string(),
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe".to_string(),
+        ]),
+        ("Brave", vec![
+            local.join(r"BraveSoftware\Brave-Browser\Application\brave.exe").to_string_lossy().into_owned(),
+            r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe".to_string(),
+            r"C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe".to_string(),
+        ]),
+        ("Vivaldi", vec![
+            local.join(r"Vivaldi\Application\vivaldi.exe").to_string_lossy().into_owned(),
+            r"C:\Program Files\Vivaldi\Application\vivaldi.exe".to_string(),
+        ]),
+        ("Opera", vec![
+            appdata.join(r"Opera Software\Opera Stable\opera.exe").to_string_lossy().into_owned(),
+            r"C:\Program Files\Opera\opera.exe".to_string(),
+        ]),
+        ("Mozilla Firefox", vec![
+            r"C:\Program Files\Mozilla Firefox\firefox.exe".to_string(),
+            r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe".to_string(),
+        ]),
+    ];
+
     let mut result = Vec::new();
-
-    if let Some(local) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) {
-        result.push(BrowserInfo {
-            name: "Google Chrome".to_string(),
-            path: local
-                .join(r"Google\Chrome\Application\chrome.exe")
-                .to_string_lossy()
-                .into_owned(),
-        });
-        result.push(BrowserInfo {
-            name: "Microsoft Edge".to_string(),
-            path: local
-                .join(r"Microsoft\Edge\Application\msedge.exe")
-                .to_string_lossy()
-                .into_owned(),
-        });
-        result.push(BrowserInfo {
-            name: "Brave".to_string(),
-            path: local
-                .join(r"BraveSoftware\Brave-Browser\Application\brave.exe")
-                .to_string_lossy()
-                .into_owned(),
-        });
-        result.push(BrowserInfo {
-            name: "Vivaldi".to_string(),
-            path: local
-                .join(r"Vivaldi\Application\vivaldi.exe")
-                .to_string_lossy()
-                .into_owned(),
-        });
-    }
-
-    if let Some(appdata) = std::env::var_os("APPDATA").map(PathBuf::from) {
-        result.push(BrowserInfo {
-            name: "Opera".to_string(),
-            path: appdata
-                .join(r"Opera Software\Opera Stable\opera.exe")
-                .to_string_lossy()
-                .into_owned(),
-        });
-    }
-
-    for path in [
-        r"C:\Program Files\Mozilla Firefox\firefox.exe",
-        r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
-    ] {
-        if Path::new(path).exists() {
+    for (name, paths) in &defs {
+        if let Some(path) = paths.iter().find(|p| Path::new(p.as_str()).exists()) {
             result.push(BrowserInfo {
-                name: "Mozilla Firefox".to_string(),
-                path: path.to_string(),
+                name: name.to_string(),
+                path: path.clone(),
             });
-            break;
         }
     }
-
     result
 }
 
