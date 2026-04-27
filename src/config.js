@@ -117,6 +117,157 @@ async function showWinAppPicker() {
   searchInput.focus();
 }
 
+async function showUrlPicker() {
+  const modal = document.createElement('div');
+  modal.className = 'winapp-modal';
+  modal.innerHTML = `
+    <div class="winapp-card">
+      <div class="winapp-header">
+        <span class="url-step-title">Select Browser</span>
+        <button class="winapp-close" id="url-close">✕</button>
+      </div>
+      <div class="winapp-list" id="url-browser-list">
+        <div class="winapp-empty">Loading...</div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  const onKeyDown = (e) => { if (e.key === 'Escape') closeModal(); };
+  const closeModal = () => {
+    document.removeEventListener('keydown', onKeyDown);
+    modal.remove();
+  };
+  document.getElementById('url-close').addEventListener('click', closeModal);
+  modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+  document.addEventListener('keydown', onKeyDown);
+
+  let browsers;
+  try {
+    browsers = await invoke('get_installed_browsers');
+  } catch (e) {
+    browsers = [];
+    document.getElementById('url-browser-list').innerHTML =
+      '<div class="winapp-empty">Could not detect browsers.</div>';
+    return;
+  }
+
+  if (browsers.length === 0) {
+    document.getElementById('url-browser-list').innerHTML =
+      '<div class="winapp-empty">No supported browsers found.</div>';
+    return;
+  }
+
+  const browserList = document.getElementById('url-browser-list');
+  browserList.innerHTML = '';
+  browsers.forEach(browser => {
+    const row = document.createElement('div');
+    row.className = 'winapp-row';
+    row.textContent = browser.name;
+    row.addEventListener('click', () => showBookmarkStep(modal, browser, closeModal));
+    browserList.appendChild(row);
+  });
+}
+
+async function showBookmarkStep(modal, browser, closeModal) {
+  const card = modal.querySelector('.winapp-card');
+  card.innerHTML = `
+    <div class="winapp-header">
+      <button class="url-back-btn" id="url-back">←</button>
+      <span class="url-step-title">${browser.name} Bookmarks</span>
+      <button class="winapp-close" id="url-close2">✕</button>
+    </div>
+    <div class="url-custom">
+      <input type="text" id="custom-url-input" placeholder="Or enter a URL: https://..." autocomplete="off" />
+    </div>
+    <div class="winapp-list" id="bookmark-list">
+      <div class="winapp-empty">Loading bookmarks...</div>
+    </div>
+    <div class="url-footer">
+      <button class="btn btn-save" id="add-selected-btn" disabled>Add Selected</button>
+    </div>
+  `;
+
+  document.getElementById('url-back').addEventListener('click', () => {
+    closeModal();
+    showUrlPicker();
+  });
+  document.getElementById('url-close2').addEventListener('click', closeModal);
+
+  const customInput = document.getElementById('custom-url-input');
+  const addBtn = document.getElementById('add-selected-btn');
+
+  function updateAddBtn() {
+    const checkedCount = modal.querySelectorAll('.bookmark-checkbox:checked').length;
+    const hasCustom = customInput.value.trim().length > 0;
+    const total = checkedCount + (hasCustom ? 1 : 0);
+    addBtn.disabled = total === 0;
+    addBtn.textContent = total > 0 ? `Add ${total} Selected` : 'Add Selected';
+  }
+
+  let bookmarks;
+  try {
+    bookmarks = await invoke('get_browser_bookmarks', { browserPath: browser.path });
+  } catch (e) {
+    bookmarks = [];
+  }
+
+  const list = document.getElementById('bookmark-list');
+  if (bookmarks.length === 0) {
+    list.innerHTML = '<div class="winapp-empty">No bookmarks found.</div>';
+  } else {
+    list.innerHTML = '';
+    bookmarks.forEach(bm => {
+      const label = document.createElement('label');
+      label.className = 'bookmark-row';
+      const safeTitle = bm.title.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const safeUrl   = bm.url.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      label.innerHTML = `
+        <input type="checkbox" class="bookmark-checkbox" />
+        <div class="bookmark-info">
+          <div class="bookmark-title">${safeTitle}</div>
+          <div class="bookmark-url">${safeUrl}</div>
+        </div>
+      `;
+      label.querySelector('.bookmark-checkbox').dataset.url = bm.url;
+      label.querySelector('.bookmark-checkbox').addEventListener('change', updateAddBtn);
+      list.appendChild(label);
+    });
+  }
+
+  customInput.addEventListener('input', () => {
+    const q = customInput.value.trim().toLowerCase();
+    if (!q.includes('://')) {
+      modal.querySelectorAll('.bookmark-row').forEach(row => {
+        const title = row.querySelector('.bookmark-title')?.textContent.toLowerCase() || '';
+        const url   = row.querySelector('.bookmark-url')?.textContent.toLowerCase() || '';
+        row.style.display = (!q || title.includes(q) || url.includes(q)) ? '' : 'none';
+      });
+    } else {
+      modal.querySelectorAll('.bookmark-row').forEach(row => { row.style.display = ''; });
+    }
+    updateAddBtn();
+  });
+
+  addBtn.addEventListener('click', () => {
+    const checked = [...modal.querySelectorAll('.bookmark-checkbox:checked')];
+    checked.forEach(cb => {
+      const url = cb.dataset.url;
+      if (url && !currentItems.some(i => i.value === url)) {
+        currentItems.push({ item_type: 'url', path: browser.path, value: url });
+      }
+    });
+    const customUrl = customInput.value.trim();
+    if (customUrl && !currentItems.some(i => i.value === customUrl)) {
+      currentItems.push({ item_type: 'url', path: browser.path, value: customUrl });
+    }
+    renderItems();
+    closeModal();
+  });
+
+  customInput.focus();
+}
+
 async function init() {
   initEmojiPicker();
 
@@ -187,30 +338,20 @@ async function addItem(type) {
   }
 
   if (type === 'url') {
-    const url = window.prompt('Enter URL:');
-    if (!url) return;
-
-    const config = await invoke('get_config');
-    if (!config.preferred_browser) {
-      const browser = await open({
-        title: 'Select your preferred browser (.exe)',
-        filters: [{ name: 'Executable', extensions: ['exe'] }],
-      });
-      if (browser) await invoke('set_preferred_browser', { path: browser });
-    }
-    currentItems.push({ item_type: 'url', path: null, value: url });
-  } else {
-    const filters = type === 'app' || type === 'script'
-      ? [{ name: 'Executable', extensions: ['exe', 'bat', 'ps1', 'cmd'] }]
-      : [];
-    const selected = await open({
-      title: `Select ${type}`,
-      directory: type === 'folder',
-      filters: filters.length ? filters : undefined,
-    });
-    if (!selected) return;
-    currentItems.push({ item_type: type, path: selected, value: null });
+    await showUrlPicker();
+    return;
   }
+
+  const filters = type === 'app' || type === 'script'
+    ? [{ name: 'Executable', extensions: ['exe', 'bat', 'ps1', 'cmd'] }]
+    : [];
+  const selected = await open({
+    title: `Select ${type}`,
+    directory: type === 'folder',
+    filters: filters.length ? filters : undefined,
+  });
+  if (!selected) return;
+  currentItems.push({ item_type: type, path: selected, value: null });
 
   renderItems();
 }
