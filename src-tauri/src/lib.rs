@@ -11,6 +11,18 @@ use tauri::{Emitter, Manager, State};
 
 struct AppState(Mutex<AppConfig>);
 
+// Update this URL after deploying the Cloudflare Worker
+const WORKER_URL: &str = "https://app-launcher-license.YOUR_SUBDOMAIN.workers.dev";
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum LicenseStatus {
+    Licensed,
+    Revoked,
+    Unlicensed,
+    Unreachable,
+}
+
 #[tauri::command]
 fn get_config(state: State<AppState>) -> AppConfig {
     state.0.lock().unwrap().clone()
@@ -19,7 +31,7 @@ fn get_config(state: State<AppState>) -> AppConfig {
 #[tauri::command]
 fn save_group(group: Group, state: State<AppState>) -> Result<(), String> {
     let mut config = state.0.lock().unwrap();
-    let limit = license::group_limit(&config.license_key);
+    let limit = license::group_limit(&config.license_key, &config.license_instance_id);
     if let Some(pos) = config.groups.iter().position(|g| g.id == group.id) {
         config.groups[pos] = group;
     } else {
@@ -56,12 +68,119 @@ fn set_preferred_browser(path: String, state: State<AppState>) -> Result<(), Str
 
 #[tauri::command]
 fn activate_license(key: String, state: State<AppState>) -> Result<(), String> {
-    if !license::validate_key(&key) {
-        return Err("Invalid license key.".to_string());
+    let machine_name = std::env::var("COMPUTERNAME")
+        .unwrap_or_else(|_| "Unknown PC".to_string());
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let res = client
+        .post(format!("{}/activate", WORKER_URL))
+        .json(&serde_json::json!({
+            "license_key": key,
+            "instance_name": machine_name,
+        }))
+        .send()
+        .map_err(|e| format!("Network error: {}", e))?;
+
+    if !res.status().is_success() {
+        let body: serde_json::Value = res.json().map_err(|e| e.to_string())?;
+        return Err(body["error"].as_str().unwrap_or("Activation failed").to_string());
     }
+
+    let body: serde_json::Value = res.json().map_err(|e| e.to_string())?;
+    let instance_id = body["instance_id"]
+        .as_str()
+        .ok_or("Invalid response from server")?
+        .to_string();
+
     let mut config = state.0.lock().unwrap();
     config.license_key = Some(key);
+    config.license_instance_id = Some(instance_id);
+    config.license_machine_name = Some(machine_name);
     config::save_config(&config)
+}
+
+#[tauri::command]
+fn deactivate_license(state: State<AppState>) -> Result<(), String> {
+    let (key, instance_id) = {
+        let config = state.0.lock().unwrap();
+        (config.license_key.clone(), config.license_instance_id.clone())
+    };
+    let (key, instance_id) = match (key, instance_id) {
+        (Some(k), Some(i)) => (k, i),
+        _ => return Err("No active license to deactivate.".to_string()),
+    };
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let res = client
+        .post(format!("{}/deactivate", WORKER_URL))
+        .json(&serde_json::json!({
+            "license_key": key,
+            "instance_id": instance_id,
+        }))
+        .send()
+        .map_err(|e| format!("Network error: {}", e))?;
+
+    if !res.status().is_success() {
+        let body: serde_json::Value = res.json().map_err(|e| e.to_string())?;
+        return Err(body["error"].as_str().unwrap_or("Deactivation failed").to_string());
+    }
+
+    let mut config = state.0.lock().unwrap();
+    config.license_key = None;
+    config.license_instance_id = None;
+    config.license_machine_name = None;
+    config::save_config(&config)
+}
+
+#[tauri::command]
+fn check_license_status(state: State<AppState>) -> LicenseStatus {
+    let (key, instance_id) = {
+        let config = state.0.lock().unwrap();
+        (config.license_key.clone(), config.license_instance_id.clone())
+    };
+    let (key, instance_id) = match (key, instance_id) {
+        (Some(k), Some(i)) => (k, i),
+        _ => return LicenseStatus::Unlicensed,
+    };
+
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return LicenseStatus::Unreachable,
+    };
+
+    let res = match client
+        .post(format!("{}/validate", WORKER_URL))
+        .json(&serde_json::json!({
+            "license_key": key,
+            "instance_id": instance_id,
+        }))
+        .send()
+    {
+        Ok(r) => r,
+        Err(_) => return LicenseStatus::Unreachable,
+    };
+
+    let body: serde_json::Value = match res.json() {
+        Ok(b) => b,
+        Err(_) => return LicenseStatus::Unreachable,
+    };
+
+    if body["valid"].as_bool() == Some(true) {
+        LicenseStatus::Licensed
+    } else {
+        LicenseStatus::Revoked
+    }
 }
 
 #[tauri::command]
@@ -272,6 +391,8 @@ pub fn run() {
             launch_group,
             set_preferred_browser,
             activate_license,
+            deactivate_license,
+            check_license_status,
             reorder_items,
             save_widget_position,
             resize_widget,
