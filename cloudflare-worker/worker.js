@@ -1,61 +1,64 @@
 const LS_BASE = 'https://api.lemonsqueezy.com/v1/licenses';
 
-export default {
-  async fetch(request, env) {
-    if (request.method !== 'POST') {
-      return new Response('Method not allowed', { status: 405 });
-    }
+addEventListener('fetch', event => {
+  event.respondWith(handleRequest(event.request));
+});
 
-    const url = new URL(request.url);
-    const action = url.pathname.slice(1); // 'activate', 'deactivate', or 'validate'
+async function handleRequest(request) {
+  if (request.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405 });
+  }
 
-    if (!['activate', 'deactivate', 'validate'].includes(action)) {
-      return new Response('Not found', { status: 404 });
-    }
+  const url = new URL(request.url);
+  const action = url.pathname.slice(1); // 'activate', 'deactivate', or 'validate'
 
-    let body;
-    try {
-      body = await request.json();
-    } catch {
-      return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
-    }
+  if (!['activate', 'deactivate', 'validate'].includes(action)) {
+    return new Response('Not found', { status: 404 });
+  }
 
-    const lsRes = await fetch(`${LS_BASE}/${action}`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${env.LS_API_KEY}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-      },
-      body: JSON.stringify(body),
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response(JSON.stringify({ error: 'Invalid JSON body' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
     });
+  }
 
-    const data = await lsRes.json();
+  const lsRes = await fetch(`${LS_BASE}/${action}`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${LS_API_KEY}`,
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
 
-    if (action === 'activate') {
-      if (lsRes.ok && data.activated) {
-        return Response.json({
-          instance_id: data.instance.id,
-          instance_name: data.instance.name,
-        });
-      }
-      return Response.json(
-        { error: data.error || data.errors?.[0]?.detail || 'Activation failed' },
-        { status: 400 }
-      );
+  const data = await lsRes.json();
+
+  if (action === 'activate') {
+    if (lsRes.ok && data.activated) {
+      return json({ instance_id: data.instance.id, instance_name: data.instance.name });
     }
+    return json({ error: data.error || data.errors?.[0]?.detail || 'Activation failed' }, 400);
+  }
 
-    if (action === 'deactivate') {
-      if (lsRes.ok && data.deactivated) {
-        return Response.json({ ok: true });
-      }
-      return Response.json(
-        { error: data.error || 'Deactivation failed' },
-        { status: 400 }
-      );
+  if (action === 'deactivate') {
+    if (lsRes.ok && data.deactivated) {
+      return json({ ok: true });
     }
+    return json({ error: data.error || 'Deactivation failed' }, 400);
+  }
 
-    // validate
-    return Response.json({ valid: lsRes.ok && data.valid === true });
-  },
-};
+  // validate
+  return json({ valid: lsRes.ok && data.valid === true });
+}
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
