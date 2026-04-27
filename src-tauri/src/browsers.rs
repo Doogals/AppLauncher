@@ -90,29 +90,30 @@ fn browser_candidates() -> Vec<BrowserInfo> {
 }
 
 fn chromium_bookmark_path(browser_path: &str) -> Option<PathBuf> {
-    let lower = browser_path.to_ascii_lowercase();
-    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from)?;
+    let exe = Path::new(browser_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    let local  = std::env::var_os("LOCALAPPDATA").map(PathBuf::from)?;
     let appdata = std::env::var_os("APPDATA").map(PathBuf::from)?;
 
-    let path = if lower.contains("chrome") {
+    let path = if exe.contains("chrome") {
         local.join(r"Google\Chrome\User Data\Default\Bookmarks")
-    } else if lower.contains("msedge") || lower.contains("edge") {
+    } else if exe.contains("msedge") || exe.contains("edge") {
         local.join(r"Microsoft\Edge\User Data\Default\Bookmarks")
-    } else if lower.contains("brave") {
+    } else if exe.contains("brave") {
         local.join(r"BraveSoftware\Brave-Browser\User Data\Default\Bookmarks")
-    } else if lower.contains("vivaldi") {
+    } else if exe.contains("vivaldi") {
         local.join(r"Vivaldi\User Data\Default\Bookmarks")
-    } else if lower.contains("opera") {
+    } else if exe.contains("opera") {
         appdata.join(r"Opera Software\Opera Stable\Bookmarks")
     } else {
         return None;
     };
 
-    if path.exists() {
-        Some(path)
-    } else {
-        None
-    }
+    if path.exists() { Some(path) } else { None }
 }
 
 fn get_chromium_bookmarks(browser_path: &str) -> Vec<BookmarkItem> {
@@ -177,41 +178,46 @@ fn get_firefox_bookmarks() -> Vec<BookmarkItem> {
 fn try_get_firefox_bookmarks() -> Option<Vec<BookmarkItem>> {
     let db_path = firefox_places_path()?;
 
-    // Firefox locks places.sqlite while running — copy to temp first
-    let temp_path = std::env::temp_dir().join("app_launcher_places_tmp.sqlite");
+    // Use a PID-unique name to avoid collisions; copy because Firefox locks the file
+    let temp_path = std::env::temp_dir()
+        .join(format!("app_launcher_places_{}.sqlite", std::process::id()));
     std::fs::copy(&db_path, &temp_path).ok()?;
 
-    let conn = rusqlite::Connection::open_with_flags(
-        &temp_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .ok()?;
-
-    let mut stmt = conn
-        .prepare(
-            "SELECT COALESCE(NULLIF(b.title,''), NULLIF(p.title,''), p.url), p.url
-             FROM moz_bookmarks b
-             JOIN moz_places p ON b.fk = p.id
-             WHERE b.type = 1 AND p.url NOT LIKE 'place:%'",
+    let result = (|| -> Option<Vec<BookmarkItem>> {
+        let conn = rusqlite::Connection::open_with_flags(
+            &temp_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )
         .ok()?;
 
-    let items: Vec<BookmarkItem> = stmt
-        .query_map([], |row| {
-            Ok(BookmarkItem {
-                title: row.get(0).unwrap_or_default(),
-                url: row.get(1).unwrap_or_default(),
+        let mut stmt = conn
+            .prepare(
+                "SELECT COALESCE(NULLIF(b.title,''), NULLIF(p.title,''), p.url), p.url
+                 FROM moz_bookmarks b
+                 JOIN moz_places p ON b.fk = p.id
+                 WHERE b.type = 1 AND p.url NOT LIKE 'place:%'",
+            )
+            .ok()?;
+
+        let items: Vec<BookmarkItem> = stmt
+            .query_map([], |row| {
+                Ok(BookmarkItem {
+                    title: row.get(0).unwrap_or_default(),
+                    url:   row.get(1).unwrap_or_default(),
+                })
             })
-        })
-        .ok()?
-        .flatten()
-        .collect();
+            .ok()?
+            .flatten()
+            .collect();
 
+        let mut sorted = items;
+        sorted.sort_by(|a, b| a.title.to_ascii_lowercase().cmp(&b.title.to_ascii_lowercase()));
+        Some(sorted)
+    })();
+
+    // Always clean up temp file, regardless of whether the query succeeded
     let _ = std::fs::remove_file(&temp_path);
-
-    let mut sorted = items;
-    sorted.sort_by(|a, b| a.title.to_ascii_lowercase().cmp(&b.title.to_ascii_lowercase()));
-    Some(sorted)
+    result
 }
 
 fn firefox_places_path() -> Option<PathBuf> {
