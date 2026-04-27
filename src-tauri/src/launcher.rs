@@ -1,34 +1,46 @@
 use crate::config::{AppConfig, Item, ItemType};
+use std::collections::HashMap;
 use std::process::Command;
 
-pub fn launch_group(group_id: &str, config: &AppConfig) -> Result<(), String> {
-    use std::collections::HashMap;
+fn collect_browser_urls(
+    items: &[Item],
+    preferred_browser: Option<&str>,
+) -> (HashMap<String, Vec<String>>, Vec<String>) {
+    let mut browser_urls: HashMap<String, Vec<String>> = HashMap::new();
+    let mut fallback_urls: Vec<String> = Vec::new();
 
+    for item in items {
+        if let ItemType::Url = &item.item_type {
+            if let Some(url) = &item.value {
+                let browser = item.path.as_deref().or(preferred_browser);
+                match browser {
+                    Some(b) => browser_urls.entry(b.to_string()).or_default().push(url.clone()),
+                    None => fallback_urls.push(url.clone()),
+                }
+            }
+        }
+    }
+    (browser_urls, fallback_urls)
+}
+
+pub fn launch_group(group_id: &str, config: &AppConfig) -> Result<(), String> {
     let group = config
         .groups
         .iter()
         .find(|g| g.id == group_id)
         .ok_or_else(|| format!("Group '{}' not found", group_id))?;
 
-    // Collect URL items grouped by browser for multi-tab launch
-    let mut browser_urls: HashMap<String, Vec<String>> = HashMap::new();
-    let mut fallback_urls: Vec<String> = Vec::new();
-
+    // Launch non-URL items individually
     for item in &group.items {
-        if let ItemType::Url = &item.item_type {
-            let url = item.value.as_ref().ok_or("URL item is missing a value")?;
-            let browser = item.path.as_deref()
-                .or(config.preferred_browser.as_deref());
-            match browser {
-                Some(b) => browser_urls.entry(b.to_string()).or_default().push(url.clone()),
-                None    => fallback_urls.push(url.clone()),
-            }
-        } else {
+        if !matches!(item.item_type, ItemType::Url) {
             launch_item(item, &config.preferred_browser)?;
         }
     }
 
-    // Launch each browser once with all its URLs → opens as tabs in one window
+    // Batch URL items by browser for multi-tab launch
+    let (browser_urls, fallback_urls) =
+        collect_browser_urls(&group.items, config.preferred_browser.as_deref());
+
     for (browser, urls) in &browser_urls {
         Command::new(browser)
             .args(urls)
@@ -36,7 +48,6 @@ pub fn launch_group(group_id: &str, config: &AppConfig) -> Result<(), String> {
             .map_err(|e| format!("Failed to open URLs in '{}': {}", browser, e))?;
     }
 
-    // No browser set — open with system default
     for url in &fallback_urls {
         open::that(url).map_err(|e| format!("Failed to open URL '{}': {}", url, e))?;
     }
@@ -153,21 +164,34 @@ mod tests {
 
     #[test]
     fn test_url_items_with_same_browser_are_batched() {
-        use std::collections::HashMap;
         let items = vec![
             Item { item_type: ItemType::Url, path: Some("chrome.exe".to_string()), value: Some("https://a.com".to_string()) },
             Item { item_type: ItemType::Url, path: Some("chrome.exe".to_string()), value: Some("https://b.com".to_string()) },
             Item { item_type: ItemType::Url, path: Some("firefox.exe".to_string()), value: Some("https://c.com".to_string()) },
         ];
-        let mut map: HashMap<String, Vec<String>> = HashMap::new();
-        for item in &items {
-            if let ItemType::Url = &item.item_type {
-                if let (Some(browser), Some(url)) = (&item.path, &item.value) {
-                    map.entry(browser.clone()).or_default().push(url.clone());
-                }
-            }
-        }
+        let (map, fallback) = collect_browser_urls(&items, None);
         assert_eq!(map["chrome.exe"].len(), 2);
         assert_eq!(map["firefox.exe"].len(), 1);
+        assert!(fallback.is_empty());
+    }
+
+    #[test]
+    fn test_url_items_fall_back_to_preferred_browser() {
+        let items = vec![
+            Item { item_type: ItemType::Url, path: None, value: Some("https://x.com".to_string()) },
+        ];
+        let (map, fallback) = collect_browser_urls(&items, Some("edge.exe"));
+        assert_eq!(map["edge.exe"].len(), 1);
+        assert!(fallback.is_empty());
+    }
+
+    #[test]
+    fn test_url_items_with_no_browser_go_to_fallback() {
+        let items = vec![
+            Item { item_type: ItemType::Url, path: None, value: Some("https://y.com".to_string()) },
+        ];
+        let (map, fallback) = collect_browser_urls(&items, None);
+        assert!(map.is_empty());
+        assert_eq!(fallback.len(), 1);
     }
 }
