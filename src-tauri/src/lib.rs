@@ -95,6 +95,32 @@ fn resize_widget(width: u32, height: u32, app: tauri::AppHandle) -> Result<(), S
     Ok(())
 }
 
+#[tauri::command]
+fn show_group_context_menu(group_id: String, app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::menu::{Menu, MenuItem};
+    let edit = MenuItem::with_id(
+        &app,
+        format!("ctx-edit:{}", group_id),
+        "Edit Group",
+        true,
+        None::<&str>,
+    )
+    .map_err(|e| e.to_string())?;
+    let delete = MenuItem::with_id(
+        &app,
+        format!("ctx-delete:{}", group_id),
+        "Delete Group",
+        true,
+        None::<&str>,
+    )
+    .map_err(|e| e.to_string())?;
+    let menu = Menu::with_items(&app, &[&edit, &delete]).map_err(|e| e.to_string())?;
+    if let Some(window) = app.get_webview_window("widget") {
+        window.popup_menu(&menu).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "windows")]
 fn register_autostart(exe_path: &str) {
     use windows::core::HSTRING;
@@ -204,6 +230,7 @@ pub fn run() {
             save_widget_position,
             resize_widget,
             get_installed_apps,
+            show_group_context_menu,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

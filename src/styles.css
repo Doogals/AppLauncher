@@ -147,17 +147,6 @@ html, body {
 
 .section-label { font-size: 0.75rem; color: #888; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
 
-.context-menu {
-  position: fixed;
-  background: #16213e;
-  border: 1px solid #0f3460;
-  border-radius: 6px;
-  padding: 4px 0;
-  z-index: 9999;
-  min-width: 130px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
-}
-
 .context-menu-item {
   padding: 8px 16px;
   cursor: pointer;

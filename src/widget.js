@@ -1,33 +1,27 @@
 import { invoke } from '@tauri-apps/api/core';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { listen } from '@tauri-apps/api/event';
 
 const widget = document.getElementById('widget');
-const contextMenu = document.getElementById('context-menu');
 
-// Drag the window by clicking the widget background (not on any button)
+// Drag the window by clicking the widget background (left-click only, not on buttons)
 widget.addEventListener('mousedown', (e) => {
   if (e.button === 0 && !e.target.closest('.group-btn')) {
     getCurrentWindow().startDragging();
   }
 });
 
-// Button dimensions must match styles.css values:
-// .group-btn: padding 8px 14px = 28px horizontal, min-width 70px → ~98px per button
-// .add-btn:   min-width 50px + 28px padding → ~78px
-// .widget:    padding 8px 12px = 24px horizontal, gap 8px
-const BTN_W   = 98;
-const ADD_W   = 78;
-const GAP     = 8;
-const PAD     = 24;
-const WIN_H   = 80;
+const BTN_W = 98;
+const ADD_W = 78;
+const GAP   = 8;
+const PAD   = 24;
+const WIN_H = 80;
 
 function widgetWidth(groupCount) {
   if (groupCount === 0) return PAD + ADD_W;
   return PAD + groupCount * BTN_W + groupCount * GAP + ADD_W;
 }
-
-let activeGroupId = null;
 
 async function render() {
   const config = await invoke('get_config');
@@ -38,7 +32,10 @@ async function render() {
     btn.className = 'group-btn';
     btn.innerHTML = `<span class="icon">${group.icon}</span><span class="label">${group.name}</span>`;
     btn.addEventListener('click', () => launchGroup(group.id));
-    btn.addEventListener('contextmenu', (e) => showContextMenu(e, group.id));
+    btn.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      invoke('show_group_context_menu', { groupId: group.id });
+    });
     widget.appendChild(btn);
   }
 
@@ -62,30 +59,6 @@ async function launchGroup(groupId) {
   }
 }
 
-function showContextMenu(e, groupId) {
-  e.preventDefault();
-  activeGroupId = groupId;
-  contextMenu.innerHTML = `
-    <div class="context-menu-item" id="cm-edit">Edit Group</div>
-    <div class="context-menu-item danger" id="cm-delete">Delete Group</div>
-  `;
-  contextMenu.style.display = 'block';
-  contextMenu.style.left = e.clientX + 'px';
-  contextMenu.style.top = e.clientY + 'px';
-  document.getElementById('cm-edit').onclick   = () => { hideContextMenu(); openConfig(groupId); };
-  document.getElementById('cm-delete').onclick = () => { hideContextMenu(); deleteGroup(groupId); };
-}
-
-function hideContextMenu() {
-  contextMenu.style.display = 'none';
-  activeGroupId = null;
-}
-
-async function deleteGroup(groupId) {
-  await invoke('delete_group', { groupId });
-  render();
-}
-
 async function openConfig(groupId) {
   const win = new WebviewWindow('config', {
     url: groupId ? `config.html?id=${groupId}` : 'config.html',
@@ -99,7 +72,14 @@ async function openConfig(groupId) {
   win.once('tauri://destroyed', () => render());
 }
 
-document.addEventListener('click', hideContextMenu);
+async function deleteGroup(groupId) {
+  await invoke('delete_group', { groupId });
+  render();
+}
+
+// Listen for native context menu selections
+listen('context-menu:edit',   (e) => openConfig(e.payload));
+listen('context-menu:delete', (e) => deleteGroup(e.payload));
 
 // Position saving after render
 render().then(() => {
