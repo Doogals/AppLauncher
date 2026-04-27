@@ -264,13 +264,16 @@ async function showBookmarkStep(modal, browser, closeModal) {
       if (url && !currentItems.some(i => i.value === url)) {
         currentItems.push({ item_type: 'url', path: browser.path, value: url });
       }
+      cb.checked = false;
     });
     const customUrl = customInput.value.trim();
     if (customUrl && !currentItems.some(i => i.value === customUrl)) {
       currentItems.push({ item_type: 'url', path: browser.path, value: customUrl });
     }
+    customInput.value = '';
     renderItems();
-    closeModal();
+    updateAddBtn();
+    customInput.focus();
   });
 
   customInput.focus();
