@@ -200,7 +200,8 @@ async function showBookmarkStep(modal, browser, closeModal) {
   const addBtn = document.getElementById('add-selected-btn');
 
   function updateAddBtn() {
-    const checkedCount = modal.querySelectorAll('.bookmark-checkbox:checked').length;
+    const checkedCount = [...modal.querySelectorAll('.bookmark-checkbox:checked')]
+      .filter(cb => cb.closest('.bookmark-row')?.style.display !== 'none').length;
     const hasCustom = customInput.value.trim().length > 0;
     const total = checkedCount + (hasCustom ? 1 : 0);
     addBtn.disabled = total === 0;
