@@ -303,6 +303,25 @@ html, body {
 
 .url-custom input:focus { border-color: #e94560; }
 
+.url-entry {
+  padding: 8px 12px;
+  border-top: 1px solid #0f3460;
+  flex-shrink: 0;
+}
+
+.url-entry input {
+  width: 100%;
+  background: #16213e;
+  border: 1px solid #0f3460;
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: #e0e0e0;
+  font-size: 0.85rem;
+  outline: none;
+}
+
+.url-entry input:focus { border-color: #e94560; }
+
 .url-footer {
   padding: 10px 12px;
   border-top: 1px solid #0f3460;

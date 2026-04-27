@@ -12,16 +12,9 @@ widget.addEventListener('mousedown', (e) => {
   }
 });
 
-const BTN_W = 98;
-const ADD_W = 78;
 const GAP   = 8;
 const PAD   = 24;
 const WIN_H = 80;
-
-function widgetWidth(groupCount) {
-  if (groupCount === 0) return PAD + ADD_W;
-  return PAD + groupCount * BTN_W + groupCount * GAP + ADD_W;
-}
 
 async function render() {
   const config = await invoke('get_config');
@@ -46,10 +39,16 @@ async function render() {
   addBtn.addEventListener('click', () => openConfig(null));
   widget.appendChild(addBtn);
 
-  await invoke('resize_widget', {
-    width: widgetWidth(config.groups.length),
-    height: WIN_H,
+  // Measure actual rendered button widths instead of using hardcoded estimates
+  await new Promise(resolve => requestAnimationFrame(resolve));
+  const children = [...widget.children];
+  let w = PAD;
+  children.forEach((child, i) => {
+    w += child.offsetWidth;
+    if (i < children.length - 1) w += GAP;
   });
+
+  await invoke('resize_widget', { width: Math.ceil(w), height: WIN_H });
 }
 
 async function launchGroup(groupId) {

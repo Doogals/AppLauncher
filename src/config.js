@@ -180,10 +180,13 @@ async function showBookmarkStep(modal, browser, closeModal) {
       <button class="winapp-close" id="url-close2">✕</button>
     </div>
     <div class="url-custom">
-      <input type="text" id="custom-url-input" placeholder="Or enter a URL: https://..." autocomplete="off" />
+      <input type="text" id="bookmark-search" placeholder="Search bookmarks..." autocomplete="off" />
     </div>
     <div class="winapp-list" id="bookmark-list">
       <div class="winapp-empty">Loading bookmarks...</div>
+    </div>
+    <div class="url-entry">
+      <input type="text" id="custom-url-input" placeholder="Or enter a custom URL: https://..." autocomplete="off" />
     </div>
     <div class="url-footer">
       <button class="btn btn-save" id="add-selected-btn" disabled>Add Selected</button>
@@ -239,19 +242,19 @@ async function showBookmarkStep(modal, browser, closeModal) {
     });
   }
 
-  customInput.addEventListener('input', () => {
-    const q = customInput.value.trim().toLowerCase();
-    if (!q.includes('://')) {
-      modal.querySelectorAll('.bookmark-row').forEach(row => {
-        const title = row.querySelector('.bookmark-title')?.textContent.toLowerCase() || '';
-        const url   = row.querySelector('.bookmark-url')?.textContent.toLowerCase() || '';
-        row.style.display = (!q || title.includes(q) || url.includes(q)) ? '' : 'none';
-      });
-    } else {
-      modal.querySelectorAll('.bookmark-row').forEach(row => { row.style.display = ''; });
-    }
+  // Search input filters the bookmark list
+  document.getElementById('bookmark-search').addEventListener('input', (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    modal.querySelectorAll('.bookmark-row').forEach(row => {
+      const title = row.querySelector('.bookmark-title')?.textContent.toLowerCase() || '';
+      const url   = row.querySelector('.bookmark-url')?.textContent.toLowerCase() || '';
+      row.style.display = (!q || title.includes(q) || url.includes(q)) ? '' : 'none';
+    });
     updateAddBtn();
   });
+
+  // Custom URL input only affects the Add button state — no list filtering
+  customInput.addEventListener('input', updateAddBtn);
 
   addBtn.addEventListener('click', () => {
     const checked = [...modal.querySelectorAll('.bookmark-checkbox:checked')]
