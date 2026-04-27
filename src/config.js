@@ -282,11 +282,14 @@ async function showBookmarkStep(modal, browser, closeModal) {
 async function init() {
   initEmojiPicker();
 
-  // Expand/shrink window when license section is toggled
-  document.querySelector('.license-details').addEventListener('toggle', async (e) => {
-    const h = e.target.open ? 530 : 460;
+  // Resize window to fit content — called after any layout change
+  async function fitWindow() {
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    const h = document.documentElement.scrollHeight;
     await getCurrentWindow().setSize(new LogicalSize(420, h));
-  });
+  }
+
+  document.querySelector('.license-details').addEventListener('toggle', fitWindow);
 
   if (groupId) {
     const config = await invoke('get_config');
@@ -298,7 +301,8 @@ async function init() {
       renderItems();
     }
   }
-  updateLicenseStatus();
+  await updateLicenseStatus();
+  fitWindow();
 }
 
 function renderItems() {
@@ -451,24 +455,11 @@ document.getElementById('feedback-btn').addEventListener('click', () => {
   document.getElementById('fb-cancel').addEventListener('click', close);
   modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
 
-  document.getElementById('fb-submit').addEventListener('click', async () => {
+  document.getElementById('fb-submit').addEventListener('click', () => {
     const text = document.getElementById('fb-text').value.trim();
     if (!text) return;
-    const submitBtn = document.getElementById('fb-submit');
-    submitBtn.textContent = 'Sending...';
-    submitBtn.disabled = true;
-    try {
-      await invoke('send_feedback', { message: text });
-      submitBtn.textContent = '✓ Sent!';
-      setTimeout(close, 1000);
-    } catch (e) {
-      submitBtn.textContent = 'Submit';
-      submitBtn.disabled = false;
-      const err = document.createElement('p');
-      err.style.cssText = 'color:#e94560; font-size:0.75rem; margin:4px 12px 0;';
-      err.textContent = 'Failed to send. Please try again.';
-      submitBtn.closest('div').before(err);
-    }
+    invoke('send_feedback', { message: text }).catch(console.error);
+    close();
   });
 
   document.getElementById('fb-text').focus();

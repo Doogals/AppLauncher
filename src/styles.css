@@ -63,9 +63,6 @@ html, body {
 .config-window {
   background: #1a1a2e;
   padding: 20px;
-  height: 100vh;
-  box-sizing: border-box;
-  overflow-y: auto;
 }
 
 .config-header {
