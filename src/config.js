@@ -352,11 +352,13 @@ function renderItems() {
 
     list.appendChild(row);
   });
+  fitWindow();
 }
 
 document.getElementById('add-item-btn').onclick = () => {
   const menu = document.getElementById('add-type-menu');
   menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+  fitWindow();
 };
 
 document.querySelectorAll('[data-type]').forEach(el => {
