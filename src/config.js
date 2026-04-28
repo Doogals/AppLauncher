@@ -281,7 +281,7 @@ async function showBookmarkStep(modal, browser, closeModal) {
 
 async function fitWindow() {
   await new Promise(resolve => requestAnimationFrame(resolve));
-  const h = document.documentElement.scrollHeight;
+  const h = document.querySelector('.config-window').offsetHeight;
   await getCurrentWindow().setSize(new LogicalSize(420, h));
 }
 
@@ -415,7 +415,7 @@ document.getElementById('cancel-btn').onclick = async () => {
 };
 
 // Store URL — update after creating your LemonSqueezy product
-const STORE_URL = 'https://app-launcher.lemonsqueezy.com/buy/YOUR_PRODUCT_ID';
+const STORE_URL = 'https://tonictechapps.lemonsqueezy.com/checkout/buy/e14ee8eb-1a79-42a8-85a7-30aa23e66c61';
 
 async function renderLicenseSection() {
   const config = await invoke('get_config');
@@ -460,7 +460,7 @@ async function renderLicenseSection() {
         <button class="btn btn-save license-activate" id="activate-btn">Activate</button>
       </div>
       <p id="license-status" class="license-status"></p>
-      <a href="${STORE_URL}" target="_blank" class="buy-link">Buy a license →</a>
+      <button class="buy-link" id="buy-btn">Buy a license →</button>
     `;
     document.getElementById('activate-btn').addEventListener('click', async () => {
       const key = document.getElementById('license-input').value.trim();
@@ -481,6 +481,9 @@ async function renderLicenseSection() {
           status.style.color = '#e94560';
         }
       }
+    });
+    document.getElementById('buy-btn').addEventListener('click', () => {
+      invoke('open_url', { url: STORE_URL });
     });
   }
 

@@ -11,8 +11,13 @@ use tauri::{Emitter, Manager, State};
 
 struct AppState(Mutex<AppConfig>);
 
+#[tauri::command]
+fn open_url(url: String) {
+    let _ = open::that(url);
+}
+
 // Update this URL after deploying the Cloudflare Worker
-const WORKER_URL: &str = "https://app-launcher-license.YOUR_SUBDOMAIN.workers.dev";
+const WORKER_URL: &str = "https://app-launcher-proxy.dougbreaultjr.workers.dev";
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -357,7 +362,7 @@ pub fn run() {
 
             // Create tray icon
             TrayIconBuilder::new()
-                .icon(app.default_window_icon().ok_or("no default window icon configured")?.clone())
+                .icon(tauri::include_image!("icons/32x32.png"))
                 .menu(&tray_menu)
                 .show_menu_on_left_click(false)
                 .build(app)?;
@@ -401,6 +406,7 @@ pub fn run() {
             get_installed_browsers,
             get_browser_bookmarks,
             send_feedback,
+            open_url,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
