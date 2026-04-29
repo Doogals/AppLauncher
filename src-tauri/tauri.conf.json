@@ -49,7 +49,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "publisher": "Doug Breault",
+    "publisher": "TonicTech",
     "windows": {
       "certificateThumbprint": null,
       "digestAlgorithm": "sha256",
