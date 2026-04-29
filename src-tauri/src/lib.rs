@@ -452,31 +452,40 @@ pub fn run() {
                         let _ = window.emit("context-menu:delete", group_id);
                     }
                 } else if let Some(color) = id.strip_prefix("widget-color:") {
-                    let state = app.state::<AppState>();
-                    {
-                        let mut config = state.0.lock().unwrap();
-                        config.widget_color = Some(color.to_string());
-                        let _ = config::save_config(&config);
-                    }
-                    if let Some(window) = app.get_webview_window("widget") {
-                        let _ = window.emit("widget-color-changed", color);
-                    }
-                } else if id == "widget-startup" {
-                    let state = app.state::<AppState>();
-                    let new_val = {
-                        let mut config = state.0.lock().unwrap();
-                        config.launch_on_startup = !config.launch_on_startup;
-                        let _ = config::save_config(&config);
-                        config.launch_on_startup
-                    };
-                    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-                    if new_val {
-                        if let Ok(exe) = std::env::current_exe() {
-                            register_autostart(&exe.to_string_lossy());
+                    // Defer all post-menu work to async so we're clear of the
+                    // popup_menu nested Windows message loop before touching WebView2
+                    let color_str = color.to_string();
+                    let app2 = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let state = app2.state::<AppState>();
+                        {
+                            let mut config = state.0.lock().unwrap();
+                            config.widget_color = Some(color_str.clone());
+                            let _ = config::save_config(&config);
                         }
-                    } else {
-                        deregister_autostart();
-                    }
+                        if let Some(window) = app2.get_webview_window("widget") {
+                            let _ = window.emit("widget-color-changed", &color_str);
+                        }
+                    });
+                } else if id == "widget-startup" {
+                    let app2 = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let state = app2.state::<AppState>();
+                        let new_val = {
+                            let mut config = state.0.lock().unwrap();
+                            config.launch_on_startup = !config.launch_on_startup;
+                            let _ = config::save_config(&config);
+                            config.launch_on_startup
+                        };
+                        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+                        if new_val {
+                            if let Ok(exe) = std::env::current_exe() {
+                                register_autostart(&exe.to_string_lossy());
+                            }
+                        } else {
+                            deregister_autostart();
+                        }
+                    });
                 } else if id == "widget-close" {
                     if let Some(window) = app.get_webview_window("widget") {
                         let _ = window.close();
