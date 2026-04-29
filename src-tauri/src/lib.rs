@@ -206,6 +206,13 @@ fn save_widget_position(x: i32, y: i32, state: State<AppState>) -> Result<(), St
 }
 
 #[tauri::command]
+fn save_widget_color(color: String, state: State<AppState>) -> Result<(), String> {
+    let mut config = state.0.lock().unwrap();
+    config.widget_color = Some(color);
+    config::save_config(&config)
+}
+
+#[tauri::command]
 fn get_installed_apps() -> Vec<InstalledApp> {
     apps::get_installed_apps()
 }
@@ -429,6 +436,7 @@ pub fn run() {
             check_license_status,
             reorder_items,
             save_widget_position,
+            save_widget_color,
             resize_widget,
             get_installed_apps,
             show_group_context_menu,

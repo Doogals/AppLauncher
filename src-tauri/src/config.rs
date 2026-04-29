@@ -48,6 +48,7 @@ pub struct AppConfig {
     pub groups: Vec<Group>,
     pub widget_x: Option<i32>,
     pub widget_y: Option<i32>,
+    pub widget_color: Option<String>,
 }
 
 
