@@ -277,52 +277,56 @@ fn resize_widget(width: u32, height: u32, app: tauri::AppHandle) -> Result<(), S
 
 #[tauri::command]
 fn show_group_context_menu(group_id: String, app: tauri::AppHandle) -> Result<(), String> {
-    use tauri::menu::{Menu, MenuItem};
-    let edit = MenuItem::with_id(&app, format!("ctx-edit:{}", group_id), "Edit Group", true, None::<&str>)
-        .map_err(|e| e.to_string())?;
-    let delete = MenuItem::with_id(&app, format!("ctx-delete:{}", group_id), "Delete Group", true, None::<&str>)
-        .map_err(|e| e.to_string())?;
-    let menu = Menu::with_items(&app, &[&edit, &delete]).map_err(|e| e.to_string())?;
-    if let Some(window) = app.get_webview_window("widget") {
-        window.popup_menu(&menu).map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    app.run_on_main_thread(move || {
+        use tauri::menu::{Menu, MenuItem};
+        let _ = (|| -> Result<(), String> {
+            let edit = MenuItem::with_id(&app, format!("ctx-edit:{}", group_id), "Edit Group", true, None::<&str>)
+                .map_err(|e| e.to_string())?;
+            let delete = MenuItem::with_id(&app, format!("ctx-delete:{}", group_id), "Delete Group", true, None::<&str>)
+                .map_err(|e| e.to_string())?;
+            let menu = Menu::with_items(&app, &[&edit, &delete]).map_err(|e| e.to_string())?;
+            if let Some(window) = app.get_webview_window("widget") {
+                window.popup_menu(&menu).map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        })();
+    }).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn show_widget_context_menu(app: tauri::AppHandle, state: State<AppState>) -> Result<(), String> {
-    use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
-
     let launch_on_startup = state.0.lock().unwrap().launch_on_startup;
-
-    let colors: &[(&str, &str)] = &[
-        ("Default",  "rgba(22,33,62,0.95)"),
-        ("Charcoal", "rgba(30,30,30,0.95)"),
-        ("Forest",   "rgba(15,40,25,0.95)"),
-        ("Midnight", "rgba(20,10,40,0.95)"),
-        ("Rust",     "rgba(60,25,10,0.95)"),
-        ("Steel",    "rgba(20,30,45,0.95)"),
-    ];
-    let color_items: Vec<MenuItem<_>> = colors.iter()
-        .map(|(label, value)| MenuItem::with_id(&app, format!("widget-color:{}", value), *label, true, None::<&str>)
-            .map_err(|e| e.to_string()))
-        .collect::<Result<Vec<_>, _>>()?;
-    let color_refs: Vec<&dyn tauri::menu::IsMenuItem<_>> = color_items.iter().map(|i| i as _).collect();
-    let color_sub = Submenu::with_items(&app, "Change Color", true, &color_refs)
-        .map_err(|e| e.to_string())?;
-
-    let startup = CheckMenuItem::with_id(&app, "widget-startup", "Launch on Startup", true, launch_on_startup, None::<&str>)
-        .map_err(|e| e.to_string())?;
-    let sep = PredefinedMenuItem::separator(&app).map_err(|e| e.to_string())?;
-    let close = MenuItem::with_id(&app, "widget-close", "Close", true, None::<&str>)
-        .map_err(|e| e.to_string())?;
-
-    let menu = Menu::with_items(&app, &[&color_sub, &startup, &sep, &close])
-        .map_err(|e| e.to_string())?;
-    if let Some(window) = app.get_webview_window("widget") {
-        window.popup_menu(&menu).map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    app.run_on_main_thread(move || {
+        use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
+        let _ = (|| -> Result<(), String> {
+            let colors: &[(&str, &str)] = &[
+                ("Default",  "rgba(22,33,62,0.95)"),
+                ("Charcoal", "rgba(30,30,30,0.95)"),
+                ("Forest",   "rgba(15,40,25,0.95)"),
+                ("Midnight", "rgba(20,10,40,0.95)"),
+                ("Rust",     "rgba(60,25,10,0.95)"),
+                ("Steel",    "rgba(20,30,45,0.95)"),
+            ];
+            let color_items: Vec<MenuItem<_>> = colors.iter()
+                .map(|(label, value)| MenuItem::with_id(&app, format!("widget-color:{}", value), *label, true, None::<&str>)
+                    .map_err(|e| e.to_string()))
+                .collect::<Result<Vec<_>, _>>()?;
+            let color_refs: Vec<&dyn tauri::menu::IsMenuItem<_>> = color_items.iter().map(|i| i as _).collect();
+            let color_sub = Submenu::with_items(&app, "Change Color", true, &color_refs)
+                .map_err(|e| e.to_string())?;
+            let startup = CheckMenuItem::with_id(&app, "widget-startup", "Launch on Startup", true, launch_on_startup, None::<&str>)
+                .map_err(|e| e.to_string())?;
+            let sep = PredefinedMenuItem::separator(&app).map_err(|e| e.to_string())?;
+            let close = MenuItem::with_id(&app, "widget-close", "Close", true, None::<&str>)
+                .map_err(|e| e.to_string())?;
+            let menu = Menu::with_items(&app, &[&color_sub, &startup, &sep, &close])
+                .map_err(|e| e.to_string())?;
+            if let Some(window) = app.get_webview_window("widget") {
+                window.popup_menu(&menu).map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        })();
+    }).map_err(|e| e.to_string())
 }
 
 #[cfg(target_os = "windows")]
