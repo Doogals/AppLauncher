@@ -302,6 +302,36 @@ fn register_autostart(exe_path: &str) {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn register_autostart(exe_path: &str) {
+    let Some(config_dir) = dirs::config_dir() else { return };
+    let autostart_dir = config_dir.join("autostart");
+    let _ = std::fs::create_dir_all(&autostart_dir);
+    let desktop = format!(
+        "[Desktop Entry]\nType=Application\nName=App Launcher\nExec={}\nHidden=false\nNoDisplay=false\nX-GNOME-Autostart-enabled=true\n",
+        exe_path
+    );
+    let _ = std::fs::write(autostart_dir.join("app-launcher.desktop"), desktop);
+}
+
+#[cfg(target_os = "macos")]
+fn register_autostart(exe_path: &str) {
+    let Some(home) = dirs::home_dir() else { return };
+    let agents_dir = home.join("Library/LaunchAgents");
+    let _ = std::fs::create_dir_all(&agents_dir);
+    let plist = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+         <plist version=\"1.0\"><dict>\n\
+         <key>Label</key><string>com.dougb.applauncher</string>\n\
+         <key>ProgramArguments</key><array><string>{}</string></array>\n\
+         <key>RunAtLoad</key><true/>\n\
+         </dict></plist>\n",
+        exe_path
+    );
+    let _ = std::fs::write(agents_dir.join("com.dougb.applauncher.plist"), plist);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let config = config::load_config();
@@ -364,7 +394,7 @@ pub fn run() {
             }
 
             // Register auto-start only in release builds
-            #[cfg(all(target_os = "windows", not(debug_assertions)))]
+            #[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), not(debug_assertions)))]
             {
                 if let Ok(exe) = std::env::current_exe() {
                     register_autostart(&exe.to_string_lossy());

@@ -1,6 +1,4 @@
 use serde::Serialize;
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct InstalledApp {
@@ -9,7 +7,12 @@ pub struct InstalledApp {
     pub args: String,
 }
 
+// Windows: scan Start Menu .lnk shortcuts via IShellLink
+#[cfg(target_os = "windows")]
 pub fn get_installed_apps() -> Vec<InstalledApp> {
+    use std::collections::HashSet;
+    use std::path::{Path, PathBuf};
+
     let should_uninit = unsafe {
         use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
         CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok()
@@ -58,7 +61,8 @@ pub fn get_installed_apps() -> Vec<InstalledApp> {
     apps
 }
 
-fn collect_lnk_files(dir: &Path, out: &mut Vec<PathBuf>) {
+#[cfg(target_os = "windows")]
+fn collect_lnk_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
@@ -70,7 +74,8 @@ fn collect_lnk_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn resolve_lnk(lnk_path: &Path) -> Option<(String, String)> {
+#[cfg(target_os = "windows")]
+fn resolve_lnk(lnk_path: &std::path::Path) -> Option<(String, String)> {
     use windows::{
         core::{Interface, PCWSTR},
         Win32::Storage::FileSystem::WIN32_FIND_DATAW,
@@ -90,7 +95,7 @@ fn resolve_lnk(lnk_path: &Path) -> Option<(String, String)> {
             .collect();
         persist_file.Load(PCWSTR(wide.as_ptr()), STGM_READ).ok()?;
 
-        let mut buf = [0u16; 1024]; // INFOTIPSIZE — Shell-recommended buffer for GetPath
+        let mut buf = [0u16; 1024];
         let mut find_data = WIN32_FIND_DATAW::default();
         shell_link.GetPath(&mut buf, &mut find_data, 0).ok()?;
 
@@ -101,7 +106,6 @@ fn resolve_lnk(lnk_path: &Path) -> Option<(String, String)> {
             return None;
         }
 
-        // Retrieve arguments — required for apps like Discord (Update.exe --processStart Discord.exe)
         let mut arg_buf = [0u16; 1024];
         let _ = shell_link.GetArguments(&mut arg_buf);
         let arg_end = arg_buf.iter().position(|&c| c == 0).unwrap_or(arg_buf.len());
@@ -111,13 +115,35 @@ fn resolve_lnk(lnk_path: &Path) -> Option<(String, String)> {
     }
 }
 
+// Linux/macOS: Windows Apps picker not supported — return empty
+#[cfg(not(target_os = "windows"))]
+pub fn get_installed_apps() -> Vec<InstalledApp> {
+    vec![]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
 
     #[test]
+    fn get_installed_apps_returns_vec_without_panic() {
+        let apps = get_installed_apps();
+        #[cfg(target_os = "windows")]
+        for app in &apps {
+            assert!(
+                app.path.to_ascii_lowercase().ends_with(".exe"),
+                "Non-exe path: {}",
+                app.path
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        assert!(apps.is_empty());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
     fn collect_lnk_files_finds_lnk_and_ignores_others() {
+        use std::fs;
         let dir = std::env::temp_dir().join("app_launcher_lnk_test");
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("app.lnk"), b"").unwrap();
@@ -132,8 +158,10 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn collect_lnk_files_recurses_into_subdirs() {
+        use std::fs;
         let dir = std::env::temp_dir().join("app_launcher_lnk_recurse_test");
         let sub = dir.join("sub");
         fs::create_dir_all(&sub).unwrap();
@@ -145,18 +173,5 @@ mod tests {
         assert_eq!(found.len(), 2);
 
         fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn get_installed_apps_returns_vec_without_panic() {
-        let apps = get_installed_apps();
-        // Do not assert non-empty — a clean CI environment may have no .lnk shortcuts.
-        for app in &apps {
-            assert!(
-                app.path.to_ascii_lowercase().ends_with(".exe"),
-                "Non-exe path: {}",
-                app.path
-            );
-        }
     }
 }
