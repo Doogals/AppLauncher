@@ -278,23 +278,47 @@ fn resize_widget(width: u32, height: u32, app: tauri::AppHandle) -> Result<(), S
 #[tauri::command]
 fn show_group_context_menu(group_id: String, app: tauri::AppHandle) -> Result<(), String> {
     use tauri::menu::{Menu, MenuItem};
-    let edit = MenuItem::with_id(
-        &app,
-        format!("ctx-edit:{}", group_id),
-        "Edit Group",
-        true,
-        None::<&str>,
-    )
-    .map_err(|e| e.to_string())?;
-    let delete = MenuItem::with_id(
-        &app,
-        format!("ctx-delete:{}", group_id),
-        "Delete Group",
-        true,
-        None::<&str>,
-    )
-    .map_err(|e| e.to_string())?;
+    let edit = MenuItem::with_id(&app, format!("ctx-edit:{}", group_id), "Edit Group", true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    let delete = MenuItem::with_id(&app, format!("ctx-delete:{}", group_id), "Delete Group", true, None::<&str>)
+        .map_err(|e| e.to_string())?;
     let menu = Menu::with_items(&app, &[&edit, &delete]).map_err(|e| e.to_string())?;
+    if let Some(window) = app.get_webview_window("widget") {
+        window.popup_menu(&menu).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn show_widget_context_menu(app: tauri::AppHandle, state: State<AppState>) -> Result<(), String> {
+    use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
+
+    let launch_on_startup = state.0.lock().unwrap().launch_on_startup;
+
+    let colors: &[(&str, &str)] = &[
+        ("Default",  "rgba(22,33,62,0.95)"),
+        ("Charcoal", "rgba(30,30,30,0.95)"),
+        ("Forest",   "rgba(15,40,25,0.95)"),
+        ("Midnight", "rgba(20,10,40,0.95)"),
+        ("Rust",     "rgba(60,25,10,0.95)"),
+        ("Steel",    "rgba(20,30,45,0.95)"),
+    ];
+    let color_items: Vec<MenuItem<_>> = colors.iter()
+        .map(|(label, value)| MenuItem::with_id(&app, format!("widget-color:{}", value), *label, true, None::<&str>)
+            .map_err(|e| e.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let color_refs: Vec<&dyn tauri::menu::IsMenuItem<_>> = color_items.iter().map(|i| i as _).collect();
+    let color_sub = Submenu::with_items(&app, "Change Color", true, &color_refs)
+        .map_err(|e| e.to_string())?;
+
+    let startup = CheckMenuItem::with_id(&app, "widget-startup", "Launch on Startup", true, launch_on_startup, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    let sep = PredefinedMenuItem::separator(&app).map_err(|e| e.to_string())?;
+    let close = MenuItem::with_id(&app, "widget-close", "Close", true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+
+    let menu = Menu::with_items(&app, &[&color_sub, &startup, &sep, &close])
+        .map_err(|e| e.to_string())?;
     if let Some(window) = app.get_webview_window("widget") {
         window.popup_menu(&menu).map_err(|e| e.to_string())?;
     }
@@ -418,6 +442,36 @@ pub fn run() {
                     if let Some(window) = app.get_webview_window("widget") {
                         let _ = window.emit("context-menu:delete", group_id);
                     }
+                } else if let Some(color) = id.strip_prefix("widget-color:") {
+                    let state = app.state::<AppState>();
+                    {
+                        let mut config = state.0.lock().unwrap();
+                        config.widget_color = Some(color.to_string());
+                        let _ = config::save_config(&config);
+                    }
+                    if let Some(window) = app.get_webview_window("widget") {
+                        let _ = window.emit("widget-color-changed", color);
+                    }
+                } else if id == "widget-startup" {
+                    let state = app.state::<AppState>();
+                    let new_val = {
+                        let mut config = state.0.lock().unwrap();
+                        config.launch_on_startup = !config.launch_on_startup;
+                        let _ = config::save_config(&config);
+                        config.launch_on_startup
+                    };
+                    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+                    if new_val {
+                        if let Ok(exe) = std::env::current_exe() {
+                            register_autostart(&exe.to_string_lossy());
+                        }
+                    } else {
+                        deregister_autostart();
+                    }
+                } else if id == "widget-close" {
+                    if let Some(window) = app.get_webview_window("widget") {
+                        let _ = window.close();
+                    }
                 } else {
                     #[cfg(debug_assertions)]
                     eprintln!("[menu] unhandled event id: {:?}", id);
@@ -487,6 +541,7 @@ pub fn run() {
             save_widget_position,
             save_widget_color,
             set_launch_on_startup,
+            show_widget_context_menu,
             resize_widget,
             get_installed_apps,
             show_group_context_menu,

@@ -12,156 +12,18 @@ widget.addEventListener('mousedown', (e) => {
   }
 });
 
-// ── Widget background right-click menu ───────────────────────────────────────
-const COLORS = [
-  { label: 'Default',    value: 'rgba(22,33,62,0.95)' },
-  { label: 'Charcoal',   value: 'rgba(30,30,30,0.95)' },
-  { label: 'Forest',     value: 'rgba(15,40,25,0.95)' },
-  { label: 'Midnight',   value: 'rgba(20,10,40,0.95)' },
-  { label: 'Rust',       value: 'rgba(60,25,10,0.95)' },
-  { label: 'Steel',      value: 'rgba(20,30,45,0.95)' },
-];
-
+// ── Widget background right-click menu (native) ──────────────────────────────
 function applyWidgetColor(color) {
   document.querySelector('.widget').style.background = color;
 }
 
-function removeContextMenu() {
-  document.getElementById('widget-ctx-menu')?.remove();
-}
-
-widget.addEventListener('contextmenu', async (e) => {
-  if (e.target.closest('.group-btn')) return; // group buttons handle their own menu
+widget.addEventListener('contextmenu', (e) => {
+  if (e.target.closest('.group-btn')) return;
   e.preventDefault();
-  removeContextMenu();
-
-  const menu = document.createElement('div');
-  menu.id = 'widget-ctx-menu';
-  menu.style.cssText = `
-    position:fixed; left:${e.clientX}px; top:${e.clientY}px;
-    background:#16213e; border:1px solid #0f3460; border-radius:6px;
-    padding:4px 0; z-index:9999; min-width:160px; box-shadow:0 4px 16px rgba(0,0,0,0.5);
-    font-family:inherit; font-size:13px;
-  `;
-
-  // ── Change Color submenu trigger ──
-  const colorItem = document.createElement('div');
-  colorItem.style.cssText = 'padding:6px 14px; color:#e0e0e0; cursor:pointer; display:flex; justify-content:space-between; align-items:center;';
-  colorItem.innerHTML = '🎨 Change Color <span style="color:#888;font-size:11px;">▶</span>';
-  colorItem.addEventListener('mouseenter', (ev) => {
-    colorItem.style.background = 'rgba(15,52,96,0.8)';
-    document.getElementById('widget-color-sub')?.remove();
-
-    const sub = document.createElement('div');
-    sub.id = 'widget-color-sub';
-    const rect = colorItem.getBoundingClientRect();
-    sub.style.cssText = `
-      position:fixed; left:${rect.right + 4}px; top:${rect.top}px;
-      background:#16213e; border:1px solid #0f3460; border-radius:6px;
-      padding:6px 8px; z-index:10000; box-shadow:0 4px 16px rgba(0,0,0,0.5);
-    `;
-
-    // Swatches
-    const swatches = document.createElement('div');
-    swatches.style.cssText = 'display:grid; grid-template-columns:1fr 1fr; gap:4px; margin-bottom:6px;';
-    COLORS.forEach(({ label, value }) => {
-      const sw = document.createElement('div');
-      sw.style.cssText = `background:${value}; border:1px solid #0f3460; border-radius:4px; padding:4px 8px; cursor:pointer; font-size:11px; color:#e0e0e0; text-align:center;`;
-      sw.textContent = label;
-      sw.addEventListener('click', () => {
-        applyWidgetColor(value);
-        invoke('save_widget_color', { color: value });
-        removeContextMenu();
-        document.getElementById('widget-color-sub')?.remove();
-      });
-      sw.addEventListener('mouseenter', () => sw.style.borderColor = '#e07b39');
-      sw.addEventListener('mouseleave', () => sw.style.borderColor = '#0f3460');
-      swatches.appendChild(sw);
-    });
-    sub.appendChild(swatches);
-
-    // Custom color picker
-    const customRow = document.createElement('div');
-    customRow.style.cssText = 'display:flex; align-items:center; gap:6px; padding-top:4px; border-top:1px solid #0f3460;';
-    const picker = document.createElement('input');
-    picker.type = 'color';
-    picker.value = '#16213e';
-    picker.style.cssText = 'width:28px; height:22px; border:none; border-radius:4px; cursor:pointer; padding:0;';
-    const pickerLabel = document.createElement('span');
-    pickerLabel.style.cssText = 'font-size:11px; color:#aaa;';
-    pickerLabel.textContent = 'Custom';
-    picker.addEventListener('input', () => {
-      const hex = picker.value;
-      const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
-      const color = `rgba(${r},${g},${b},0.95)`;
-      applyWidgetColor(color);
-      invoke('save_widget_color', { color });
-    });
-    picker.addEventListener('change', () => removeContextMenu());
-    customRow.appendChild(picker);
-    customRow.appendChild(pickerLabel);
-    sub.appendChild(customRow);
-
-    document.body.appendChild(sub);
-  });
-  colorItem.addEventListener('mouseleave', (ev) => {
-    if (!ev.relatedTarget?.closest('#widget-color-sub')) {
-      colorItem.style.background = '';
-    }
-  });
-  menu.appendChild(colorItem);
-
-  // Divider
-  const divider = document.createElement('div');
-  divider.style.cssText = 'height:1px; background:#0f3460; margin:2px 0;';
-  menu.appendChild(divider);
-
-  // ── Launch on Startup toggle ──
-  const config = await invoke('get_config');
-  const startupItem = document.createElement('div');
-  startupItem.style.cssText = 'padding:6px 14px; color:#e0e0e0; cursor:pointer; display:flex; align-items:center; gap:8px;';
-  const checkbox = document.createElement('span');
-  checkbox.textContent = config.launch_on_startup ? '☑' : '☐';
-  checkbox.style.cssText = 'font-size:14px; line-height:1;';
-  const startupLabel = document.createElement('span');
-  startupLabel.textContent = 'Launch on Startup';
-  startupItem.appendChild(checkbox);
-  startupItem.appendChild(startupLabel);
-  startupItem.addEventListener('mouseenter', () => startupItem.style.background = 'rgba(15,52,96,0.8)');
-  startupItem.addEventListener('mouseleave', () => startupItem.style.background = '');
-  startupItem.addEventListener('click', async () => {
-    const newVal = !config.launch_on_startup;
-    await invoke('set_launch_on_startup', { enabled: newVal });
-    checkbox.textContent = newVal ? '☑' : '☐';
-    config.launch_on_startup = newVal;
-    removeContextMenu();
-  });
-  menu.appendChild(startupItem);
-
-  // Divider 2
-  const divider2 = document.createElement('div');
-  divider2.style.cssText = 'height:1px; background:#0f3460; margin:2px 0;';
-  menu.appendChild(divider2);
-
-  // ── Close ──
-  const closeItem = document.createElement('div');
-  closeItem.style.cssText = 'padding:6px 14px; color:#e94560; cursor:pointer;';
-  closeItem.textContent = '✕  Close';
-  closeItem.addEventListener('mouseenter', () => closeItem.style.background = 'rgba(233,69,96,0.15)');
-  closeItem.addEventListener('mouseleave', () => closeItem.style.background = '');
-  closeItem.addEventListener('click', () => getCurrentWindow().close());
-  menu.appendChild(closeItem);
-
-  document.body.appendChild(menu);
+  invoke('show_widget_context_menu').catch(err => console.error('Context menu error:', err));
 });
 
-// Dismiss menu on click outside
-document.addEventListener('mousedown', (e) => {
-  if (!e.target.closest('#widget-ctx-menu') && !e.target.closest('#widget-color-sub')) {
-    removeContextMenu();
-    document.getElementById('widget-color-sub')?.remove();
-  }
-});
+listen('widget-color-changed', (e) => applyWidgetColor(e.payload));
 
 const GAP   = 8;
 const PAD   = 24;

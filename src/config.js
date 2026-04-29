@@ -272,8 +272,7 @@ async function showBookmarkStep(modal, browser, closeModal) {
     }
     customInput.value = '';
     renderItems();
-    updateAddBtn();
-    customInput.focus();
+    closeModal();
   });
 
   customInput.focus();
