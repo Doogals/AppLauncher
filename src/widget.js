@@ -17,10 +17,20 @@ function applyWidgetColor(color) {
   document.querySelector('.widget').style.background = color;
 }
 
+let menuCooldown = false;
+function showMenuThrottled(fn) {
+  if (menuCooldown) return;
+  menuCooldown = true;
+  fn();
+  setTimeout(() => { menuCooldown = false; }, 600);
+}
+
 widget.addEventListener('contextmenu', (e) => {
   if (e.target.closest('.group-btn')) return;
   e.preventDefault();
-  invoke('show_widget_context_menu').catch(err => console.error('Context menu error:', err));
+  showMenuThrottled(() =>
+    invoke('show_widget_context_menu').catch(err => console.error('Context menu error:', err))
+  );
 });
 
 listen('widget-color-changed', (e) => applyWidgetColor(e.payload));
@@ -40,8 +50,10 @@ async function render() {
     btn.addEventListener('click', () => launchGroup(group.id));
     btn.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      invoke('show_group_context_menu', { groupId: group.id })
-        .catch(err => console.error('Context menu error:', err));
+      showMenuThrottled(() =>
+        invoke('show_group_context_menu', { groupId: group.id })
+          .catch(err => console.error('Context menu error:', err))
+      );
     });
     widget.appendChild(btn);
   }
