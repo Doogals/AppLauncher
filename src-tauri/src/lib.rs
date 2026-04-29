@@ -337,6 +337,7 @@ pub fn run() {
     let config = config::load_config();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             use tauri::menu::{Menu, MenuItem};
@@ -399,6 +400,19 @@ pub fn run() {
                 if let Ok(exe) = std::env::current_exe() {
                     register_autostart(&exe.to_string_lossy());
                 }
+            }
+
+            // Check for updates in the background (release builds only)
+            #[cfg(not(debug_assertions))]
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Ok(updater) = handle.updater() {
+                        if let Ok(Some(update)) = updater.check().await {
+                            let _ = handle.emit("update-available", &update.version);
+                        }
+                    }
+                });
             }
 
             Ok(())

@@ -81,6 +81,15 @@ async function deleteGroup(groupId) {
 listen('context-menu:edit',   (e) => openConfig(e.payload));
 listen('context-menu:delete', (e) => deleteGroup(e.payload));
 
+// Show update notification banner when a new version is available
+listen('update-available', (e) => {
+  const version = e.payload;
+  const banner = document.createElement('div');
+  banner.style.cssText = 'position:fixed;bottom:0;left:0;right:0;background:#e07b39;color:#fff;font-size:11px;padding:4px 8px;display:flex;justify-content:space-between;align-items:center;z-index:9999;';
+  banner.innerHTML = `<span>v${version} available</span><a href="https://github.com/Doogals/AppLauncher/releases/latest" target="_blank" style="color:#fff;font-weight:700;text-decoration:underline;">Download</a>`;
+  document.body.appendChild(banner);
+});
+
 // Position saving after render
 render().then(() => {
   let t = null;

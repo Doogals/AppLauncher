@@ -45,6 +45,8 @@ jobs:
 
       - name: Build
         run: npm run tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
 
       - name: Upload .deb
         uses: actions/upload-artifact@v4
