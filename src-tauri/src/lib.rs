@@ -213,6 +213,24 @@ fn save_widget_color(color: String, state: State<AppState>) -> Result<(), String
 }
 
 #[tauri::command]
+fn set_launch_on_startup(enabled: bool, state: State<AppState>) -> Result<(), String> {
+    let mut config = state.0.lock().unwrap();
+    config.launch_on_startup = enabled;
+    config::save_config(&config)?;
+
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    if enabled {
+        if let Ok(exe) = std::env::current_exe() {
+            register_autostart(&exe.to_string_lossy());
+        }
+    } else {
+        deregister_autostart();
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 fn get_installed_apps() -> Vec<InstalledApp> {
     apps::get_installed_apps()
 }
@@ -281,6 +299,34 @@ fn show_group_context_menu(group_id: String, app: tauri::AppHandle) -> Result<()
         window.popup_menu(&menu).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn deregister_autostart() {
+    use windows::core::HSTRING;
+    use windows::Win32::System::Registry::{RegOpenKeyExW, RegDeleteValueW, HKEY, HKEY_CURRENT_USER, KEY_WRITE};
+    let key_path = HSTRING::from("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
+    let value_name = HSTRING::from("AppLauncher");
+    unsafe {
+        let mut hkey = HKEY::default();
+        if RegOpenKeyExW(HKEY_CURRENT_USER, &key_path, 0, KEY_WRITE, &mut hkey).is_ok() {
+            let _ = RegDeleteValueW(hkey, &value_name);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn deregister_autostart() {
+    if let Some(config_dir) = dirs::config_dir() {
+        let _ = std::fs::remove_file(config_dir.join("autostart/app-launcher.desktop"));
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn deregister_autostart() {
+    if let Some(home) = dirs::home_dir() {
+        let _ = std::fs::remove_file(home.join("Library/LaunchAgents/com.dougb.applauncher.plist"));
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -401,11 +447,14 @@ pub fn run() {
                 }
             }
 
-            // Register auto-start only in release builds
+            // Register auto-start only in release builds, only if user has it enabled
             #[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), not(debug_assertions)))]
             {
-                if let Ok(exe) = std::env::current_exe() {
-                    register_autostart(&exe.to_string_lossy());
+                let launch_on_startup = app.state::<AppState>().0.lock().unwrap().launch_on_startup;
+                if launch_on_startup {
+                    if let Ok(exe) = std::env::current_exe() {
+                        register_autostart(&exe.to_string_lossy());
+                    }
                 }
             }
 
@@ -437,6 +486,7 @@ pub fn run() {
             reorder_items,
             save_widget_position,
             save_widget_color,
+            set_launch_on_startup,
             resize_widget,
             get_installed_apps,
             show_group_context_menu,

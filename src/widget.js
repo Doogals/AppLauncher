@@ -30,7 +30,7 @@ function removeContextMenu() {
   document.getElementById('widget-ctx-menu')?.remove();
 }
 
-widget.addEventListener('contextmenu', (e) => {
+widget.addEventListener('contextmenu', async (e) => {
   if (e.target.closest('.group-btn')) return; // group buttons handle their own menu
   e.preventDefault();
   removeContextMenu();
@@ -115,6 +115,33 @@ widget.addEventListener('contextmenu', (e) => {
   const divider = document.createElement('div');
   divider.style.cssText = 'height:1px; background:#0f3460; margin:2px 0;';
   menu.appendChild(divider);
+
+  // ── Launch on Startup toggle ──
+  const config = await invoke('get_config');
+  const startupItem = document.createElement('div');
+  startupItem.style.cssText = 'padding:6px 14px; color:#e0e0e0; cursor:pointer; display:flex; align-items:center; gap:8px;';
+  const checkbox = document.createElement('span');
+  checkbox.textContent = config.launch_on_startup ? '☑' : '☐';
+  checkbox.style.cssText = 'font-size:14px; line-height:1;';
+  const startupLabel = document.createElement('span');
+  startupLabel.textContent = 'Launch on Startup';
+  startupItem.appendChild(checkbox);
+  startupItem.appendChild(startupLabel);
+  startupItem.addEventListener('mouseenter', () => startupItem.style.background = 'rgba(15,52,96,0.8)');
+  startupItem.addEventListener('mouseleave', () => startupItem.style.background = '');
+  startupItem.addEventListener('click', async () => {
+    const newVal = !config.launch_on_startup;
+    await invoke('set_launch_on_startup', { enabled: newVal });
+    checkbox.textContent = newVal ? '☑' : '☐';
+    config.launch_on_startup = newVal;
+    removeContextMenu();
+  });
+  menu.appendChild(startupItem);
+
+  // Divider 2
+  const divider2 = document.createElement('div');
+  divider2.style.cssText = 'height:1px; background:#0f3460; margin:2px 0;';
+  menu.appendChild(divider2);
 
   // ── Close ──
   const closeItem = document.createElement('div');

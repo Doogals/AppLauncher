@@ -38,7 +38,9 @@ impl Group {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+fn default_true() -> bool { true }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct AppConfig {
     pub preferred_browser: Option<String>,
@@ -49,6 +51,24 @@ pub struct AppConfig {
     pub widget_x: Option<i32>,
     pub widget_y: Option<i32>,
     pub widget_color: Option<String>,
+    #[serde(default = "default_true")]
+    pub launch_on_startup: bool,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            preferred_browser: None,
+            license_key: None,
+            license_instance_id: None,
+            license_machine_name: None,
+            groups: vec![],
+            widget_x: None,
+            widget_y: None,
+            widget_color: None,
+            launch_on_startup: true,
+        }
+    }
 }
 
 
