@@ -3,7 +3,7 @@ pub fn is_licensed(license_key: &Option<String>, instance_id: &Option<String>) -
 }
 
 pub fn group_limit(license_key: &Option<String>, instance_id: &Option<String>) -> usize {
-    if is_licensed(license_key, instance_id) { usize::MAX } else { 2 }
+    if is_licensed(license_key, instance_id) { usize::MAX } else { 1 }
 }
 
 #[cfg(test)]
@@ -20,7 +20,7 @@ mod tests {
 
     #[test]
     fn test_group_limit_unlicensed() {
-        assert_eq!(group_limit(&None, &None), 2);
+        assert_eq!(group_limit(&None, &None), 1);
     }
 
     #[test]
