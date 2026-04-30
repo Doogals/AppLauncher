@@ -419,6 +419,27 @@ fn register_autostart(exe_path: &str) {
 }
 
 
+#[cfg(target_os = "windows")]
+fn send_widget_to_back(window: &tauri::WebviewWindow) {
+    extern "system" {
+        fn SetWindowPos(
+            hwnd: *mut std::ffi::c_void,
+            hwnd_insert_after: *mut std::ffi::c_void,
+            x: i32, y: i32, cx: i32, cy: i32,
+            flags: u32,
+        ) -> i32;
+    }
+    const HWND_BOTTOM: *mut std::ffi::c_void = 1usize as *mut _;
+    const SWP_NOMOVE: u32 = 0x0002;
+    const SWP_NOSIZE: u32 = 0x0001;
+    const SWP_NOACTIVATE: u32 = 0x0010;
+    if let Ok(hwnd) = window.hwnd() {
+        unsafe {
+            SetWindowPos(hwnd.0, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+    }
+}
+
 fn build_tray_menu(app: &tauri::AppHandle, on_top: bool) -> Result<tauri::menu::Menu<tauri::Wry>, String> {
     use tauri::menu::{Menu, MenuItem};
     let label = if on_top { "Send to Back" } else { "Bring to Front" };
@@ -465,6 +486,10 @@ pub fn run() {
                         };
                         if let Some(window) = app2.get_webview_window("widget") {
                             let _ = window.set_always_on_top(new_on_top);
+                            #[cfg(target_os = "windows")]
+                            if !new_on_top {
+                                send_widget_to_back(&window);
+                            }
                         }
                         let _ = rebuild_tray_menu(&app2, new_on_top);
                     });
