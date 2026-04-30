@@ -3,9 +3,6 @@ import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 
-// Disable OS-level rounded corners so only CSS border-radius is visible
-invoke('init_widget_window');
-
 const widget = document.getElementById('widget');
 
 // Drag the window by clicking the widget background (left-click only, not on buttons)

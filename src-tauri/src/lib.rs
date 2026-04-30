@@ -205,11 +205,6 @@ fn save_widget_position(x: i32, y: i32, state: State<AppState>) -> Result<(), St
     config::save_config(&config)
 }
 
-#[tauri::command]
-fn init_widget_window(window: tauri::WebviewWindow) {
-    #[cfg(target_os = "windows")]
-    disable_os_rounded_corners(&window);
-}
 
 #[tauri::command]
 fn save_widget_color(color: String, state: State<AppState>) -> Result<(), String> {
@@ -425,29 +420,6 @@ fn register_autostart(exe_path: &str) {
 }
 
 
-#[cfg(target_os = "windows")]
-fn disable_os_rounded_corners(window: &tauri::WebviewWindow) {
-    extern "system" {
-        fn DwmSetWindowAttribute(
-            hwnd: *mut std::ffi::c_void,
-            attr: u32,
-            pv_attr: *const std::ffi::c_void,
-            cb_attr: u32,
-        ) -> i32;
-    }
-    const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
-    const DWMWCP_DONOTROUND: u32 = 1;
-    if let Ok(hwnd) = window.hwnd() {
-        unsafe {
-            DwmSetWindowAttribute(
-                hwnd.0,
-                DWMWA_WINDOW_CORNER_PREFERENCE,
-                &DWMWCP_DONOTROUND as *const u32 as *const _,
-                std::mem::size_of::<u32>() as u32,
-            );
-        }
-    }
-}
 
 #[cfg(target_os = "windows")]
 fn send_widget_to_back(window: &tauri::WebviewWindow) {
@@ -599,9 +571,6 @@ pub fn run() {
                     if cfg.widget_on_top {
                         let _ = widget.set_always_on_top(true);
                     }
-                    // Disable OS-level rounded corners so only CSS border-radius shows
-                    #[cfg(target_os = "windows")]
-                    disable_os_rounded_corners(&widget);
                 }
             }
 
@@ -642,7 +611,6 @@ pub fn run() {
             deactivate_license,
             check_license_status,
             reorder_items,
-            init_widget_window,
             save_widget_position,
             save_widget_color,
             set_launch_on_startup,

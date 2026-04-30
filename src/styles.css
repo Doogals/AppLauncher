@@ -21,7 +21,6 @@ html, body {
   gap: 8px;
   padding: 8px 12px;
   background: rgba(22, 33, 62, 0.95);
-  border-radius: 12px;
   border: 1px solid rgba(15, 52, 96, 0.8);
 }
 
