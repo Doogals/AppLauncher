@@ -418,6 +418,7 @@ fn register_autostart(exe_path: &str) {
     let _ = std::fs::write(agents_dir.join("com.dougb.applauncher.plist"), plist);
 }
 
+
 fn build_tray_menu(app: &tauri::AppHandle, on_top: bool) -> Result<tauri::menu::Menu<tauri::Wry>, String> {
     use tauri::menu::{Menu, MenuItem};
     let label = if on_top { "Send to Back" } else { "Bring to Front" };
@@ -453,18 +454,20 @@ pub fn run() {
                 if id == "quit" {
                     app.exit(0);
                 } else if id == "bring_send" {
-                    let state = app.state::<AppState>();
-                    let new_on_top = {
-                        let mut config = state.0.lock().unwrap();
-                        config.widget_on_top = !config.widget_on_top;
-                        let _ = config::save_config(&config);
-                        config.widget_on_top
-                    };
-                    if let Some(window) = app.get_webview_window("widget") {
-                        let _ = window.set_always_on_top(new_on_top);
-                    }
-                    // Rebuild tray menu with updated label
-                    let _ = rebuild_tray_menu(app, new_on_top);
+                    let app2 = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let state = app2.state::<AppState>();
+                        let new_on_top = {
+                            let mut config = state.0.lock().unwrap();
+                            config.widget_on_top = !config.widget_on_top;
+                            let _ = config::save_config(&config);
+                            config.widget_on_top
+                        };
+                        if let Some(window) = app2.get_webview_window("widget") {
+                            let _ = window.set_always_on_top(new_on_top);
+                        }
+                        let _ = rebuild_tray_menu(&app2, new_on_top);
+                    });
                 } else if let Some(group_id) = id.strip_prefix("ctx-edit:") {
                     if let Some(window) = app.get_webview_window("widget") {
                         let _ = window.emit("context-menu:edit", group_id);
