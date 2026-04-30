@@ -206,6 +206,12 @@ fn save_widget_position(x: i32, y: i32, state: State<AppState>) -> Result<(), St
 }
 
 #[tauri::command]
+fn init_widget_window(window: tauri::WebviewWindow) {
+    #[cfg(target_os = "windows")]
+    disable_os_rounded_corners(&window);
+}
+
+#[tauri::command]
 fn save_widget_color(color: String, state: State<AppState>) -> Result<(), String> {
     let mut config = state.0.lock().unwrap();
     config.widget_color = Some(color);
@@ -636,6 +642,7 @@ pub fn run() {
             deactivate_license,
             check_license_status,
             reorder_items,
+            init_widget_window,
             save_widget_position,
             save_widget_color,
             set_launch_on_startup,
