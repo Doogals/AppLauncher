@@ -8,6 +8,7 @@ use config::{AppConfig, Group, Item};
 use apps::InstalledApp;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
+use tauri_plugin_updater::UpdaterExt;
 
 struct AppState(Mutex<AppConfig>);
 
