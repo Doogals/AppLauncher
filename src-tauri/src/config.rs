@@ -53,6 +53,8 @@ pub struct AppConfig {
     pub widget_color: Option<String>,
     #[serde(default = "default_true")]
     pub launch_on_startup: bool,
+    #[serde(default)]
+    pub widget_on_top: bool,
 }
 
 impl Default for AppConfig {
@@ -67,6 +69,7 @@ impl Default for AppConfig {
             widget_y: None,
             widget_color: None,
             launch_on_startup: true,
+            widget_on_top: false,
         }
     }
 }

@@ -418,6 +418,24 @@ fn register_autostart(exe_path: &str) {
     let _ = std::fs::write(agents_dir.join("com.dougb.applauncher.plist"), plist);
 }
 
+fn build_tray_menu(app: &tauri::AppHandle, on_top: bool) -> Result<tauri::menu::Menu<tauri::Wry>, String> {
+    use tauri::menu::{Menu, MenuItem};
+    let label = if on_top { "Send to Back" } else { "Bring to Front" };
+    let bring_send = MenuItem::with_id(app, "bring_send", label, true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    Menu::with_items(app, &[&bring_send, &quit]).map_err(|e| e.to_string())
+}
+
+fn rebuild_tray_menu(app: &tauri::AppHandle, on_top: bool) -> Result<(), String> {
+    let menu = build_tray_menu(app, on_top)?;
+    if let Some(tray) = app.tray_by_id("main-tray") {
+        tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let config = config::load_config();
@@ -434,15 +452,19 @@ pub fn run() {
                 let id = event.id().as_ref();
                 if id == "quit" {
                     app.exit(0);
-                } else if id == "show_hide" {
+                } else if id == "bring_send" {
+                    let state = app.state::<AppState>();
+                    let new_on_top = {
+                        let mut config = state.0.lock().unwrap();
+                        config.widget_on_top = !config.widget_on_top;
+                        let _ = config::save_config(&config);
+                        config.widget_on_top
+                    };
                     if let Some(window) = app.get_webview_window("widget") {
-                        if window.is_visible().unwrap_or(false) {
-                            let _ = window.hide();
-                        } else {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
+                        let _ = window.set_always_on_top(new_on_top);
                     }
+                    // Rebuild tray menu with updated label
+                    let _ = rebuild_tray_menu(app, new_on_top);
                 } else if let Some(group_id) = id.strip_prefix("ctx-edit:") {
                     if let Some(window) = app.get_webview_window("widget") {
                         let _ = window.emit("context-menu:edit", group_id);
@@ -496,25 +518,28 @@ pub fn run() {
                 }
             });
 
-            // Build tray menu
-            let show_hide = MenuItem::with_id(app, "show_hide", "Show/Hide Widget", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let tray_menu = Menu::with_items(app, &[&show_hide, &quit])?;
+            // Build tray menu with initial label based on config
+            let on_top = app.state::<AppState>().0.lock().unwrap().widget_on_top;
+            let handle = app.handle().clone();
+            let tray_menu = build_tray_menu(&handle, on_top)?;
 
-            // Create tray icon
-            TrayIconBuilder::new()
+            // Create tray icon with stable ID so we can update its menu later
+            TrayIconBuilder::with_id("main-tray")
                 .icon(tauri::include_image!("icons/32x32.png"))
                 .menu(&tray_menu)
                 .show_menu_on_left_click(false)
                 .build(app)?;
 
-            // Restore saved widget position
+            // Restore saved widget position and always-on-top state
             {
                 let state = app.state::<AppState>();
                 let cfg = state.0.lock().unwrap();
-                if let (Some(x), Some(y)) = (cfg.widget_x, cfg.widget_y) {
-                    if let Some(widget) = app.get_webview_window("widget") {
+                if let Some(widget) = app.get_webview_window("widget") {
+                    if let (Some(x), Some(y)) = (cfg.widget_x, cfg.widget_y) {
                         let _ = widget.set_position(tauri::PhysicalPosition::new(x, y));
+                    }
+                    if cfg.widget_on_top {
+                        let _ = widget.set_always_on_top(true);
                     }
                 }
             }
