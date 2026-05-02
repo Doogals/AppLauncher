@@ -5,24 +5,37 @@ use std::process::Command;
 // ── Post-launch window positioning (Windows only) ────────────────────────────
 
 #[cfg(target_os = "windows")]
-fn position_window_for_item(pid: u32, item: &Item) {
+fn position_window_for_item(pid: u32, x: i32, y: i32) {
     use std::thread;
     use std::time::Duration;
 
-    let launch_monitor = item.launch_monitor;
-    let launch_position = item.launch_position.clone();
-
     thread::spawn(move || {
-        // Wait for the window to appear — retry up to 10 times
         let hwnd = (0..10).find_map(|_| {
             thread::sleep(Duration::from_millis(300));
             find_window_by_pid(pid)
         });
-
         if let Some(hwnd) = hwnd {
-            apply_window_position(hwnd, launch_monitor, launch_position.as_deref());
+            move_window_to(hwnd, x, y);
         }
     });
+}
+
+#[cfg(target_os = "windows")]
+fn move_window_to(hwnd: *mut std::ffi::c_void, x: i32, y: i32) {
+    extern "system" {
+        fn SetWindowPos(
+            hwnd: *mut std::ffi::c_void,
+            insert: *mut std::ffi::c_void,
+            x: i32, y: i32, cx: i32, cy: i32,
+            flags: u32,
+        ) -> i32;
+    }
+    const SWP_NOSIZE: u32 = 0x0001;
+    const SWP_NOZORDER: u32 = 0x0004;
+    const SWP_NOACTIVATE: u32 = 0x0010;
+    unsafe {
+        SetWindowPos(hwnd, std::ptr::null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -51,64 +64,6 @@ fn find_window_by_pid(target_pid: u32) -> Option<*mut std::ffi::c_void> {
     if state.result.is_null() { None } else { Some(state.result) }
 }
 
-#[cfg(target_os = "windows")]
-fn apply_window_position(hwnd: *mut std::ffi::c_void, monitor_index: Option<u32>, position: Option<&str>) {
-    extern "system" {
-        fn EnumDisplayMonitors(
-            hdc: *mut std::ffi::c_void,
-            clip: *const std::ffi::c_void,
-            cb: unsafe extern "system" fn(*mut std::ffi::c_void, *mut std::ffi::c_void, *mut [i32; 4], isize) -> i32,
-            data: isize,
-        ) -> i32;
-        fn SetWindowPos(hwnd: *mut std::ffi::c_void, insert: *mut std::ffi::c_void, x: i32, y: i32, cx: i32, cy: i32, flags: u32) -> i32;
-        fn GetWindowRect(hwnd: *mut std::ffi::c_void, rect: *mut [i32; 4]) -> i32;
-    }
-
-    // Collect monitors
-    let mut monitors: Vec<[i32; 4]> = Vec::new();
-    unsafe extern "system" fn mon_cb(_: *mut std::ffi::c_void, _: *mut std::ffi::c_void, rect: *mut [i32; 4], data: isize) -> i32 {
-        let v = &mut *(data as *mut Vec<[i32; 4]>);
-        v.push(*rect);
-        1
-    }
-    unsafe { EnumDisplayMonitors(std::ptr::null_mut(), std::ptr::null(), mon_cb, &mut monitors as *mut _ as isize); }
-
-    if monitors.is_empty() { return; }
-
-    let mon = monitors.get(monitor_index.unwrap_or(0) as usize)
-        .or_else(|| monitors.first())
-        .copied()
-        .unwrap_or([0, 0, 1920, 1080]);
-
-    let mon_x = mon[0];
-    let mon_y = mon[1];
-    let mon_w = mon[2] - mon[0];
-    let mon_h = mon[3] - mon[1];
-
-    // Get current window size
-    let mut win_rect = [0i32; 4];
-    unsafe { GetWindowRect(hwnd, &mut win_rect); }
-    let win_w = win_rect[2] - win_rect[0];
-    let win_h = win_rect[3] - win_rect[1];
-
-    let (x, y) = match position.unwrap_or("center") {
-        "top-left"      => (mon_x,                              mon_y),
-        "top-center"    => (mon_x + (mon_w - win_w) / 2,       mon_y),
-        "top-right"     => (mon_x + mon_w - win_w,             mon_y),
-        "center-left"   => (mon_x,                              mon_y + (mon_h - win_h) / 2),
-        "center"        => (mon_x + (mon_w - win_w) / 2,       mon_y + (mon_h - win_h) / 2),
-        "center-right"  => (mon_x + mon_w - win_w,             mon_y + (mon_h - win_h) / 2),
-        "bottom-left"   => (mon_x,                              mon_y + mon_h - win_h),
-        "bottom-center" => (mon_x + (mon_w - win_w) / 2,       mon_y + mon_h - win_h),
-        "bottom-right"  => (mon_x + mon_w - win_w,             mon_y + mon_h - win_h),
-        _               => (mon_x + (mon_w - win_w) / 2,       mon_y + (mon_h - win_h) / 2),
-    };
-
-    const SWP_NOSIZE: u32 = 0x0001;
-    const SWP_NOZORDER: u32 = 0x0004;
-    const SWP_NOACTIVATE: u32 = 0x0010;
-    unsafe { SetWindowPos(hwnd, std::ptr::null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE); }
-}
 
 fn collect_browser_urls(
     items: &[Item],
@@ -176,8 +131,8 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
             let child = cmd.spawn()
                 .map_err(|e| format!("Failed to launch app '{}': {}", path, e))?;
             #[cfg(target_os = "windows")]
-            if item.launch_monitor.is_some() || item.launch_position.is_some() {
-                position_window_for_item(child.id(), item);
+            if let (Some(x), Some(y)) = (item.launch_x, item.launch_y) {
+                position_window_for_item(child.id(), x, y);
             }
         }
         ItemType::File | ItemType::Folder => {
@@ -245,7 +200,7 @@ mod tests {
 
     #[test]
     fn test_launch_item_app_missing_path_returns_error() {
-        let item = Item { item_type: ItemType::App, path: None, value: None };
+        let item = Item { item_type: ItemType::App, path: None, value: None, launch_desktop: None, launch_x: None, launch_y: None };
         let result = launch_item(&item, &None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("missing a path"));
@@ -253,7 +208,7 @@ mod tests {
 
     #[test]
     fn test_launch_item_url_missing_value_returns_error() {
-        let item = Item { item_type: ItemType::Url, path: None, value: None };
+        let item = Item { item_type: ItemType::Url, path: None, value: None, launch_desktop: None, launch_x: None, launch_y: None };
         let result = launch_item(&item, &None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("missing a value"));
@@ -261,7 +216,7 @@ mod tests {
 
     #[test]
     fn test_launch_item_script_missing_path_returns_error() {
-        let item = Item { item_type: ItemType::Script, path: None, value: None };
+        let item = Item { item_type: ItemType::Script, path: None, value: None, launch_desktop: None, launch_x: None, launch_y: None };
         let result = launch_item(&item, &None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("missing a path"));
@@ -277,9 +232,9 @@ mod tests {
     #[test]
     fn test_url_items_with_same_browser_are_batched() {
         let items = vec![
-            Item { item_type: ItemType::Url, path: Some("chrome.exe".to_string()), value: Some("https://a.com".to_string()) },
-            Item { item_type: ItemType::Url, path: Some("chrome.exe".to_string()), value: Some("https://b.com".to_string()) },
-            Item { item_type: ItemType::Url, path: Some("firefox.exe".to_string()), value: Some("https://c.com".to_string()) },
+            Item { item_type: ItemType::Url, path: Some("chrome.exe".to_string()), value: Some("https://a.com".to_string()), launch_desktop: None, launch_x: None, launch_y: None },
+            Item { item_type: ItemType::Url, path: Some("chrome.exe".to_string()), value: Some("https://b.com".to_string()), launch_desktop: None, launch_x: None, launch_y: None },
+            Item { item_type: ItemType::Url, path: Some("firefox.exe".to_string()), value: Some("https://c.com".to_string()), launch_desktop: None, launch_x: None, launch_y: None },
         ];
         let (map, fallback) = collect_browser_urls(&items, None);
         assert_eq!(map["chrome.exe"].len(), 2);
@@ -290,7 +245,7 @@ mod tests {
     #[test]
     fn test_url_items_fall_back_to_preferred_browser() {
         let items = vec![
-            Item { item_type: ItemType::Url, path: None, value: Some("https://x.com".to_string()) },
+            Item { item_type: ItemType::Url, path: None, value: Some("https://x.com".to_string()), launch_desktop: None, launch_x: None, launch_y: None },
         ];
         let (map, fallback) = collect_browser_urls(&items, Some("edge.exe"));
         assert_eq!(map["edge.exe"].len(), 1);
@@ -300,7 +255,7 @@ mod tests {
     #[test]
     fn test_url_items_with_no_browser_go_to_fallback() {
         let items = vec![
-            Item { item_type: ItemType::Url, path: None, value: Some("https://y.com".to_string()) },
+            Item { item_type: ItemType::Url, path: None, value: Some("https://y.com".to_string()), launch_desktop: None, launch_x: None, launch_y: None },
         ];
         let (map, fallback) = collect_browser_urls(&items, None);
         assert!(map.is_empty());

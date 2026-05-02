@@ -18,11 +18,11 @@ pub struct Item {
     pub path: Option<String>,
     pub value: Option<String>,
     #[serde(default)]
-    pub launch_monitor: Option<u32>,    // None = current monitor
+    pub launch_desktop: Option<u32>,
     #[serde(default)]
-    pub launch_desktop: Option<u32>,    // None = current desktop (0-based index)
+    pub launch_x: Option<i32>,
     #[serde(default)]
-    pub launch_position: Option<String>, // "top-left","top-center","top-right","center-left","center","center-right","bottom-left","bottom-center","bottom-right"
+    pub launch_y: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -152,8 +152,8 @@ mod tests {
             name: "Work".to_string(),
             icon: "💼".to_string(),
             items: vec![
-                Item { item_type: ItemType::App, path: Some("C:\\slack.exe".to_string()), value: None },
-                Item { item_type: ItemType::Url, path: None, value: Some("https://github.com".to_string()) },
+                Item { item_type: ItemType::App, path: Some("C:\\slack.exe".to_string()), value: None, launch_desktop: None, launch_x: None, launch_y: None },
+                Item { item_type: ItemType::Url, path: None, value: Some("https://github.com".to_string()), launch_desktop: None, launch_x: None, launch_y: None },
             ],
         });
 
