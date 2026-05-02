@@ -9,6 +9,11 @@
 </head>
 <body>
   <div class="config-window">
+    <div class="tab-bar">
+      <button class="tab active" data-tab="group">Group</button>
+      <button class="tab" data-tab="settings">Settings</button>
+    </div>
+    <div id="tab-group">
     <div class="config-header">
       <input type="text" class="icon-picker" id="icon-input" value="📁" maxlength="2" title="Click to change emoji" />
       <input type="text" class="name-input" id="name-input" placeholder="Group name..." />
@@ -42,6 +47,26 @@
       </details>
       <button class="feedback-btn" id="feedback-btn">💬 Feedback</button>
     </div>
+  </div>
+
+  <div id="tab-settings" style="display:none">
+    <div class="settings-section">
+      <p class="section-label">Global Hotkey</p>
+      <div class="hotkey-row">
+        <input type="text" class="hotkey-input" id="hotkey-input" placeholder="Ctrl+Alt+Space" autocomplete="off" />
+        <button class="btn btn-save" id="hotkey-save-btn">Save</button>
+      </div>
+      <div class="hotkey-save-status" id="hotkey-save-status"></div>
+    </div>
+    <div class="settings-section">
+      <p class="section-label">Config File</p>
+      <div class="io-row">
+        <button class="btn btn-cancel" id="export-btn">⬆ Export Config</button>
+        <button class="btn btn-cancel" id="import-btn">⬇ Import Config</button>
+      </div>
+    </div>
+  </div>
+
   </div>
   <script type="module" src="config.js"></script>
 </body>
