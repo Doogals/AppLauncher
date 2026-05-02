@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 
@@ -48,6 +49,7 @@ const groupId = params.get('id');
 
 let currentItems = [];
 let existingGroup = null;
+let pendingPickIdx = null;
 
 async function showWinAppPicker() {
   const modal = document.createElement('div');
@@ -285,6 +287,8 @@ async function fitWindow() {
 }
 
 async function init() {
+  initTabs();
+  await initSettingsTab();
   initEmojiPicker();
 
   document.querySelector('.license-details').addEventListener('toggle', fitWindow);
@@ -317,19 +321,117 @@ async function init() {
   }).catch(() => {}); // Unreachable = offline, ignore silently
 }
 
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.tab === name)
+  );
+  document.getElementById('tab-group').style.display = name === 'group' ? '' : 'none';
+  document.getElementById('tab-settings').style.display = name === 'settings' ? '' : 'none';
+}
+
+function initTabs() {
+  const initialTab = new URLSearchParams(window.location.search).get('tab') || 'group';
+  switchTab(initialTab);
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => { switchTab(tab.dataset.tab); fitWindow(); });
+  });
+}
+
+async function initSettingsTab() {
+  const config = await invoke('get_config');
+  document.getElementById('hotkey-input').value = config.hotkey || 'Ctrl+Alt+Space';
+
+  document.getElementById('hotkey-save-btn').addEventListener('click', async () => {
+    const hotkey = document.getElementById('hotkey-input').value.trim();
+    if (!hotkey) return;
+    const statusEl = document.getElementById('hotkey-save-status');
+    try {
+      await invoke('set_hotkey', { hotkey });
+      statusEl.style.color = '#4caf50';
+      statusEl.textContent = 'Saved ✓';
+      setTimeout(() => { statusEl.textContent = ''; }, 2000);
+    } catch (e) {
+      statusEl.style.color = '#e94560';
+      statusEl.textContent = typeof e === 'string' ? e : 'Failed to save.';
+    }
+  });
+
+  document.getElementById('export-btn').addEventListener('click', () =>
+    invoke('export_config').catch(e => console.error('Export failed:', e))
+  );
+
+  document.getElementById('import-btn').addEventListener('click', () =>
+    invoke('import_config').catch(e => console.error('Import failed:', e))
+  );
+}
+
+function buildExpandPanel(item, idx) {
+  const panel = document.createElement('div');
+  panel.className = 'item-expand';
+  const hasCoord = item.launch_x != null && item.launch_y != null;
+  const coordText = hasCoord ? `x: ${item.launch_x}, y: ${item.launch_y}` : 'not set';
+  panel.innerHTML = `
+    <div class="item-expand-row">
+      <span>Launch at</span>
+      <span class="coord-display${hasCoord ? '' : ' coord-empty'}">${coordText}</span>
+      ${hasCoord ? '<button class="coord-clear" title="Clear">✕</button>' : ''}
+      <button class="pick-btn">📍 Pick</button>
+    </div>
+  `;
+
+  const clearBtn = panel.querySelector('.coord-clear');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      currentItems[idx].launch_x = null;
+      currentItems[idx].launch_y = null;
+      renderItems();
+    });
+  }
+
+  panel.querySelector('.pick-btn').addEventListener('click', async () => {
+    pendingPickIdx = idx;
+    await invoke('start_location_picker');
+  });
+
+  return panel;
+}
+
 function renderItems() {
   const list = document.getElementById('items-list');
   list.innerHTML = '';
+
   currentItems.forEach((item, idx) => {
+    const wrapper = document.createElement('div');
+
     const row = document.createElement('div');
     row.className = 'item-row';
-    const label = item.item_type === 'url' ? item.value : item.path;
+    const rawLabel = item.item_type === 'url' ? item.value : item.path;
+    const safeLabel = (rawLabel || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     const typeIcon = { app: '🖥️', file: '📄', url: '🌐', folder: '📁', script: '⚡' }[item.item_type] || '•';
     row.innerHTML = `
       <span>${typeIcon}</span>
-      <span class="item-label" title="${label}">${label}</span>
+      <span class="item-label" title="${safeLabel}">${safeLabel}</span>
+      <span class="item-chevron" title="Launch targeting">›</span>
       <button class="remove-btn">✕</button>
     `;
+
+    let expandEl = null;
+    row.querySelector('.item-chevron').addEventListener('click', () => {
+      const chevron = row.querySelector('.item-chevron');
+      if (expandEl) {
+        expandEl.remove();
+        expandEl = null;
+        chevron.classList.remove('open');
+        row.classList.remove('expanded');
+      } else {
+        chevron.classList.add('open');
+        row.classList.add('expanded');
+        expandEl = buildExpandPanel(item, idx);
+        wrapper.appendChild(expandEl);
+      }
+      fitWindow();
+    });
+
     row.querySelector('.remove-btn').onclick = () => { currentItems.splice(idx, 1); renderItems(); };
 
     row.setAttribute('draggable', 'true');
@@ -341,16 +443,17 @@ function renderItems() {
       e.preventDefault();
       row.style.opacity = '1';
       const fromIdx = parseInt(e.dataTransfer.getData('text/plain'));
-      const toIdx = idx;
-      if (fromIdx !== toIdx) {
+      if (fromIdx !== idx) {
         const [moved] = currentItems.splice(fromIdx, 1);
-        currentItems.splice(toIdx, 0, moved);
+        currentItems.splice(idx, 0, moved);
         renderItems();
       }
     });
 
-    list.appendChild(row);
+    wrapper.appendChild(row);
+    list.appendChild(wrapper);
   });
+
   fitWindow();
 }
 
@@ -525,6 +628,15 @@ document.getElementById('feedback-btn').addEventListener('click', () => {
   });
 
   document.getElementById('fb-text').focus();
+});
+
+listen('location-picked', (event) => {
+  if (pendingPickIdx === null) return;
+  const { x, y } = event.payload;
+  currentItems[pendingPickIdx].launch_x = x;
+  currentItems[pendingPickIdx].launch_y = y;
+  pendingPickIdx = null;
+  renderItems();
 });
 
 init();
