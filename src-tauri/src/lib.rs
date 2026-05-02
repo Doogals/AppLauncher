@@ -301,6 +301,73 @@ fn import_config(state: State<AppState>, app: tauri::AppHandle) -> Result<(), St
 }
 
 #[tauri::command]
+fn start_location_picker(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("config") {
+        w.hide().map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(target_os = "windows")]
+    let (vx, vy, vw, vh) = {
+        extern "system" { fn GetSystemMetrics(nIndex: i32) -> i32; }
+        const SM_XVIRTUALSCREEN: i32  = 76;
+        const SM_YVIRTUALSCREEN: i32  = 77;
+        const SM_CXVIRTUALSCREEN: i32 = 78;
+        const SM_CYVIRTUALSCREEN: i32 = 79;
+        unsafe {(
+            GetSystemMetrics(SM_XVIRTUALSCREEN) as f64,
+            GetSystemMetrics(SM_YVIRTUALSCREEN) as f64,
+            GetSystemMetrics(SM_CXVIRTUALSCREEN) as f64,
+            GetSystemMetrics(SM_CYVIRTUALSCREEN) as f64,
+        )}
+    };
+    #[cfg(not(target_os = "windows"))]
+    let (vx, vy, vw, vh) = (0.0f64, 0.0f64, 1920.0f64, 1080.0f64);
+
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        "picker",
+        tauri::WebviewUrl::App("picker.html".into()),
+    )
+    .title("")
+    .inner_size(vw, vh)
+    .position(vx, vy)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .decorations(false)
+    .build()
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+fn finish_location_picker(x: i32, y: i32, app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(picker) = app.get_webview_window("picker") {
+        picker.close().map_err(|e| e.to_string())?;
+    }
+    if let Some(config_win) = app.get_webview_window("config") {
+        config_win.show().map_err(|e| e.to_string())?;
+        config_win.set_focus().map_err(|e| e.to_string())?;
+        config_win.emit("location-picked", serde_json::json!({ "x": x, "y": y }))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn cancel_location_picker(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(picker) = app.get_webview_window("picker") {
+        picker.close().map_err(|e| e.to_string())?;
+    }
+    if let Some(config_win) = app.get_webview_window("config") {
+        config_win.show().map_err(|e| e.to_string())?;
+        config_win.set_focus().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn set_hotkey(hotkey: String, state: State<AppState>, app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
     let old_hotkey = {
@@ -433,11 +500,14 @@ fn show_widget_context_menu(app: tauri::AppHandle, state: State<AppState>) -> Re
             let startup = MenuItem::with_id(&handle, "widget-startup", startup_label, true, None::<&str>)
                 .map_err(|e| e.to_string())?;
             let sep2 = PredefinedMenuItem::separator(&handle).map_err(|e| e.to_string())?;
+            let settings = MenuItem::with_id(&handle, "widget-settings", "⚙️  App Settings\u{2026}", true, None::<&str>)
+                .map_err(|e| e.to_string())?;
+            let sep3 = PredefinedMenuItem::separator(&handle).map_err(|e| e.to_string())?;
             let close = MenuItem::with_id(&handle, "widget-close", "Close", true, None::<&str>)
                 .map_err(|e| e.to_string())?;
 
             let mut items: Vec<&dyn tauri::menu::IsMenuItem<_>> = color_items.iter().map(|i| i as _).collect();
-            items.extend_from_slice(&[&sep1, &startup, &sep2, &close]);
+            items.extend_from_slice(&[&sep1, &startup, &sep2, &settings, &sep3, &close]);
 
             let menu = Menu::with_items(&handle, &items).map_err(|e| e.to_string())?;
             if let Some(window) = handle.get_webview_window("widget") {
@@ -652,6 +722,25 @@ pub fn run() {
                             deregister_autostart();
                         }
                     });
+                } else if id == "widget-settings" {
+                    let app2 = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Some(existing) = app2.get_webview_window("config") {
+                            let _ = existing.set_focus();
+                        } else {
+                            let _ = tauri::WebviewWindowBuilder::new(
+                                &app2,
+                                "config",
+                                tauri::WebviewUrl::App("config.html?tab=settings".into()),
+                            )
+                            .title("App Settings")
+                            .inner_size(420.0, 460.0)
+                            .decorations(true)
+                            .resizable(false)
+                            .always_on_top(true)
+                            .build();
+                        }
+                    });
                 } else if id == "widget-close" {
                     if let Some(window) = app.get_webview_window("widget") {
                         let _ = window.close();
@@ -754,6 +843,9 @@ pub fn run() {
             import_config,
             set_hotkey,
             get_monitors,
+            start_location_picker,
+            finish_location_picker,
+            cancel_location_picker,
             resize_widget,
             get_installed_apps,
             show_group_context_menu,
