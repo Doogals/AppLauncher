@@ -17,6 +17,12 @@ pub struct Item {
     pub item_type: ItemType,
     pub path: Option<String>,
     pub value: Option<String>,
+    #[serde(default)]
+    pub launch_monitor: Option<u32>,    // None = current monitor
+    #[serde(default)]
+    pub launch_desktop: Option<u32>,    // None = current desktop (0-based index)
+    #[serde(default)]
+    pub launch_position: Option<String>, // "top-left","top-center","top-right","center-left","center","center-right","bottom-left","bottom-center","bottom-right"
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -55,7 +61,11 @@ pub struct AppConfig {
     pub launch_on_startup: bool,
     #[serde(default)]
     pub widget_on_top: bool,
+    #[serde(default = "default_hotkey")]
+    pub hotkey: String,
 }
+
+fn default_hotkey() -> String { "Ctrl+Alt+Space".to_string() }
 
 impl Default for AppConfig {
     fn default() -> Self {
@@ -70,6 +80,7 @@ impl Default for AppConfig {
             widget_color: None,
             launch_on_startup: true,
             widget_on_top: false,
+            hotkey: default_hotkey(),
         }
     }
 }

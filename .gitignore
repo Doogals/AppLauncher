@@ -22,3 +22,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# App Launcher local files
+config.json
+.agent-prompt.txt
+agent-session.ps1
+.superpowers/
+logs/

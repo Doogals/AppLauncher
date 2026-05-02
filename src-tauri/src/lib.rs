@@ -214,6 +214,118 @@ fn save_widget_color(color: String, state: State<AppState>) -> Result<(), String
     config::save_config(&config)
 }
 
+#[derive(serde::Serialize)]
+struct MonitorInfo {
+    index: u32,
+    name: String,
+    width: i32,
+    height: i32,
+    x: i32,
+    y: i32,
+    is_primary: bool,
+}
+
+#[tauri::command]
+fn get_monitors() -> Vec<MonitorInfo> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::sync::Mutex;
+        extern "system" {
+            fn EnumDisplayMonitors(
+                hdc: *mut std::ffi::c_void,
+                clip: *const std::ffi::c_void,
+                callback: unsafe extern "system" fn(*mut std::ffi::c_void, *mut std::ffi::c_void, *mut [i32; 4], isize) -> i32,
+                data: isize,
+            ) -> i32;
+        }
+        static MONITORS: Mutex<Vec<MonitorInfo>> = Mutex::new(Vec::new());
+        {
+            let mut m = MONITORS.lock().unwrap();
+            m.clear();
+        }
+        unsafe extern "system" fn monitor_cb(
+            _hmon: *mut std::ffi::c_void,
+            _hdc: *mut std::ffi::c_void,
+            rect: *mut [i32; 4],
+            data: isize,
+        ) -> i32 {
+            let monitors = &*(data as *const Mutex<Vec<MonitorInfo>>);
+            let mut m = monitors.lock().unwrap();
+            let r = &*rect;
+            let index = m.len() as u32;
+            m.push(MonitorInfo {
+                index,
+                name: format!("Display {}", index + 1),
+                width: r[2] - r[0],
+                height: r[3] - r[1],
+                x: r[0],
+                y: r[1],
+                is_primary: r[0] == 0 && r[1] == 0,
+            });
+            1
+        }
+        let monitors_ref = &MONITORS as *const _ as isize;
+        unsafe { EnumDisplayMonitors(std::ptr::null_mut(), std::ptr::null(), monitor_cb, monitors_ref); }
+        MONITORS.lock().unwrap().drain(..).collect()
+    }
+    #[cfg(not(target_os = "windows"))]
+    vec![MonitorInfo { index: 0, name: "Display 1".to_string(), width: 1920, height: 1080, x: 0, y: 0, is_primary: true }]
+}
+
+#[tauri::command]
+fn export_config(state: State<AppState>, app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_dialog::DialogExt;
+    let json = {
+        let config = state.0.lock().unwrap();
+        serde_json::to_string_pretty(&*config).map_err(|e| e.to_string())?
+    };
+    if let Some(path) = app.dialog().file().add_filter("JSON", &["json"]).blocking_save_file() {
+        let path_buf = path.into_path().map_err(|e| e.to_string())?;
+        std::fs::write(path_buf, json).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn import_config(state: State<AppState>, app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_dialog::DialogExt;
+    if let Some(path) = app.dialog().file().add_filter("JSON", &["json"]).blocking_pick_file() {
+        let path_buf = path.into_path().map_err(|e| e.to_string())?;
+        let json = std::fs::read_to_string(path_buf).map_err(|e| e.to_string())?;
+        let new_config: config::AppConfig = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+        let mut config = state.0.lock().unwrap();
+        *config = new_config;
+        config::save_config(&config)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_hotkey(hotkey: String, state: State<AppState>, app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+    let old_hotkey = {
+        let mut config = state.0.lock().unwrap();
+        let old = config.hotkey.clone();
+        config.hotkey = hotkey.clone();
+        config::save_config(&config)?;
+        old
+    };
+    let _ = app.global_shortcut().unregister(old_hotkey.as_str());
+    let handle = app.clone();
+    app.global_shortcut().on_shortcut(hotkey.as_str(), move |_app, _shortcut, event| {
+        if event.state == ShortcutState::Pressed {
+            if let Some(window) = handle.get_webview_window("widget") {
+                if window.is_visible().unwrap_or(false) {
+                    let _ = window.set_always_on_top(false);
+                } else {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+        }
+    }).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn set_launch_on_startup(enabled: bool, state: State<AppState>) -> Result<(), String> {
     let mut config = state.0.lock().unwrap();
@@ -468,6 +580,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             use tauri::menu::{Menu, MenuItem};
             use tauri::tray::TrayIconBuilder;
@@ -586,6 +699,27 @@ pub fn run() {
                 }
             }
 
+            // Register global hotkey
+            {
+                use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+                let hotkey = app.state::<AppState>().0.lock().unwrap().hotkey.clone();
+                let handle = app.handle().clone();
+                if let Err(e) = app.handle().global_shortcut().on_shortcut(hotkey.as_str(), move |_app, _shortcut, event| {
+                    if event.state == ShortcutState::Pressed {
+                        if let Some(window) = handle.get_webview_window("widget") {
+                            if window.is_visible().unwrap_or(false) {
+                                let _ = window.set_always_on_top(false);
+                            } else {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                    }
+                }) {
+                    eprintln!("[hotkey] Failed to register {}: {}", hotkey, e);
+                }
+            }
+
             // Check for updates in the background (release builds only)
             #[cfg(not(debug_assertions))]
             {
@@ -616,6 +750,10 @@ pub fn run() {
             save_widget_color,
             set_launch_on_startup,
             show_widget_context_menu,
+            export_config,
+            import_config,
+            set_hotkey,
+            get_monitors,
             resize_widget,
             get_installed_apps,
             show_group_context_menu,

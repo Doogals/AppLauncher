@@ -2,6 +2,114 @@ use crate::config::{AppConfig, Item, ItemType};
 use std::collections::HashMap;
 use std::process::Command;
 
+// ── Post-launch window positioning (Windows only) ────────────────────────────
+
+#[cfg(target_os = "windows")]
+fn position_window_for_item(pid: u32, item: &Item) {
+    use std::thread;
+    use std::time::Duration;
+
+    let launch_monitor = item.launch_monitor;
+    let launch_position = item.launch_position.clone();
+
+    thread::spawn(move || {
+        // Wait for the window to appear — retry up to 10 times
+        let hwnd = (0..10).find_map(|_| {
+            thread::sleep(Duration::from_millis(300));
+            find_window_by_pid(pid)
+        });
+
+        if let Some(hwnd) = hwnd {
+            apply_window_position(hwnd, launch_monitor, launch_position.as_deref());
+        }
+    });
+}
+
+#[cfg(target_os = "windows")]
+fn find_window_by_pid(target_pid: u32) -> Option<*mut std::ffi::c_void> {
+    extern "system" {
+        fn EnumWindows(callback: unsafe extern "system" fn(*mut std::ffi::c_void, isize) -> i32, data: isize) -> i32;
+        fn GetWindowThreadProcessId(hwnd: *mut std::ffi::c_void, pid: *mut u32) -> u32;
+        fn IsWindowVisible(hwnd: *mut std::ffi::c_void) -> i32;
+    }
+
+    struct State { pid: u32, result: *mut std::ffi::c_void }
+
+    unsafe extern "system" fn cb(hwnd: *mut std::ffi::c_void, data: isize) -> i32 {
+        let state = &mut *(data as *mut State);
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid == state.pid && IsWindowVisible(hwnd) != 0 {
+            state.result = hwnd;
+            return 0;
+        }
+        1
+    }
+
+    let mut state = State { pid: target_pid, result: std::ptr::null_mut() };
+    unsafe { EnumWindows(cb, &mut state as *mut _ as isize); }
+    if state.result.is_null() { None } else { Some(state.result) }
+}
+
+#[cfg(target_os = "windows")]
+fn apply_window_position(hwnd: *mut std::ffi::c_void, monitor_index: Option<u32>, position: Option<&str>) {
+    extern "system" {
+        fn EnumDisplayMonitors(
+            hdc: *mut std::ffi::c_void,
+            clip: *const std::ffi::c_void,
+            cb: unsafe extern "system" fn(*mut std::ffi::c_void, *mut std::ffi::c_void, *mut [i32; 4], isize) -> i32,
+            data: isize,
+        ) -> i32;
+        fn SetWindowPos(hwnd: *mut std::ffi::c_void, insert: *mut std::ffi::c_void, x: i32, y: i32, cx: i32, cy: i32, flags: u32) -> i32;
+        fn GetWindowRect(hwnd: *mut std::ffi::c_void, rect: *mut [i32; 4]) -> i32;
+    }
+
+    // Collect monitors
+    let mut monitors: Vec<[i32; 4]> = Vec::new();
+    unsafe extern "system" fn mon_cb(_: *mut std::ffi::c_void, _: *mut std::ffi::c_void, rect: *mut [i32; 4], data: isize) -> i32 {
+        let v = &mut *(data as *mut Vec<[i32; 4]>);
+        v.push(*rect);
+        1
+    }
+    unsafe { EnumDisplayMonitors(std::ptr::null_mut(), std::ptr::null(), mon_cb, &mut monitors as *mut _ as isize); }
+
+    if monitors.is_empty() { return; }
+
+    let mon = monitors.get(monitor_index.unwrap_or(0) as usize)
+        .or_else(|| monitors.first())
+        .copied()
+        .unwrap_or([0, 0, 1920, 1080]);
+
+    let mon_x = mon[0];
+    let mon_y = mon[1];
+    let mon_w = mon[2] - mon[0];
+    let mon_h = mon[3] - mon[1];
+
+    // Get current window size
+    let mut win_rect = [0i32; 4];
+    unsafe { GetWindowRect(hwnd, &mut win_rect); }
+    let win_w = win_rect[2] - win_rect[0];
+    let win_h = win_rect[3] - win_rect[1];
+
+    let (x, y) = match position.unwrap_or("center") {
+        "top-left"      => (mon_x,                              mon_y),
+        "top-center"    => (mon_x + (mon_w - win_w) / 2,       mon_y),
+        "top-right"     => (mon_x + mon_w - win_w,             mon_y),
+        "center-left"   => (mon_x,                              mon_y + (mon_h - win_h) / 2),
+        "center"        => (mon_x + (mon_w - win_w) / 2,       mon_y + (mon_h - win_h) / 2),
+        "center-right"  => (mon_x + mon_w - win_w,             mon_y + (mon_h - win_h) / 2),
+        "bottom-left"   => (mon_x,                              mon_y + mon_h - win_h),
+        "bottom-center" => (mon_x + (mon_w - win_w) / 2,       mon_y + mon_h - win_h),
+        "bottom-right"  => (mon_x + mon_w - win_w,             mon_y + mon_h - win_h),
+        _               => (mon_x + (mon_w - win_w) / 2,       mon_y + (mon_h - win_h) / 2),
+    };
+
+    const SWP_NOSIZE: u32 = 0x0001;
+    const SWP_NOZORDER: u32 = 0x0004;
+    const SWP_NOACTIVATE: u32 = 0x0010;
+    unsafe { SetWindowPos(hwnd, std::ptr::null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE); }
+}
+
 fn collect_browser_urls(
     items: &[Item],
     preferred_browser: Option<&str>,
@@ -65,8 +173,12 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
                     cmd.args(args.split_whitespace());
                 }
             }
-            cmd.spawn()
+            let child = cmd.spawn()
                 .map_err(|e| format!("Failed to launch app '{}': {}", path, e))?;
+            #[cfg(target_os = "windows")]
+            if item.launch_monitor.is_some() || item.launch_position.is_some() {
+                position_window_for_item(child.id(), item);
+            }
         }
         ItemType::File | ItemType::Folder => {
             let path = item.path.as_ref().ok_or("Item is missing a path")?;
