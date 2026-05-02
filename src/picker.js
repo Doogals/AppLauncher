@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 
 let monitors = [];
-const dpr = window.devicePixelRatio || 1;
+let picking = true;
 
 async function init() {
   try {
@@ -11,9 +11,9 @@ async function init() {
   }
 }
 
-function getDisplayName(px, py) {
+function getDisplayName(x, y) {
   for (const m of monitors) {
-    if (px >= m.x && px < m.x + m.width && py >= m.y && py < m.y + m.height) {
+    if (x >= m.x && x < m.x + m.width && y >= m.y && y < m.y + m.height) {
       return m.name;
     }
   }
@@ -21,25 +21,38 @@ function getDisplayName(px, py) {
 }
 
 const tooltip = document.getElementById('tooltip');
+const hint = document.getElementById('hint');
 
 document.addEventListener('mousemove', (e) => {
-  const px = Math.round(e.screenX * dpr);
-  const py = Math.round(e.screenY * dpr);
-  tooltip.textContent = `x: ${px}, y: ${py} · ${getDisplayName(px, py)}`;
+  const x = Math.round(e.screenX);
+  const y = Math.round(e.screenY);
+  tooltip.textContent = `x: ${x}, y: ${y} · ${getDisplayName(x, y)}`;
   tooltip.style.display = 'block';
   tooltip.style.left = (e.clientX + 18) + 'px';
   tooltip.style.top = (e.clientY + 12) + 'px';
 });
 
 document.addEventListener('click', async (e) => {
-  const px = Math.round(e.screenX * dpr);
-  const py = Math.round(e.screenY * dpr);
-  await invoke('finish_location_picker', { x: px, y: py });
+  if (!picking) return;
+  picking = false;
+  const x = Math.round(e.screenX);
+  const y = Math.round(e.screenY);
+  hint.textContent = `Picked: x: ${x}, y: ${y}`;
+  try {
+    await invoke('finish_location_picker', { x, y });
+  } catch (err) {
+    console.error('finish_location_picker failed:', err);
+    picking = true;
+    hint.textContent = 'Click failed — try again · Esc to cancel';
+  }
 });
 
 document.addEventListener('keydown', async (e) => {
   if (e.key === 'Escape') {
-    await invoke('cancel_location_picker');
+    picking = false;
+    try {
+      await invoke('cancel_location_picker');
+    } catch (_) {}
   }
 });
 

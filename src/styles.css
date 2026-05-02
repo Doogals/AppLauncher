@@ -517,16 +517,16 @@ html, body {
 
 /* ── Per-item targeting expand ────────────────────────────────────────────── */
 .item-chevron {
-  color: #555;
+  color: #4a9eff;
   cursor: pointer;
   display: inline-block;
-  font-size: 0.8rem;
-  padding: 0 2px;
+  font-size: 1.1rem;
+  padding: 0 4px;
   transition: transform 0.15s, color 0.15s;
   user-select: none;
   -webkit-user-select: none;
 }
-.item-chevron.open { color: #aaa; transform: rotate(90deg); }
+.item-chevron.open { color: #74b5ff; transform: rotate(90deg); }
 
 .item-row.expanded {
   border-bottom-color: transparent;

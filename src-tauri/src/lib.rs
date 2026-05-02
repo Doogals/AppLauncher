@@ -306,31 +306,13 @@ fn start_location_picker(app: tauri::AppHandle) -> Result<(), String> {
         w.hide().map_err(|e| e.to_string())?;
     }
 
-    #[cfg(target_os = "windows")]
-    let (vx, vy, vw, vh) = {
-        extern "system" { fn GetSystemMetrics(nIndex: i32) -> i32; }
-        const SM_XVIRTUALSCREEN: i32  = 76;
-        const SM_YVIRTUALSCREEN: i32  = 77;
-        const SM_CXVIRTUALSCREEN: i32 = 78;
-        const SM_CYVIRTUALSCREEN: i32 = 79;
-        unsafe {(
-            GetSystemMetrics(SM_XVIRTUALSCREEN) as f64,
-            GetSystemMetrics(SM_YVIRTUALSCREEN) as f64,
-            GetSystemMetrics(SM_CXVIRTUALSCREEN) as f64,
-            GetSystemMetrics(SM_CYVIRTUALSCREEN) as f64,
-        )}
-    };
-    #[cfg(not(target_os = "windows"))]
-    let (vx, vy, vw, vh) = (0.0f64, 0.0f64, 1920.0f64, 1080.0f64);
-
     tauri::WebviewWindowBuilder::new(
         &app,
         "picker",
         tauri::WebviewUrl::App("picker.html".into()),
     )
     .title("")
-    .inner_size(vw, vh)
-    .position(vx, vy)
+    .fullscreen(true)
     .transparent(true)
     .always_on_top(true)
     .skip_taskbar(true)
