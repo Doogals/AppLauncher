@@ -20,6 +20,7 @@ export default defineConfig({
         config: resolve(__dirname, 'src/config.html'),
         picker: resolve(__dirname, 'src/picker.html'),
       },
+
     },
   },
 });
