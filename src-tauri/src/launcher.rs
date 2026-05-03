@@ -75,15 +75,35 @@ fn position_window_for_item(pid: u32, x: i32, y: i32, w: Option<u32>, h: Option<
     use std::time::Duration;
 
     thread::spawn(move || {
-        let hwnd = (0..10).find_map(|_| {
+        let log_path = dirs::data_local_dir()
+            .map(|p| p.join("AppLauncher").join("launch-debug.log"));
+
+        let mut log = |msg: String| {
+            if let Some(ref p) = log_path {
+                let _ = std::fs::OpenOptions::new().create(true).append(true)
+                    .open(p)
+                    .and_then(|mut f| { use std::io::Write; writeln!(f, "{}", msg) });
+            }
+        };
+
+        log(format!("position_window_for_item: pid={} x={} y={} w={:?} h={:?}", pid, x, y, w, h));
+
+        let hwnd = (0..10).find_map(|i| {
             thread::sleep(Duration::from_millis(300));
-            find_window_by_pid(pid)
+            let result = find_window_by_pid(pid);
+            log(format!("  poll {}: hwnd={}", i, if result.is_some() { "found" } else { "not found" }));
+            result
         });
+
         if let Some(hwnd) = hwnd {
+            log(format!("  placing window at x={} y={} w={:?} h={:?}", x, y, w, h));
             place_window(hwnd, x, y, w, h);
-            // Second pass: many apps restore their saved position ~1s after startup
             thread::sleep(Duration::from_millis(1500));
+            log("  second pass".to_string());
             place_window(hwnd, x, y, w, h);
+            log("  done".to_string());
+        } else {
+            log("  window not found after 10 polls".to_string());
         }
     });
 }
@@ -91,6 +111,7 @@ fn position_window_for_item(pid: u32, x: i32, y: i32, w: Option<u32>, h: Option<
 #[cfg(target_os = "windows")]
 fn place_window(hwnd: *mut std::ffi::c_void, x: i32, y: i32, w: Option<u32>, h: Option<u32>) {
     extern "system" {
+        fn ShowWindow(hwnd: *mut std::ffi::c_void, cmd: i32) -> i32;
         fn SetWindowPos(
             hwnd: *mut std::ffi::c_void,
             insert: *mut std::ffi::c_void,
@@ -98,10 +119,13 @@ fn place_window(hwnd: *mut std::ffi::c_void, x: i32, y: i32, w: Option<u32>, h: 
             flags: u32,
         ) -> i32;
     }
+    const SW_RESTORE: i32 = 9;
     const SWP_NOSIZE: u32 = 0x0001;
     const SWP_NOZORDER: u32 = 0x0004;
     const SWP_NOACTIVATE: u32 = 0x0010;
     unsafe {
+        // Restore first — SetWindowPos silently fails on maximized windows
+        ShowWindow(hwnd, SW_RESTORE);
         match (w, h) {
             (Some(cw), Some(ch)) => {
                 SetWindowPos(hwnd, std::ptr::null_mut(), x, y, cw as i32, ch as i32, SWP_NOZORDER | SWP_NOACTIVATE);
