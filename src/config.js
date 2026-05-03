@@ -385,7 +385,7 @@ async function showPickerOverlay(idx) {
 
   function updateSize() {
     const el = document.getElementById('pk-size');
-    if (el) el.textContent = window.innerWidth + ' \xd7 ' + window.innerHeight;
+    if (el) el.textContent = window.outerWidth + ' \xd7 ' + window.outerHeight;
   }
   updateSize();
   window.addEventListener('resize', updateSize);
@@ -408,12 +408,10 @@ async function showPickerOverlay(idx) {
     });
 
     document.getElementById('pk-set').addEventListener('click', async () => {
-      const pos = await win.outerPosition();
-      const size = await win.innerSize();
-      currentItems[idx].launch_x = pos.x;
-      currentItems[idx].launch_y = pos.y;
-      currentItems[idx].launch_width = size.width;
-      currentItems[idx].launch_height = size.height;
+      currentItems[idx].launch_x = window.screenX;
+      currentItems[idx].launch_y = window.screenY;
+      currentItems[idx].launch_width = window.outerWidth;
+      currentItems[idx].launch_height = window.outerHeight;
       cleanup(true);
       resolve();
     });
