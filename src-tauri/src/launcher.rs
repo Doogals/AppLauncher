@@ -5,7 +5,7 @@ use std::process::Command;
 // ── Post-launch window positioning (Windows only) ────────────────────────────
 
 #[cfg(target_os = "windows")]
-fn position_window_for_item(pid: u32, x: i32, y: i32) {
+fn position_window_for_item(pid: u32, x: i32, y: i32, w: Option<u32>, h: Option<u32>) {
     use std::thread;
     use std::time::Duration;
 
@@ -15,13 +15,13 @@ fn position_window_for_item(pid: u32, x: i32, y: i32) {
             find_window_by_pid(pid)
         });
         if let Some(hwnd) = hwnd {
-            move_window_to(hwnd, x, y);
+            place_window(hwnd, x, y, w, h);
         }
     });
 }
 
 #[cfg(target_os = "windows")]
-fn move_window_to(hwnd: *mut std::ffi::c_void, x: i32, y: i32) {
+fn place_window(hwnd: *mut std::ffi::c_void, x: i32, y: i32, w: Option<u32>, h: Option<u32>) {
     extern "system" {
         fn SetWindowPos(
             hwnd: *mut std::ffi::c_void,
@@ -34,7 +34,14 @@ fn move_window_to(hwnd: *mut std::ffi::c_void, x: i32, y: i32) {
     const SWP_NOZORDER: u32 = 0x0004;
     const SWP_NOACTIVATE: u32 = 0x0010;
     unsafe {
-        SetWindowPos(hwnd, std::ptr::null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        match (w, h) {
+            (Some(cw), Some(ch)) => {
+                SetWindowPos(hwnd, std::ptr::null_mut(), x, y, cw as i32, ch as i32, SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            _ => {
+                SetWindowPos(hwnd, std::ptr::null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+        }
     }
 }
 
@@ -132,7 +139,7 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
                 .map_err(|e| format!("Failed to launch app '{}': {}", path, e))?;
             #[cfg(target_os = "windows")]
             if let (Some(x), Some(y)) = (item.launch_x, item.launch_y) {
-                position_window_for_item(child.id(), x, y);
+                position_window_for_item(child.id(), x, y, item.launch_width, item.launch_height);
             }
         }
         ItemType::File | ItemType::Folder => {
@@ -200,7 +207,7 @@ mod tests {
 
     #[test]
     fn test_launch_item_app_missing_path_returns_error() {
-        let item = Item { item_type: ItemType::App, path: None, value: None, launch_desktop: None, launch_x: None, launch_y: None };
+        let item = Item { item_type: ItemType::App, path: None, value: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None };
         let result = launch_item(&item, &None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("missing a path"));
@@ -208,7 +215,7 @@ mod tests {
 
     #[test]
     fn test_launch_item_url_missing_value_returns_error() {
-        let item = Item { item_type: ItemType::Url, path: None, value: None, launch_desktop: None, launch_x: None, launch_y: None };
+        let item = Item { item_type: ItemType::Url, path: None, value: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None };
         let result = launch_item(&item, &None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("missing a value"));
@@ -216,7 +223,7 @@ mod tests {
 
     #[test]
     fn test_launch_item_script_missing_path_returns_error() {
-        let item = Item { item_type: ItemType::Script, path: None, value: None, launch_desktop: None, launch_x: None, launch_y: None };
+        let item = Item { item_type: ItemType::Script, path: None, value: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None };
         let result = launch_item(&item, &None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("missing a path"));
@@ -232,9 +239,9 @@ mod tests {
     #[test]
     fn test_url_items_with_same_browser_are_batched() {
         let items = vec![
-            Item { item_type: ItemType::Url, path: Some("chrome.exe".to_string()), value: Some("https://a.com".to_string()), launch_desktop: None, launch_x: None, launch_y: None },
-            Item { item_type: ItemType::Url, path: Some("chrome.exe".to_string()), value: Some("https://b.com".to_string()), launch_desktop: None, launch_x: None, launch_y: None },
-            Item { item_type: ItemType::Url, path: Some("firefox.exe".to_string()), value: Some("https://c.com".to_string()), launch_desktop: None, launch_x: None, launch_y: None },
+            Item { item_type: ItemType::Url, path: Some("chrome.exe".to_string()), value: Some("https://a.com".to_string()), launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
+            Item { item_type: ItemType::Url, path: Some("chrome.exe".to_string()), value: Some("https://b.com".to_string()), launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
+            Item { item_type: ItemType::Url, path: Some("firefox.exe".to_string()), value: Some("https://c.com".to_string()), launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
         ];
         let (map, fallback) = collect_browser_urls(&items, None);
         assert_eq!(map["chrome.exe"].len(), 2);
@@ -245,7 +252,7 @@ mod tests {
     #[test]
     fn test_url_items_fall_back_to_preferred_browser() {
         let items = vec![
-            Item { item_type: ItemType::Url, path: None, value: Some("https://x.com".to_string()), launch_desktop: None, launch_x: None, launch_y: None },
+            Item { item_type: ItemType::Url, path: None, value: Some("https://x.com".to_string()), launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
         ];
         let (map, fallback) = collect_browser_urls(&items, Some("edge.exe"));
         assert_eq!(map["edge.exe"].len(), 1);
@@ -255,7 +262,7 @@ mod tests {
     #[test]
     fn test_url_items_with_no_browser_go_to_fallback() {
         let items = vec![
-            Item { item_type: ItemType::Url, path: None, value: Some("https://y.com".to_string()), launch_desktop: None, launch_x: None, launch_y: None },
+            Item { item_type: ItemType::Url, path: None, value: Some("https://y.com".to_string()), launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
         ];
         let (map, fallback) = collect_browser_urls(&items, None);
         assert!(map.is_empty());

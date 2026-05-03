@@ -369,7 +369,10 @@ function buildExpandPanel(item, idx) {
   const panel = document.createElement('div');
   panel.className = 'item-expand';
   const hasCoord = item.launch_x != null && item.launch_y != null;
-  const coordText = hasCoord ? `x: ${item.launch_x}, y: ${item.launch_y}` : 'not set';
+  const hasSize = item.launch_width != null && item.launch_height != null;
+  const coordText = hasCoord
+    ? `x:${item.launch_x} y:${item.launch_y}${hasSize ? `  ${item.launch_width}\xd7${item.launch_height}` : ''}`
+    : 'not set';
   panel.innerHTML = `
     <div class="item-expand-row">
       <span>Launch at</span>
@@ -384,6 +387,8 @@ function buildExpandPanel(item, idx) {
     clearBtn.addEventListener('click', () => {
       currentItems[idx].launch_x = null;
       currentItems[idx].launch_y = null;
+      currentItems[idx].launch_width = null;
+      currentItems[idx].launch_height = null;
       renderItems();
     });
   }
@@ -632,9 +637,11 @@ document.getElementById('feedback-btn').addEventListener('click', () => {
 
 listen('location-picked', (event) => {
   if (pendingPickIdx === null) return;
-  const { x, y } = event.payload;
+  const { x, y, width, height } = event.payload;
   currentItems[pendingPickIdx].launch_x = x;
   currentItems[pendingPickIdx].launch_y = y;
+  currentItems[pendingPickIdx].launch_width = width;
+  currentItems[pendingPickIdx].launch_height = height;
   pendingPickIdx = null;
   renderItems();
 });

@@ -311,12 +311,15 @@ fn start_location_picker(app: tauri::AppHandle) -> Result<(), String> {
         "picker",
         tauri::WebviewUrl::App("picker.html".into()),
     )
-    .title("")
-    .fullscreen(true)
+    .title("Position Picker")
+    .inner_size(480.0, 300.0)
+    .min_inner_size(180.0, 120.0)
+    .resizable(true)
     .transparent(true)
     .always_on_top(true)
-    .skip_taskbar(true)
+    .skip_taskbar(false)
     .decorations(false)
+    .closable(true)
     .build()
     .map_err(|e| e.to_string())?;
 
@@ -324,15 +327,21 @@ fn start_location_picker(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn finish_location_picker(x: i32, y: i32, app: tauri::AppHandle) -> Result<(), String> {
+fn finish_location_picker(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(picker) = app.get_webview_window("picker") {
+        let pos = picker.outer_position().map_err(|e| e.to_string())?;
+        let size = picker.outer_size().map_err(|e| e.to_string())?;
         picker.close().map_err(|e| e.to_string())?;
-    }
-    if let Some(config_win) = app.get_webview_window("config") {
-        config_win.show().map_err(|e| e.to_string())?;
-        config_win.set_focus().map_err(|e| e.to_string())?;
-        config_win.emit("location-picked", serde_json::json!({ "x": x, "y": y }))
-            .map_err(|e| e.to_string())?;
+        if let Some(config_win) = app.get_webview_window("config") {
+            config_win.show().map_err(|e| e.to_string())?;
+            config_win.set_focus().map_err(|e| e.to_string())?;
+            config_win.emit("location-picked", serde_json::json!({
+                "x": pos.x,
+                "y": pos.y,
+                "width": size.width,
+                "height": size.height
+            })).map_err(|e| e.to_string())?;
+        }
     }
     Ok(())
 }

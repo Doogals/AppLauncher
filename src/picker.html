@@ -5,48 +5,107 @@
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body {
-      background: rgba(0, 0, 0, 0.25);
-      cursor: crosshair;
+      background: transparent;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       height: 100%;
       overflow: hidden;
       user-select: none;
       -webkit-user-select: none;
       width: 100%;
     }
-    #hint {
-      backdrop-filter: blur(4px);
-      background: rgba(15, 52, 96, 0.92);
-      border: 1px solid rgba(233, 69, 96, 0.5);
+    #shell {
+      border: 2px dashed #e94560;
       border-radius: 8px;
-      color: #e0e0e0;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      font-size: 13px;
-      left: 50%;
-      padding: 8px 16px;
-      pointer-events: none;
-      position: fixed;
-      top: 20px;
-      transform: translateX(-50%);
-      white-space: nowrap;
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      overflow: hidden;
     }
-    #hint span { color: #888; }
-    #tooltip {
-      background: rgba(0, 0, 0, 0.8);
-      border-radius: 4px;
+    #titlebar {
+      align-items: center;
+      background: rgba(15, 32, 64, 0.96);
+      cursor: move;
+      display: flex;
+      gap: 8px;
+      justify-content: space-between;
+      padding: 6px 10px;
+    }
+    #titlebar span {
+      color: #aaa;
+      font-size: 0.78rem;
+    }
+    #close-btn {
+      background: none;
+      border: none;
+      color: #666;
+      cursor: pointer;
+      font-size: 0.9rem;
+      line-height: 1;
+      padding: 0 2px;
+    }
+    #close-btn:hover { color: #e94560; }
+    #body {
+      align-items: center;
+      background: rgba(10, 20, 40, 0.7);
+      display: flex;
+      flex: 1;
+      flex-direction: column;
+      gap: 6px;
+      justify-content: center;
+    }
+    #crosshair { color: rgba(233, 69, 96, 0.6); font-size: 2rem; line-height: 1; }
+    #instructions { color: #666; font-size: 0.72rem; text-align: center; }
+    #footer {
+      align-items: center;
+      background: rgba(15, 32, 64, 0.96);
+      display: flex;
+      gap: 8px;
+      justify-content: space-between;
+      padding: 6px 10px;
+    }
+    #size-display {
       color: #4caf50;
-      display: none;
       font-family: monospace;
-      font-size: 12px;
-      padding: 3px 8px;
-      pointer-events: none;
-      position: fixed;
-      white-space: nowrap;
+      font-size: 0.75rem;
     }
+    .btn {
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.75rem;
+      padding: 4px 12px;
+    }
+    #cancel-btn {
+      background: none;
+      border: 1px solid #333;
+      color: #777;
+    }
+    #cancel-btn:hover { border-color: #e94560; color: #e94560; }
+    #set-btn {
+      background: #0f3460;
+      border: 1px solid #4caf50;
+      color: #4caf50;
+    }
+    #set-btn:hover { background: #4caf50; color: #0a1428; }
   </style>
 </head>
 <body>
-  <div id="hint">Click anywhere to set launch position &nbsp;<span>· Esc to cancel</span></div>
-  <div id="tooltip"></div>
+  <div id="shell">
+    <div id="titlebar" data-tauri-drag-region>
+      <span>Drag to position &bull; Resize edges to set size</span>
+      <button id="close-btn" title="Cancel">&#x2715;</button>
+    </div>
+    <div id="body">
+      <div id="crosshair">&#x2316;</div>
+      <div id="instructions">This window = launch position &amp; size<br>Click Set when ready</div>
+    </div>
+    <div id="footer">
+      <span id="size-display">0 &times; 0</span>
+      <div style="display:flex;gap:6px;">
+        <button class="btn" id="cancel-btn">Cancel</button>
+        <button class="btn" id="set-btn">Set</button>
+      </div>
+    </div>
+  </div>
   <script type="module" src="picker.js"></script>
 </body>
 </html>

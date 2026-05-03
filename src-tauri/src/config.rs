@@ -23,6 +23,10 @@ pub struct Item {
     pub launch_x: Option<i32>,
     #[serde(default)]
     pub launch_y: Option<i32>,
+    #[serde(default)]
+    pub launch_width: Option<u32>,
+    #[serde(default)]
+    pub launch_height: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -152,8 +156,8 @@ mod tests {
             name: "Work".to_string(),
             icon: "💼".to_string(),
             items: vec![
-                Item { item_type: ItemType::App, path: Some("C:\\slack.exe".to_string()), value: None, launch_desktop: None, launch_x: None, launch_y: None },
-                Item { item_type: ItemType::Url, path: None, value: Some("https://github.com".to_string()), launch_desktop: None, launch_x: None, launch_y: None },
+                Item { item_type: ItemType::App, path: Some("C:\\slack.exe".to_string()), value: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
+                Item { item_type: ItemType::Url, path: None, value: Some("https://github.com".to_string()), launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
             ],
         });
 
