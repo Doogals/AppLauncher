@@ -300,73 +300,6 @@ fn import_config(state: State<AppState>, app: tauri::AppHandle) -> Result<(), St
     Ok(())
 }
 
-#[tauri::command]
-fn start_location_picker(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(w) = app.get_webview_window("config") {
-        w.hide().map_err(|e| e.to_string())?;
-    }
-
-    let picker = tauri::WebviewWindowBuilder::new(
-        &app,
-        "picker",
-        tauri::WebviewUrl::App("config.html?mode=picker".into()),
-    )
-    .title("Position & Size Picker")
-    .inner_size(480.0, 300.0)
-    .min_inner_size(180.0, 120.0)
-    .resizable(true)
-    .always_on_top(true)
-    .skip_taskbar(false)
-    .decorations(true)
-    .closable(true)
-    .build()
-    .map_err(|e| e.to_string())?;
-
-    // Re-show config if user closes picker via native X button
-    let app2 = app.clone();
-    picker.on_window_event(move |event| {
-        if let tauri::WindowEvent::CloseRequested { .. } = event {
-            if let Some(config_win) = app2.get_webview_window("config") {
-                let _ = config_win.show();
-                let _ = config_win.set_focus();
-            }
-        }
-    });
-
-    Ok(())
-}
-
-#[tauri::command]
-fn finish_location_picker(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(picker) = app.get_webview_window("picker") {
-        let pos = picker.outer_position().map_err(|e| e.to_string())?;
-        let size = picker.outer_size().map_err(|e| e.to_string())?;
-        picker.close().map_err(|e| e.to_string())?;
-        if let Some(config_win) = app.get_webview_window("config") {
-            config_win.show().map_err(|e| e.to_string())?;
-            config_win.set_focus().map_err(|e| e.to_string())?;
-            config_win.emit("location-picked", serde_json::json!({
-                "x": pos.x,
-                "y": pos.y,
-                "width": size.width,
-                "height": size.height
-            })).map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(())
-}
-
-#[tauri::command]
-fn cancel_location_picker(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(picker) = app.get_webview_window("picker") {
-        picker.close().map_err(|e| e.to_string())?;
-    }
-    if let Some(config_win) = app.get_webview_window("config") {
-        config_win.show().map_err(|e| e.to_string())?;
-        config_win.set_focus().map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
 
 #[tauri::command]
 fn set_hotkey(hotkey: String, state: State<AppState>, app: tauri::AppHandle) -> Result<(), String> {
@@ -844,9 +777,6 @@ pub fn run() {
             import_config,
             set_hotkey,
             get_monitors,
-            start_location_picker,
-            finish_location_picker,
-            cancel_location_picker,
             resize_widget,
             get_installed_apps,
             show_group_context_menu,

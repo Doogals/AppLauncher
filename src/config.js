@@ -49,7 +49,6 @@ const groupId = params.get('id');
 
 let currentItems = [];
 let existingGroup = null;
-let pendingPickIdx = null;
 
 async function showWinAppPicker() {
   const modal = document.createElement('div');
@@ -365,6 +364,56 @@ async function initSettingsTab() {
   );
 }
 
+async function showPickerOverlay(idx) {
+  const win = getCurrentWindow();
+  await win.setResizable(true);
+
+  const overlay = document.createElement('div');
+  overlay.id = 'picker-overlay';
+  overlay.innerHTML = `
+    <div id="pk-body">
+      <div id="pk-cross">&#x2316;</div>
+      <div id="pk-hint">Move &amp; resize this window to set the launch position and size<br><small>Drag the title bar to move &nbsp;&bull;&nbsp; drag edges to resize</small></div>
+      <div id="pk-size">-- &times; --</div>
+    </div>
+    <div id="pk-footer">
+      <button id="pk-cancel">Cancel</button>
+      <button id="pk-set">Confirm Position &amp; Size</button>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  function updateSize() {
+    const el = document.getElementById('pk-size');
+    if (el) el.textContent = window.innerWidth + ' \xd7 ' + window.innerHeight;
+  }
+  updateSize();
+  window.addEventListener('resize', updateSize);
+
+  await new Promise((resolve) => {
+    document.getElementById('pk-set').addEventListener('click', async () => {
+      const pos = await win.outerPosition();
+      const size = await win.outerSize();
+      currentItems[idx].launch_x = pos.x;
+      currentItems[idx].launch_y = pos.y;
+      currentItems[idx].launch_width = size.width;
+      currentItems[idx].launch_height = size.height;
+      window.removeEventListener('resize', updateSize);
+      overlay.remove();
+      await win.setResizable(false);
+      renderItems();
+      resolve();
+    });
+
+    document.getElementById('pk-cancel').addEventListener('click', async () => {
+      window.removeEventListener('resize', updateSize);
+      overlay.remove();
+      await win.setResizable(false);
+      resolve();
+    });
+  });
+}
+
 function buildExpandPanel(item, idx) {
   const panel = document.createElement('div');
   panel.className = 'item-expand';
@@ -378,7 +427,7 @@ function buildExpandPanel(item, idx) {
       <span>Launch at</span>
       <span class="coord-display${hasCoord ? '' : ' coord-empty'}">${coordText}</span>
       ${hasCoord ? '<button class="coord-clear" title="Clear">✕</button>' : ''}
-      <button class="pick-btn">📍 Pick</button>
+      <button class="pick-btn">&#x1f4cd; Pick</button>
     </div>
   `;
 
@@ -393,10 +442,7 @@ function buildExpandPanel(item, idx) {
     });
   }
 
-  panel.querySelector('.pick-btn').addEventListener('click', async () => {
-    pendingPickIdx = idx;
-    await invoke('start_location_picker');
-  });
+  panel.querySelector('.pick-btn').addEventListener('click', () => showPickerOverlay(idx));
 
   return panel;
 }
@@ -635,62 +681,4 @@ document.getElementById('feedback-btn').addEventListener('click', () => {
   document.getElementById('fb-text').focus();
 });
 
-function initPickerMode() {
-  document.body.innerHTML = `
-    <div id="pk-shell">
-      <div id="pk-body">
-        <div id="pk-cross">&#x2316;</div>
-        <div id="pk-hint">Drag window to position &bull; drag edges to set size<br>This window = where your app will launch</div>
-      </div>
-      <div id="pk-footer">
-        <span id="pk-size">-- x --</span>
-        <div style="display:flex;gap:8px">
-          <button id="pk-cancel">Cancel</button>
-          <button id="pk-set">Set Position &amp; Size</button>
-        </div>
-      </div>
-    </div>
-  `;
-
-  const style = document.createElement('style');
-  style.textContent = `
-    body { margin:0; padding:0; height:100vh; overflow:hidden; background:#0f2040; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; user-select:none; }
-    #pk-shell { border:2px dashed #e94560; box-sizing:border-box; display:flex; flex-direction:column; height:100%; }
-    #pk-body { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; }
-    #pk-cross { color:#e94560; font-size:2.5rem; opacity:0.7; }
-    #pk-hint { color:#888; font-size:0.75rem; text-align:center; line-height:1.7; }
-    #pk-footer { border-top:1px solid #0f3460; padding:8px 12px; display:flex; justify-content:space-between; align-items:center; }
-    #pk-size { color:#4caf50; font-family:monospace; font-size:0.8rem; }
-    #pk-cancel { background:none; border:1px solid #333; color:#777; border-radius:4px; padding:5px 14px; cursor:pointer; font-size:0.78rem; }
-    #pk-cancel:hover { border-color:#e94560; color:#e94560; }
-    #pk-set { background:#0f3460; border:1px solid #4caf50; color:#4caf50; border-radius:4px; padding:5px 14px; cursor:pointer; font-size:0.78rem; }
-    #pk-set:hover { background:#4caf50; color:#0a1428; }
-  `;
-  document.head.appendChild(style);
-
-  function updateSize() {
-    document.getElementById('pk-size').textContent = window.innerWidth + ' x ' + window.innerHeight;
-  }
-  updateSize();
-  window.addEventListener('resize', updateSize);
-
-  document.getElementById('pk-set').addEventListener('click', () => invoke('finish_location_picker'));
-  document.getElementById('pk-cancel').addEventListener('click', () => invoke('cancel_location_picker'));
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') invoke('cancel_location_picker'); });
-}
-
-if (new URLSearchParams(window.location.search).get('mode') === 'picker') {
-  initPickerMode();
-} else {
-  listen('location-picked', (event) => {
-    if (pendingPickIdx === null) return;
-    const { x, y, width, height } = event.payload;
-    currentItems[pendingPickIdx].launch_x = x;
-    currentItems[pendingPickIdx].launch_y = y;
-    currentItems[pendingPickIdx].launch_width = width;
-    currentItems[pendingPickIdx].launch_height = height;
-    pendingPickIdx = null;
-    renderItems();
-  });
-  init();
-}
+init();
