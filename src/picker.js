@@ -27,5 +27,4 @@ async function cancel() {
 }
 
 document.getElementById('cancel-btn').addEventListener('click', cancel);
-document.getElementById('close-btn').addEventListener('click', cancel);
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') cancel(); });

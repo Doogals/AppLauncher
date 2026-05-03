@@ -18,6 +18,7 @@ export default defineConfig({
       input: {
         widget: resolve(__dirname, 'src/widget.html'),
         config: resolve(__dirname, 'src/config.html'),
+        picker: resolve(__dirname, 'src/picker.html'),
       },
     },
   },

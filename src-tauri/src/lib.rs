@@ -311,14 +311,13 @@ fn start_location_picker(app: tauri::AppHandle) -> Result<(), String> {
         "picker",
         tauri::WebviewUrl::App("picker.html".into()),
     )
-    .title("Position Picker")
+    .title("Position & Size Picker")
     .inner_size(480.0, 300.0)
     .min_inner_size(180.0, 120.0)
     .resizable(true)
-    .transparent(true)
     .always_on_top(true)
     .skip_taskbar(false)
-    .decorations(false)
+    .decorations(true)
     .closable(true)
     .build()
     .map_err(|e| e.to_string())?;
