@@ -140,6 +140,18 @@ fn find_window_by_pid(target_pid: u32) -> Option<*mut std::ffi::c_void> {
 }
 
 
+fn is_chromium_based(path: &str) -> bool {
+    let name = std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    matches!(name.as_str(),
+        "chrome.exe" | "msedge.exe" | "brave.exe" | "chromium.exe" |
+        "vivaldi.exe" | "opera.exe" | "operagx.exe" | "arc.exe" | "thorium.exe"
+    )
+}
+
 fn collect_browser_urls(
     items: &[Item],
     preferred_browser: Option<&str>,
@@ -149,6 +161,8 @@ fn collect_browser_urls(
 
     for item in items {
         if let ItemType::Url = &item.item_type {
+            // Items with a saved position are launched individually with flags
+            if item.launch_x.is_some() { continue; }
             if let Some(url) = &item.value {
                 let browser = item.path.as_deref().or(preferred_browser);
                 match browser {
@@ -175,7 +189,14 @@ pub fn launch_group(group_id: &str, config: &AppConfig) -> Result<(), String> {
         }
     }
 
-    // Batch URL items by browser for multi-tab launch
+    // Launch URL items that have a saved position individually (with browser flags)
+    for item in &group.items {
+        if matches!(item.item_type, ItemType::Url) && item.launch_x.is_some() {
+            launch_item(item, &config.preferred_browser)?;
+        }
+    }
+
+    // Batch remaining URL items (no position) for multi-tab launch
     let (browser_urls, fallback_urls) =
         collect_browser_urls(&group.items, config.preferred_browser.as_deref());
 
@@ -223,16 +244,34 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
         }
         ItemType::Url => {
             let url = item.value.as_ref().ok_or("URL item is missing a value")?;
-            match preferred_browser {
-                Some(browser) => {
-                    Command::new(browser)
-                        .arg(url)
+            let browser = item.path.as_deref().or(preferred_browser.as_deref());
+
+            if let (Some(bp), Some(x), Some(y)) = (browser, item.launch_x, item.launch_y) {
+                if is_chromium_based(bp) {
+                    let mut args: Vec<String> = vec![
+                        "--new-window".to_string(),
+                        format!("--window-position={},{}", x, y),
+                    ];
+                    if let (Some(w), Some(h)) = (item.launch_width, item.launch_height) {
+                        args.push(format!("--window-size={},{}", w, h));
+                    }
+                    args.push(url.to_string());
+                    Command::new(bp)
+                        .args(&args)
                         .spawn()
+                        .map_err(|e| format!("Failed to open URL: {}", e))?;
+                    return Ok(());
+                }
+            }
+
+            // Non-Chromium fallback
+            match browser {
+                Some(bp) => {
+                    Command::new(bp).arg(url).spawn()
                         .map_err(|e| format!("Failed to open URL in browser: {}", e))?;
                 }
                 None => {
-                    open::that(url)
-                        .map_err(|e| format!("Failed to open URL '{}': {}", url, e))?;
+                    open::that(url).map_err(|e| format!("Failed to open URL '{}': {}", url, e))?;
                 }
             }
         }
