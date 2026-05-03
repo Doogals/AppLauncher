@@ -2,6 +2,71 @@ use crate::config::{AppConfig, Item, ItemType};
 use std::collections::HashMap;
 use std::process::Command;
 
+// ── Shell-open a file and return its PID (Windows only) ──────────────────────
+
+#[cfg(target_os = "windows")]
+fn shell_open_with_pid(path: &str) -> Option<u32> {
+    use std::ffi::c_void;
+
+    extern "system" {
+        fn ShellExecuteExW(info: *mut ShellExInfo) -> i32;
+        fn GetProcessId(process: *mut c_void) -> u32;
+        fn CloseHandle(object: *mut c_void) -> i32;
+    }
+
+    // Matches SHELLEXECUTEINFOW on 64-bit Windows (repr(C) inserts correct padding)
+    #[repr(C)]
+    struct ShellExInfo {
+        cb_size: u32,
+        f_mask: u32,
+        hwnd: *mut c_void,
+        lp_verb: *const u16,
+        lp_file: *const u16,
+        lp_parameters: *const u16,
+        lp_directory: *const u16,
+        n_show: i32,
+        h_inst_app: *mut c_void,
+        lp_id_list: *mut c_void,
+        lp_class: *const u16,
+        hkey_class: *mut c_void,
+        dw_hot_key: u32,
+        h_icon: *mut c_void,
+        h_process: *mut c_void,
+    }
+
+    const SW_SHOW: i32 = 5;
+    const SEE_MASK_NOCLOSEPROCESS: u32 = 0x40;
+
+    let file: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    let verb: Vec<u16> = "open".encode_utf16().chain(std::iter::once(0)).collect();
+
+    let mut info = ShellExInfo {
+        cb_size: std::mem::size_of::<ShellExInfo>() as u32,
+        f_mask: SEE_MASK_NOCLOSEPROCESS,
+        hwnd: std::ptr::null_mut(),
+        lp_verb: verb.as_ptr(),
+        lp_file: file.as_ptr(),
+        lp_parameters: std::ptr::null_mut(),
+        lp_directory: std::ptr::null_mut(),
+        n_show: SW_SHOW,
+        h_inst_app: std::ptr::null_mut(),
+        lp_id_list: std::ptr::null_mut(),
+        lp_class: std::ptr::null_mut(),
+        hkey_class: std::ptr::null_mut(),
+        dw_hot_key: 0,
+        h_icon: std::ptr::null_mut(),
+        h_process: std::ptr::null_mut(),
+    };
+
+    let ok = unsafe { ShellExecuteExW(&mut info) };
+    if ok != 0 && !info.h_process.is_null() {
+        let pid = unsafe { GetProcessId(info.h_process) };
+        unsafe { CloseHandle(info.h_process) };
+        if pid != 0 { return Some(pid); }
+    }
+    None
+}
+
 // ── Post-launch window positioning (Windows only) ────────────────────────────
 
 #[cfg(target_os = "windows")]
@@ -147,6 +212,13 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
         }
         ItemType::File | ItemType::Folder => {
             let path = item.path.as_ref().ok_or("Item is missing a path")?;
+            #[cfg(target_os = "windows")]
+            if let (Some(x), Some(y)) = (item.launch_x, item.launch_y) {
+                if let Some(pid) = shell_open_with_pid(path) {
+                    position_window_for_item(pid, x, y, item.launch_width, item.launch_height);
+                    return Ok(());
+                }
+            }
             open::that(path).map_err(|e| format!("Failed to open '{}': {}", path, e))?;
         }
         ItemType::Url => {
@@ -166,16 +238,20 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
         }
         ItemType::Script => {
             let path = item.path.as_ref().ok_or("Script item is missing a path")?;
-            if path.to_lowercase().ends_with(".ps1") {
+            let child = if path.to_lowercase().ends_with(".ps1") {
                 Command::new("powershell")
                     .args(["-ExecutionPolicy", "Bypass", "-File", path])
                     .spawn()
-                    .map_err(|e| format!("Failed to run PowerShell script: {}", e))?;
+                    .map_err(|e| format!("Failed to run PowerShell script: {}", e))?
             } else {
                 Command::new("cmd")
                     .args(["/C", path])
                     .spawn()
-                    .map_err(|e| format!("Failed to run script '{}': {}", path, e))?;
+                    .map_err(|e| format!("Failed to run script '{}': {}", path, e))?
+            };
+            #[cfg(target_os = "windows")]
+            if let (Some(x), Some(y)) = (item.launch_x, item.launch_y) {
+                position_window_for_item(child.id(), x, y, item.launch_width, item.launch_height);
             }
         }
     }
