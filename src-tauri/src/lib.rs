@@ -309,7 +309,7 @@ fn start_location_picker(app: tauri::AppHandle) -> Result<(), String> {
     let picker = tauri::WebviewWindowBuilder::new(
         &app,
         "picker",
-        tauri::WebviewUrl::App("picker.html".into()),
+        tauri::WebviewUrl::App("config.html?mode=picker".into()),
     )
     .title("Position & Size Picker")
     .inner_size(480.0, 300.0)

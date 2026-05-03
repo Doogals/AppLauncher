@@ -635,15 +635,62 @@ document.getElementById('feedback-btn').addEventListener('click', () => {
   document.getElementById('fb-text').focus();
 });
 
-listen('location-picked', (event) => {
-  if (pendingPickIdx === null) return;
-  const { x, y, width, height } = event.payload;
-  currentItems[pendingPickIdx].launch_x = x;
-  currentItems[pendingPickIdx].launch_y = y;
-  currentItems[pendingPickIdx].launch_width = width;
-  currentItems[pendingPickIdx].launch_height = height;
-  pendingPickIdx = null;
-  renderItems();
-});
+function initPickerMode() {
+  document.body.innerHTML = `
+    <div id="pk-shell">
+      <div id="pk-body">
+        <div id="pk-cross">&#x2316;</div>
+        <div id="pk-hint">Drag window to position &bull; drag edges to set size<br>This window = where your app will launch</div>
+      </div>
+      <div id="pk-footer">
+        <span id="pk-size">-- x --</span>
+        <div style="display:flex;gap:8px">
+          <button id="pk-cancel">Cancel</button>
+          <button id="pk-set">Set Position &amp; Size</button>
+        </div>
+      </div>
+    </div>
+  `;
 
-init();
+  const style = document.createElement('style');
+  style.textContent = `
+    body { margin:0; padding:0; height:100vh; overflow:hidden; background:#0f2040; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; user-select:none; }
+    #pk-shell { border:2px dashed #e94560; box-sizing:border-box; display:flex; flex-direction:column; height:100%; }
+    #pk-body { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; }
+    #pk-cross { color:#e94560; font-size:2.5rem; opacity:0.7; }
+    #pk-hint { color:#888; font-size:0.75rem; text-align:center; line-height:1.7; }
+    #pk-footer { border-top:1px solid #0f3460; padding:8px 12px; display:flex; justify-content:space-between; align-items:center; }
+    #pk-size { color:#4caf50; font-family:monospace; font-size:0.8rem; }
+    #pk-cancel { background:none; border:1px solid #333; color:#777; border-radius:4px; padding:5px 14px; cursor:pointer; font-size:0.78rem; }
+    #pk-cancel:hover { border-color:#e94560; color:#e94560; }
+    #pk-set { background:#0f3460; border:1px solid #4caf50; color:#4caf50; border-radius:4px; padding:5px 14px; cursor:pointer; font-size:0.78rem; }
+    #pk-set:hover { background:#4caf50; color:#0a1428; }
+  `;
+  document.head.appendChild(style);
+
+  function updateSize() {
+    document.getElementById('pk-size').textContent = window.innerWidth + ' x ' + window.innerHeight;
+  }
+  updateSize();
+  window.addEventListener('resize', updateSize);
+
+  document.getElementById('pk-set').addEventListener('click', () => invoke('finish_location_picker'));
+  document.getElementById('pk-cancel').addEventListener('click', () => invoke('cancel_location_picker'));
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') invoke('cancel_location_picker'); });
+}
+
+if (new URLSearchParams(window.location.search).get('mode') === 'picker') {
+  initPickerMode();
+} else {
+  listen('location-picked', (event) => {
+    if (pendingPickIdx === null) return;
+    const { x, y, width, height } = event.payload;
+    currentItems[pendingPickIdx].launch_x = x;
+    currentItems[pendingPickIdx].launch_y = y;
+    currentItems[pendingPickIdx].launch_width = width;
+    currentItems[pendingPickIdx].launch_height = height;
+    pendingPickIdx = null;
+    renderItems();
+  });
+  init();
+}
