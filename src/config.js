@@ -390,7 +390,23 @@ async function showPickerOverlay(idx) {
   updateSize();
   window.addEventListener('resize', updateSize);
 
-  await new Promise((resolve) => {
+  let unlistenClose = null;
+
+  function cleanup(save) {
+    window.removeEventListener('resize', updateSize);
+    if (unlistenClose) unlistenClose();
+    overlay.remove();
+    win.setResizable(false);
+    if (save) renderItems();
+  }
+
+  return new Promise(async (resolve) => {
+    unlistenClose = await win.onCloseRequested((event) => {
+      event.preventDefault();
+      cleanup(false);
+      resolve();
+    });
+
     document.getElementById('pk-set').addEventListener('click', async () => {
       const pos = await win.outerPosition();
       const size = await win.outerSize();
@@ -398,17 +414,12 @@ async function showPickerOverlay(idx) {
       currentItems[idx].launch_y = pos.y;
       currentItems[idx].launch_width = size.width;
       currentItems[idx].launch_height = size.height;
-      window.removeEventListener('resize', updateSize);
-      overlay.remove();
-      await win.setResizable(false);
-      renderItems();
+      cleanup(true);
       resolve();
     });
 
-    document.getElementById('pk-cancel').addEventListener('click', async () => {
-      window.removeEventListener('resize', updateSize);
-      overlay.remove();
-      await win.setResizable(false);
+    document.getElementById('pk-cancel').addEventListener('click', () => {
+      cleanup(false);
       resolve();
     });
   });

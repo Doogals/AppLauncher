@@ -16,6 +16,9 @@ fn position_window_for_item(pid: u32, x: i32, y: i32, w: Option<u32>, h: Option<
         });
         if let Some(hwnd) = hwnd {
             place_window(hwnd, x, y, w, h);
+            // Second pass: many apps restore their saved position ~1s after startup
+            thread::sleep(Duration::from_millis(1500));
+            place_window(hwnd, x, y, w, h);
         }
     });
 }
