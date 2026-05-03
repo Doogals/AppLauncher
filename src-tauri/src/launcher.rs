@@ -258,6 +258,7 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
                     args.push(url.to_string());
                     Command::new(bp)
                         .args(&args)
+                        .stderr(std::process::Stdio::null())
                         .spawn()
                         .map_err(|e| format!("Failed to open URL: {}", e))?;
                     return Ok(());

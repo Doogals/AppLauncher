@@ -13,6 +13,7 @@
     "core:window:allow-set-resizable",
     "core:window:allow-outer-position",
     "core:window:allow-outer-size",
+    "core:window:allow-inner-size",
     "dialog:default",
     "dialog:allow-save",
     "dialog:allow-open",

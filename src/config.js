@@ -409,7 +409,7 @@ async function showPickerOverlay(idx) {
 
     document.getElementById('pk-set').addEventListener('click', async () => {
       const pos = await win.outerPosition();
-      const size = await win.outerSize();
+      const size = await win.innerSize();
       currentItems[idx].launch_x = pos.x;
       currentItems[idx].launch_y = pos.y;
       currentItems[idx].launch_width = size.width;
