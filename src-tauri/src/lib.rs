@@ -306,7 +306,7 @@ fn start_location_picker(app: tauri::AppHandle) -> Result<(), String> {
         w.hide().map_err(|e| e.to_string())?;
     }
 
-    tauri::WebviewWindowBuilder::new(
+    let picker = tauri::WebviewWindowBuilder::new(
         &app,
         "picker",
         tauri::WebviewUrl::App("picker.html".into()),
@@ -321,6 +321,17 @@ fn start_location_picker(app: tauri::AppHandle) -> Result<(), String> {
     .closable(true)
     .build()
     .map_err(|e| e.to_string())?;
+
+    // Re-show config if user closes picker via native X button
+    let app2 = app.clone();
+    picker.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { .. } = event {
+            if let Some(config_win) = app2.get_webview_window("config") {
+                let _ = config_win.show();
+                let _ = config_win.set_focus();
+            }
+        }
+    });
 
     Ok(())
 }
