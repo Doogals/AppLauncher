@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 
 const EMOJIS = [
   '💼','📁','🗂️','🖥️','🌐','📧','📅','📝','🔧','⚙️',
@@ -290,6 +291,15 @@ async function init() {
   await initSettingsTab();
   initEmojiPicker();
 
+  // Receive results from the separate picker window
+  listen('picker-result', ({ payload: { idx, x, y, w, h } }) => {
+    currentItems[idx].launch_x = x;
+    currentItems[idx].launch_y = y;
+    currentItems[idx].launch_width = w;
+    currentItems[idx].launch_height = h;
+    renderItems();
+  });
+
   document.querySelector('.license-details').addEventListener('toggle', fitWindow);
 
   if (groupId) {
@@ -362,64 +372,33 @@ async function initSettingsTab() {
   document.getElementById('import-btn').addEventListener('click', () =>
     invoke('import_config').catch(e => console.error('Import failed:', e))
   );
+
+  const shareBtn = document.getElementById('share-btn');
+  shareBtn.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText('https://tonic-tech.com/app-launcher');
+      shareBtn.textContent = '✓ Link copied!';
+      shareBtn.classList.add('btn-share--copied');
+      setTimeout(() => {
+        shareBtn.textContent = '📤 Share App Launcher';
+        shareBtn.classList.remove('btn-share--copied');
+      }, 2000);
+    } catch {
+      // clipboard unavailable — fail silently
+    }
+  });
 }
 
-async function showPickerOverlay(idx) {
-  const win = getCurrentWindow();
-  await win.setResizable(true);
-
-  const overlay = document.createElement('div');
-  overlay.id = 'picker-overlay';
-  overlay.innerHTML = `
-    <div id="pk-body">
-      <div id="pk-cross">&#x2316;</div>
-      <div id="pk-hint">Move &amp; resize this window to set the launch position and size<br><small>Drag the title bar to move &nbsp;&bull;&nbsp; drag edges to resize</small></div>
-      <div id="pk-size">-- &times; --</div>
-    </div>
-    <div id="pk-footer">
-      <button id="pk-cancel">Cancel</button>
-      <button id="pk-set">Confirm Position &amp; Size</button>
-    </div>
-  `;
-  document.body.appendChild(overlay);
-
-  function updateSize() {
-    const el = document.getElementById('pk-size');
-    if (el) el.textContent = window.outerWidth + ' \xd7 ' + window.outerHeight;
-  }
-  updateSize();
-  window.addEventListener('resize', updateSize);
-
-  let unlistenClose = null;
-
-  function cleanup(save) {
-    window.removeEventListener('resize', updateSize);
-    if (unlistenClose) unlistenClose();
-    overlay.remove();
-    win.setResizable(false);
-    if (save) renderItems();
-  }
-
-  return new Promise(async (resolve) => {
-    unlistenClose = await win.onCloseRequested((event) => {
-      event.preventDefault();
-      cleanup(false);
-      resolve();
-    });
-
-    document.getElementById('pk-set').addEventListener('click', async () => {
-      currentItems[idx].launch_x = window.screenX;
-      currentItems[idx].launch_y = window.screenY;
-      currentItems[idx].launch_width = window.outerWidth;
-      currentItems[idx].launch_height = window.outerHeight;
-      cleanup(true);
-      resolve();
-    });
-
-    document.getElementById('pk-cancel').addEventListener('click', () => {
-      cleanup(false);
-      resolve();
-    });
+function showPickerWindow(idx) {
+  new WebviewWindow('picker', {
+    url: `picker.html?idx=${idx}`,
+    title: 'Pick Launch Position',
+    width: 480,
+    height: 260,
+    resizable: true,
+    decorations: true,
+    alwaysOnTop: true,
+    center: true,
   });
 }
 
@@ -451,7 +430,7 @@ function buildExpandPanel(item, idx) {
     });
   }
 
-  panel.querySelector('.pick-btn').addEventListener('click', () => showPickerOverlay(idx));
+  panel.querySelector('.pick-btn').addEventListener('click', () => showPickerWindow(idx));
 
   return panel;
 }
@@ -471,26 +450,8 @@ function renderItems() {
     row.innerHTML = `
       <span>${typeIcon}</span>
       <span class="item-label" title="${safeLabel}">${safeLabel}</span>
-      <span class="item-chevron" title="Launch targeting">›</span>
       <button class="remove-btn">✕</button>
     `;
-
-    let expandEl = null;
-    row.querySelector('.item-chevron').addEventListener('click', () => {
-      const chevron = row.querySelector('.item-chevron');
-      if (expandEl) {
-        expandEl.remove();
-        expandEl = null;
-        chevron.classList.remove('open');
-        row.classList.remove('expanded');
-      } else {
-        chevron.classList.add('open');
-        row.classList.add('expanded');
-        expandEl = buildExpandPanel(item, idx);
-        wrapper.appendChild(expandEl);
-      }
-      fitWindow();
-    });
 
     row.querySelector('.remove-btn').onclick = () => { currentItems.splice(idx, 1); renderItems(); };
 
@@ -511,6 +472,7 @@ function renderItems() {
     });
 
     wrapper.appendChild(row);
+    wrapper.appendChild(buildExpandPanel(item, idx));
     list.appendChild(wrapper);
   });
 
