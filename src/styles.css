@@ -200,6 +200,26 @@ html, body {
 }
 .feedback-btn:hover { color: #e0e0e0; border-color: #e94560; }
 
+.btn-share {
+  width: 100%;
+  background: #e07b39;
+  color: #fff;
+  border: none;
+  border-radius: 5px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.btn-share:hover { background: #c96a2a; }
+.btn-share--copied {
+  background: #1e3a1e;
+  color: #6dbf6d;
+  cursor: default;
+}
+.btn-share--copied:hover { background: #1e3a1e; }
+
 /* Feedback modal */
 .feedback-card {
   background: #1a1a2e;
@@ -516,22 +536,6 @@ html, body {
 .io-row .btn { flex: 1; }
 
 /* ── Per-item targeting expand ────────────────────────────────────────────── */
-.item-chevron {
-  color: #4a9eff;
-  cursor: pointer;
-  display: inline-block;
-  font-size: 1.1rem;
-  padding: 0 4px;
-  transition: transform 0.15s, color 0.15s;
-  user-select: none;
-  -webkit-user-select: none;
-}
-.item-chevron.open { color: #74b5ff; transform: rotate(90deg); }
-
-.item-row.expanded {
-  border-bottom-color: transparent;
-  border-radius: 6px 6px 0 0;
-}
 
 .item-expand {
   background: #0f2040;
@@ -583,56 +587,3 @@ html, body {
   white-space: nowrap;
 }
 .pick-btn:hover { border-color: #e94560; color: #e0e0e0; }
-
-#picker-overlay {
-  background: #0f2040;
-  border: 2px dashed #e94560;
-  bottom: 0;
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  left: 0;
-  position: fixed;
-  right: 0;
-  top: 0;
-  z-index: 9999;
-}
-#pk-body {
-  align-items: center;
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 12px;
-  justify-content: center;
-}
-#pk-cross { color: #e94560; font-size: 2.5rem; opacity: 0.7; }
-#pk-hint { color: #888; font-size: 0.75rem; line-height: 1.8; text-align: center; }
-#pk-hint small { color: #555; }
-#pk-size { color: #4caf50; font-family: monospace; font-size: 0.85rem; }
-#pk-footer {
-  border-top: 1px solid #0f3460;
-  display: flex;
-  gap: 8px;
-  justify-content: flex-end;
-  padding: 8px 12px;
-}
-#pk-cancel {
-  background: none;
-  border: 1px solid #333;
-  border-radius: 4px;
-  color: #777;
-  cursor: pointer;
-  font-size: 0.78rem;
-  padding: 5px 14px;
-}
-#pk-cancel:hover { border-color: #e94560; color: #e94560; }
-#pk-set {
-  background: #0f3460;
-  border: 1px solid #4caf50;
-  border-radius: 4px;
-  color: #4caf50;
-  cursor: pointer;
-  font-size: 0.78rem;
-  padding: 5px 14px;
-}
-#pk-set:hover { background: #4caf50; color: #0a1428; }
