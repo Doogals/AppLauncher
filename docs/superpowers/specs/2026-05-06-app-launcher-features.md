@@ -59,12 +59,14 @@ The item row in the group editor shows:
 
 **`src-tauri/src/config.rs` — `Item` struct:**
 
-Add two fields:
+Add three fields:
 ```rust
 #[serde(default)]
-pub urls: Vec<String>,      // primary URL list (replaces per-item value for new items)
+pub urls: Vec<String>,         // primary URL list (replaces per-item value for new items)
 #[serde(default)]
 pub icon_data: Option<String>, // base64 PNG icon from browser .exe
+#[serde(default)]
+pub browser_name: Option<String>, // display name of browser (e.g. "Chrome"), stored so widget doesn't re-derive
 ```
 
 Backward compat: existing items with `value: Some(url)` and `urls: []` continue to work. The launcher checks `urls` first; falls back to `value` if `urls` is empty.
@@ -178,7 +180,7 @@ Checkbox change handler updates `currentItems[idx].run_in_terminal`.
 |------|---------|
 | `src-tauri/preinstall.nsh` | **New** — NSIS pre-install kill hook |
 | `src-tauri/tauri.conf.json` | Add `bundle.windows.nsis.preinstallSection` |
-| `src-tauri/src/config.rs` | Add `urls`, `icon_data`, `run_in_terminal` to `Item` |
+| `src-tauri/src/config.rs` | Add `urls`, `icon_data`, `browser_name`, `run_in_terminal` to `Item` |
 | `src-tauri/src/lib.rs` | Add `get_file_icon` command + register it |
 | `src-tauri/src/launcher.rs` | Update URL launch to use `urls`, add `run_in_terminal` branch |
 | `src/config.js` | URL item row redesign, Edit button, script checkbox |
