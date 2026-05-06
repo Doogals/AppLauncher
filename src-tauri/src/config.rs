@@ -18,6 +18,14 @@ pub struct Item {
     pub path: Option<String>,
     pub value: Option<String>,
     #[serde(default)]
+    pub urls: Vec<String>,
+    #[serde(default)]
+    pub icon_data: Option<String>,
+    #[serde(default)]
+    pub browser_name: Option<String>,
+    #[serde(default = "default_true")]
+    pub run_in_terminal: bool,
+    #[serde(default)]
     pub launch_desktop: Option<u32>,
     #[serde(default)]
     pub launch_x: Option<i32>,
@@ -156,8 +164,8 @@ mod tests {
             name: "Work".to_string(),
             icon: "💼".to_string(),
             items: vec![
-                Item { item_type: ItemType::App, path: Some("C:\\slack.exe".to_string()), value: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
-                Item { item_type: ItemType::Url, path: None, value: Some("https://github.com".to_string()), launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
+                Item { item_type: ItemType::App, path: Some("C:\\slack.exe".to_string()), value: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
+                Item { item_type: ItemType::Url, path: None, value: Some("https://github.com".to_string()), urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
             ],
         });
 
@@ -187,5 +195,42 @@ mod tests {
         let loaded: AppConfig = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(loaded.license_instance_id, Some("inst-123".to_string()));
         assert_eq!(loaded.license_machine_name, Some("My PC".to_string()));
+    }
+
+    #[test]
+    fn test_item_run_in_terminal_defaults_to_true_when_absent() {
+        let json = r#"{"item_type":"script","path":"/foo.bat","value":null}"#;
+        let item: Item = serde_json::from_str(json).unwrap();
+        assert!(item.run_in_terminal, "run_in_terminal should default to true");
+    }
+
+    #[test]
+    fn test_item_urls_defaults_to_empty_when_absent() {
+        let json = r#"{"item_type":"url","path":null,"value":"https://a.com"}"#;
+        let item: Item = serde_json::from_str(json).unwrap();
+        assert!(item.urls.is_empty(), "urls should default to empty vec");
+        assert!(item.icon_data.is_none());
+        assert!(item.browser_name.is_none());
+    }
+
+    #[test]
+    fn test_item_new_fields_roundtrip() {
+        let item = Item {
+            item_type: ItemType::Url,
+            path: Some("chrome.exe".into()),
+            value: Some("https://a.com".into()),
+            urls: vec!["https://a.com".into(), "https://b.com".into()],
+            icon_data: Some("abc123".into()),
+            browser_name: Some("Chrome".into()),
+            run_in_terminal: false,
+            launch_desktop: None, launch_x: None, launch_y: None,
+            launch_width: None, launch_height: None,
+        };
+        let json = serde_json::to_string(&item).unwrap();
+        let loaded: Item = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.urls, vec!["https://a.com", "https://b.com"]);
+        assert_eq!(loaded.icon_data.as_deref(), Some("abc123"));
+        assert_eq!(loaded.browser_name.as_deref(), Some("Chrome"));
+        assert!(!loaded.run_in_terminal);
     }
 }
