@@ -1,0 +1,11 @@
+{
+  "version": "0.3.5",
+  "notes": "App Launcher v0.3.5",
+  "pub_date": "2026-05-06T00:55:35.550Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSdHZBOC9TZlBrWDhwUjRGWXFya3AxS3Q2WUdZcERNbHhRZGRJV3pDQWNVT09WZmZhT2JJK1hobHBSM3pxZk5xeElVYUVGbCtiVHV0VTV4SENXc3lXU0NJVDlMdFJpd2dnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc4MDI4OTM1CWZpbGU6YXBwLm1zaQpzcWhSN2VmU0grdXRLUFg5MWo0c2ZKVFltR2tlenI0NFd2eXR5UXNmY21neGk4eGlvQ0dFalQyZG5aRGg3ZjBWaDZ0M0hUc1FiaVJzaXdIZm80UG9EZz09Cg==",
+      "url": "https://github.com/Doogals/AppLauncher/releases/download/v0.3.5/App.Launcher_0.3.5_x64_en-US.msi"
+    }
+  }
+}
