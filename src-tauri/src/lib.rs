@@ -3,6 +3,7 @@ mod launcher;
 mod license;
 mod apps;
 mod browsers;
+mod icons;
 
 use config::{AppConfig, Group, Item};
 use apps::InstalledApp;
@@ -15,6 +16,18 @@ struct AppState(Mutex<AppConfig>);
 #[tauri::command]
 fn open_url(url: String) {
     let _ = open::that(url);
+}
+
+#[tauri::command]
+async fn download_and_install_update(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let update = updater.check().await.map_err(|e| e.to_string())?;
+    if let Some(update) = update {
+        update.download_and_install(|_, _| {}, || {}).await.map_err(|e| e.to_string())?;
+        app.restart();
+    }
+    Ok(())
 }
 
 // Update this URL after deploying the Cloudflare Worker
@@ -317,7 +330,7 @@ fn set_hotkey(hotkey: String, state: State<AppState>, app: tauri::AppHandle) -> 
         if event.state == ShortcutState::Pressed {
             if let Some(window) = handle.get_webview_window("widget") {
                 if window.is_visible().unwrap_or(false) {
-                    let _ = window.set_always_on_top(false);
+                    let _ = window.hide();
                 } else {
                     let _ = window.show();
                     let _ = window.set_focus();
@@ -361,6 +374,11 @@ fn get_browser_bookmarks(browser_path: String) -> Vec<browsers::BookmarkItem> {
 }
 
 #[tauri::command]
+fn get_file_icon(path: String) -> Option<String> {
+    icons::get_file_icon(path)
+}
+
+#[tauri::command]
 fn send_feedback(message: String) -> Result<(), String> {
     if message.trim().is_empty() {
         return Err("Message is empty.".to_string());
@@ -378,6 +396,28 @@ fn send_feedback(message: String) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+// Returns [x, y, width, height] of the calling window's outer frame in physical pixels.
+// Using GetWindowRect (Win32) avoids all DPI/CSS-pixel issues with window.screenX etc.
+#[tauri::command]
+fn get_window_frame_rect(window: tauri::WebviewWindow) -> Result<[i32; 4], String> {
+    #[cfg(target_os = "windows")]
+    {
+        extern "system" {
+            fn GetWindowRect(hwnd: *mut std::ffi::c_void, rect: *mut [i32; 4]) -> i32;
+        }
+        let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+        let mut rect = [0i32; 4];
+        unsafe { GetWindowRect(hwnd.0, &mut rect); }
+        Ok([rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1]])
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let pos = window.outer_position().map_err(|e| e.to_string())?;
+        let size = window.outer_size().map_err(|e| e.to_string())?;
+        Ok([pos.x, pos.y, size.width as i32, size.height as i32])
+    }
 }
 
 #[tauri::command]
@@ -669,6 +709,7 @@ pub fn run() {
                             )
                             .title("App Settings")
                             .inner_size(420.0, 460.0)
+                            .center()
                             .decorations(true)
                             .resizable(false)
                             .always_on_top(true)
@@ -731,7 +772,7 @@ pub fn run() {
                     if event.state == ShortcutState::Pressed {
                         if let Some(window) = handle.get_webview_window("widget") {
                             if window.is_visible().unwrap_or(false) {
-                                let _ = window.set_always_on_top(false);
+                                let _ = window.hide();
                             } else {
                                 let _ = window.show();
                                 let _ = window.set_focus();
@@ -777,13 +818,16 @@ pub fn run() {
             import_config,
             set_hotkey,
             get_monitors,
+            get_window_frame_rect,
             resize_widget,
             get_installed_apps,
             show_group_context_menu,
             get_installed_browsers,
             get_browser_bookmarks,
+            get_file_icon,
             send_feedback,
             open_url,
+            download_and_install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
