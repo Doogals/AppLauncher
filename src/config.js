@@ -432,6 +432,22 @@ function buildExpandPanel(item, idx) {
 
   panel.querySelector('.pick-btn').addEventListener('click', () => showPickerWindow(idx));
 
+  if (item.item_type === 'script') {
+    const runRow = document.createElement('div');
+    runRow.className = 'item-expand-row';
+    const checked = item.run_in_terminal !== false ? 'checked' : '';
+    runRow.innerHTML = `
+      <label class="run-toggle">
+        <input type="checkbox" class="run-checkbox" ${checked} />
+        &#x25B6; Run via cmd
+      </label>
+    `;
+    runRow.querySelector('.run-checkbox').addEventListener('change', (e) => {
+      currentItems[idx].run_in_terminal = e.target.checked;
+    });
+    panel.appendChild(runRow);
+  }
+
   return panel;
 }
 
@@ -511,7 +527,9 @@ async function addItem(type) {
     filters: filters.length ? filters : undefined,
   });
   if (!selected) return;
-  currentItems.push({ item_type: type, path: selected, value: null });
+  const newItem = { item_type: type, path: selected, value: null };
+  if (type === 'script') newItem.run_in_terminal = true;
+  currentItems.push(newItem);
 
   renderItems();
 }
