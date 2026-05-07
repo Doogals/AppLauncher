@@ -363,15 +363,39 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
                 return Ok(());
             }
 
-            // run_in_terminal = true: execute via cmd/powershell (existing behavior)
+            // run_in_terminal = true: execute via cmd/powershell in its own console window.
+            // CREATE_NEW_CONSOLE ensures the script always gets its own window regardless of
+            // whether the parent process has a console (e.g. dev mode vs production build).
             #[cfg(target_os = "windows")]
             let before = if item.launch_x.is_some() { Some(collect_visible_hwnds()) } else { None };
+            #[cfg(target_os = "windows")]
+            const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
             let child = if path.to_lowercase().ends_with(".ps1") {
+                #[cfg(target_os = "windows")]
+                {
+                    use std::os::windows::process::CommandExt;
+                    Command::new("powershell")
+                        .args(["-ExecutionPolicy", "Bypass", "-File", path])
+                        .creation_flags(CREATE_NEW_CONSOLE)
+                        .spawn()
+                        .map_err(|e| format!("Failed to run PowerShell script: {}", e))?
+                }
+                #[cfg(not(target_os = "windows"))]
                 Command::new("powershell")
                     .args(["-ExecutionPolicy", "Bypass", "-File", path])
                     .spawn()
                     .map_err(|e| format!("Failed to run PowerShell script: {}", e))?
             } else {
+                #[cfg(target_os = "windows")]
+                {
+                    use std::os::windows::process::CommandExt;
+                    Command::new("cmd")
+                        .args(["/K", path])
+                        .creation_flags(CREATE_NEW_CONSOLE)
+                        .spawn()
+                        .map_err(|e| format!("Failed to run script '{}': {}", path, e))?
+                }
+                #[cfg(not(target_os = "windows"))]
                 Command::new("cmd")
                     .args(["/C", path])
                     .spawn()
