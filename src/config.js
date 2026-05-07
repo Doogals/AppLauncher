@@ -12,6 +12,23 @@ const EMOJIS = [
   '🎨','🖊️','📦','🧰','🖱️',
 ];
 
+function urlHostname(url) {
+  try { return new URL(url).hostname.replace(/^www\./, ''); }
+  catch { return url; }
+}
+
+function browserDisplayName(item) {
+  if (item.browser_name) return item.browser_name;
+  if (!item.path) return 'Browser';
+  const NAMES = {
+    'chrome.exe': 'Chrome', 'msedge.exe': 'Edge', 'brave.exe': 'Brave',
+    'firefox.exe': 'Firefox', 'opera.exe': 'Opera', 'operagx.exe': 'Opera GX',
+    'vivaldi.exe': 'Vivaldi', 'arc.exe': 'Arc', 'thorium.exe': 'Thorium',
+  };
+  const exe = item.path.replace(/.*[/\\]/, '').toLowerCase();
+  return NAMES[exe] || exe.replace(/\.exe$/i, '');
+}
+
 function buildEmojiGrid() {
   const grid = document.getElementById('emoji-grid');
   EMOJIS.forEach(emoji => {
@@ -119,7 +136,22 @@ async function showWinAppPicker() {
   searchInput.focus();
 }
 
-async function showUrlPicker() {
+async function showUrlPicker(editContext = null) {
+  if (editContext) {
+    const { item, idx } = editContext;
+    const modal = document.createElement('div');
+    modal.className = 'winapp-modal';
+    modal.innerHTML = `<div class="winapp-card"></div>`;
+    document.body.appendChild(modal);
+    const onKeyDown = (e) => { if (e.key === 'Escape') closeModal(); };
+    const closeModal = () => { document.removeEventListener('keydown', onKeyDown); modal.remove(); };
+    modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+    document.addEventListener('keydown', onKeyDown);
+    const browser = { name: browserDisplayName(item), path: item.path || '' };
+    await showBookmarkStep(modal, browser, closeModal, item, idx);
+    return;
+  }
+
   const modal = document.createElement('div');
   modal.className = 'winapp-modal';
   modal.innerHTML = `
@@ -136,10 +168,7 @@ async function showUrlPicker() {
   document.body.appendChild(modal);
 
   const onKeyDown = (e) => { if (e.key === 'Escape') closeModal(); };
-  const closeModal = () => {
-    document.removeEventListener('keydown', onKeyDown);
-    modal.remove();
-  };
+  const closeModal = () => { document.removeEventListener('keydown', onKeyDown); modal.remove(); };
   document.getElementById('url-close').addEventListener('click', closeModal);
   modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
   document.addEventListener('keydown', onKeyDown);
@@ -167,17 +196,22 @@ async function showUrlPicker() {
     const row = document.createElement('div');
     row.className = 'winapp-row';
     row.textContent = browser.name;
-    row.addEventListener('click', () => showBookmarkStep(modal, browser, closeModal));
+    row.addEventListener('click', () => showBookmarkStep(modal, browser, closeModal, null, null));
     browserList.appendChild(row);
   });
 }
 
-async function showBookmarkStep(modal, browser, closeModal) {
+async function showBookmarkStep(modal, browser, closeModal, existingItem = null, existingIdx = null) {
+  const isEdit = existingItem !== null && existingIdx !== null;
+  const existingUrls = isEdit
+    ? (existingItem.urls?.length > 0 ? existingItem.urls : (existingItem.value ? [existingItem.value] : []))
+    : [];
+
   const card = modal.querySelector('.winapp-card');
   const safeBrowserName = browser.name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   card.innerHTML = `
     <div class="winapp-header">
-      <button class="url-back-btn" id="url-back">←</button>
+      ${isEdit ? '' : '<button class="url-back-btn" id="url-back">←</button>'}
       <span class="url-step-title">${safeBrowserName} Bookmarks</span>
       <button class="winapp-close" id="url-close2">✕</button>
     </div>
@@ -191,14 +225,16 @@ async function showBookmarkStep(modal, browser, closeModal) {
       <input type="text" id="custom-url-input" placeholder="Or enter a custom URL: https://..." autocomplete="off" />
     </div>
     <div class="url-footer">
-      <button class="btn btn-save" id="add-selected-btn" disabled>Add Selected</button>
+      <button class="btn btn-save" id="add-selected-btn" disabled>${isEdit ? 'Save' : 'Add Selected'}</button>
     </div>
   `;
 
-  document.getElementById('url-back').addEventListener('click', () => {
-    closeModal();
-    showUrlPicker();
-  });
+  if (!isEdit) {
+    document.getElementById('url-back').addEventListener('click', () => {
+      closeModal();
+      showUrlPicker();
+    });
+  }
   document.getElementById('url-close2').addEventListener('click', closeModal);
 
   const customInput = document.getElementById('custom-url-input');
@@ -209,8 +245,13 @@ async function showBookmarkStep(modal, browser, closeModal) {
       .filter(cb => cb.closest('.bookmark-row')?.style.display !== 'none').length;
     const hasCustom = customInput.value.trim().length > 0;
     const total = checkedCount + (hasCustom ? 1 : 0);
-    addBtn.disabled = total === 0;
-    addBtn.textContent = total > 0 ? `Add ${total} Selected` : 'Add Selected';
+    if (isEdit) {
+      addBtn.disabled = false;
+      addBtn.textContent = total > 0 ? `Save (${total} URL${total === 1 ? '' : 's'})` : 'Save';
+    } else {
+      addBtn.disabled = total === 0;
+      addBtn.textContent = total > 0 ? `Add ${total} Selected` : 'Add Selected';
+    }
   }
 
   let bookmarks;
@@ -238,13 +279,14 @@ async function showBookmarkStep(modal, browser, closeModal) {
           <div class="bookmark-url">${safeUrl}</div>
         </div>
       `;
-      label.querySelector('.bookmark-checkbox').dataset.url = bm.url;
-      label.querySelector('.bookmark-checkbox').addEventListener('change', updateAddBtn);
+      const cb = label.querySelector('.bookmark-checkbox');
+      cb.dataset.url = bm.url;
+      if (isEdit && existingUrls.includes(bm.url)) cb.checked = true;
+      cb.addEventListener('change', updateAddBtn);
       list.appendChild(label);
     });
   }
 
-  // Search input filters the bookmark list
   document.getElementById('bookmark-search').addEventListener('input', (e) => {
     const q = e.target.value.trim().toLowerCase();
     modal.querySelectorAll('.bookmark-row').forEach(row => {
@@ -255,29 +297,51 @@ async function showBookmarkStep(modal, browser, closeModal) {
     updateAddBtn();
   });
 
-  // Custom URL input only affects the Add button state — no list filtering
   customInput.addEventListener('input', updateAddBtn);
 
-  addBtn.addEventListener('click', () => {
+  addBtn.addEventListener('click', async () => {
     const checked = [...modal.querySelectorAll('.bookmark-checkbox:checked')]
       .filter(cb => cb.closest('.bookmark-row')?.style.display !== 'none');
-    checked.forEach(cb => {
-      const url = cb.dataset.url;
-      if (url && !currentItems.some(i => i.value === url)) {
-        currentItems.push({ item_type: 'url', path: browser.path, value: url });
-      }
-      cb.checked = false;
-    });
+    const urls = checked.map(cb => cb.dataset.url);
     const customUrl = customInput.value.trim();
-    if (customUrl && !currentItems.some(i => i.value === customUrl)) {
-      currentItems.push({ item_type: 'url', path: browser.path, value: customUrl });
+    if (customUrl) urls.push(customUrl);
+
+    if (!isEdit && urls.length === 0) return;
+
+    let icon_data = null;
+    try { icon_data = await invoke('get_file_icon', { path: browser.path }); } catch {}
+
+    const newItem = {
+      item_type: 'url',
+      path: browser.path,
+      browser_name: browser.name,
+      urls,
+      value: urls[0] || null,
+      icon_data,
+      launch_desktop: null,
+      launch_x: null,
+      launch_y: null,
+      launch_width: null,
+      launch_height: null,
+    };
+
+    if (isEdit) {
+      newItem.launch_desktop = existingItem.launch_desktop ?? null;
+      newItem.launch_x       = existingItem.launch_x ?? null;
+      newItem.launch_y       = existingItem.launch_y ?? null;
+      newItem.launch_width   = existingItem.launch_width ?? null;
+      newItem.launch_height  = existingItem.launch_height ?? null;
+      currentItems[existingIdx] = newItem;
+    } else {
+      currentItems.push(newItem);
     }
-    customInput.value = '';
+
     renderItems();
     closeModal();
   });
 
   customInput.focus();
+  updateAddBtn();
 }
 
 async function fitWindow() {
@@ -460,16 +524,46 @@ function renderItems() {
 
     const row = document.createElement('div');
     row.className = 'item-row';
-    const rawLabel = item.item_type === 'url' ? item.value : item.path;
-    const safeLabel = (rawLabel || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    const typeIcon = { app: '🖥️', file: '📄', url: '🌐', folder: '📁', script: '⚡' }[item.item_type] || '•';
-    row.innerHTML = `
-      <span>${typeIcon}</span>
-      <span class="item-label" title="${safeLabel}">${safeLabel}</span>
-      <button class="remove-btn">✕</button>
-    `;
 
-    row.querySelector('.remove-btn').onclick = () => { currentItems.splice(idx, 1); renderItems(); };
+    if (item.item_type === 'url') {
+      const allUrls = (item.urls && item.urls.length > 0) ? item.urls : (item.value ? [item.value] : []);
+      const count = allUrls.length;
+      const name = browserDisplayName(item);
+      const label = `${name} (${count} URL${count === 1 ? '' : 's'})`;
+      const hostnames = allUrls.slice(0, 2).map(urlHostname);
+      const subtitle = hostnames.join(', ') + (allUrls.length > 2 ? ` +${allUrls.length - 2}` : '');
+
+      const iconHtml = item.icon_data
+        ? `<img src="data:image/png;base64,${item.icon_data}" style="width:16px;height:16px;object-fit:contain;vertical-align:middle;" alt="" />`
+        : '<span>🌐</span>';
+
+      const safeLabel    = label.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const safeSubtitle = subtitle.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+      row.innerHTML = `
+        ${iconHtml}
+        <div class="item-label-multi" title="${safeSubtitle}" style="flex:1;min-width:0;overflow:hidden;">
+          <div class="item-label">${safeLabel}</div>
+          <div style="font-size:10px;color:#888;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${safeSubtitle}</div>
+        </div>
+        <button class="edit-url-btn" style="font-size:11px;padding:2px 6px;margin-right:4px;">✏</button>
+        <button class="remove-btn">✕</button>
+      `;
+
+      row.querySelector('.edit-url-btn').onclick = () => showUrlPicker({ item, idx });
+      row.querySelector('.remove-btn').onclick = () => { currentItems.splice(idx, 1); renderItems(); };
+
+    } else {
+      const rawLabel = item.path || '';
+      const safeLabel = rawLabel.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const typeIcon = { app: '🖥️', file: '📄', folder: '📁', script: '⚡' }[item.item_type] || '•';
+      row.innerHTML = `
+        <span>${typeIcon}</span>
+        <span class="item-label" title="${safeLabel}">${safeLabel}</span>
+        <button class="remove-btn">✕</button>
+      `;
+      row.querySelector('.remove-btn').onclick = () => { currentItems.splice(idx, 1); renderItems(); };
+    }
 
     row.setAttribute('draggable', 'true');
     row.dataset.index = idx;
