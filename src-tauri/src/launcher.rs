@@ -197,14 +197,20 @@ fn collect_browser_urls(
 
     for item in items {
         if let ItemType::Url = &item.item_type {
-            // Items with a saved position are launched individually with flags
             if item.launch_x.is_some() { continue; }
-            if let Some(url) = &item.value {
-                let browser = item.path.as_deref().or(preferred_browser);
-                match browser {
-                    Some(b) => browser_urls.entry(b.to_string()).or_default().push(url.clone()),
-                    None => fallback_urls.push(url.clone()),
-                }
+
+            let url_list: Vec<String> = if !item.urls.is_empty() {
+                item.urls.clone()
+            } else if let Some(v) = &item.value {
+                vec![v.clone()]
+            } else {
+                continue;
+            };
+
+            let browser = item.path.as_deref().or(preferred_browser);
+            match browser {
+                Some(b) => browser_urls.entry(b.to_string()).or_default().extend(url_list),
+                None => fallback_urls.extend(url_list),
             }
         }
     }
@@ -282,7 +288,13 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
             }
         }
         ItemType::Url => {
-            let url = item.value.as_ref().ok_or("URL item is missing a value")?;
+            let url_owned: String;
+            let url: &str = if !item.urls.is_empty() {
+                &item.urls[0]
+            } else {
+                url_owned = item.value.clone().ok_or("URL item is missing a value")?;
+                &url_owned
+            };
             let browser = item.path.as_deref().or(preferred_browser.as_deref());
 
             if let (Some(bp), Some(x), Some(y)) = (browser, item.launch_x, item.launch_y) {
@@ -339,6 +351,19 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
         }
         ItemType::Script => {
             let path = item.path.as_ref().ok_or("Script item is missing a path")?;
+
+            if !item.run_in_terminal {
+                #[cfg(target_os = "windows")]
+                let before = if item.launch_x.is_some() { Some(collect_visible_hwnds()) } else { None };
+                open::that(path).map_err(|e| format!("Failed to open script '{}': {}", path, e))?;
+                #[cfg(target_os = "windows")]
+                if let (Some(before), Some(x), Some(y)) = (before, item.launch_x, item.launch_y) {
+                    position_window_by_snapshot(before, None, None, x, y, item.launch_width, item.launch_height);
+                }
+                return Ok(());
+            }
+
+            // run_in_terminal = true: execute via cmd/powershell (existing behavior)
             #[cfg(target_os = "windows")]
             let before = if item.launch_x.is_some() { Some(collect_visible_hwnds()) } else { None };
             let child = if path.to_lowercase().ends_with(".ps1") {
@@ -454,5 +479,56 @@ mod tests {
         let (map, fallback) = collect_browser_urls(&items, None);
         assert!(map.is_empty());
         assert_eq!(fallback.len(), 1);
+    }
+
+    #[test]
+    fn test_collect_browser_urls_uses_urls_field_when_populated() {
+        let items = vec![
+            Item {
+                item_type: ItemType::Url,
+                path: Some("chrome.exe".into()),
+                value: Some("https://old.com".into()),
+                urls: vec!["https://a.com".into(), "https://b.com".into()],
+                icon_data: None, browser_name: None, run_in_terminal: true,
+                launch_desktop: None, launch_x: None, launch_y: None,
+                launch_width: None, launch_height: None,
+            },
+        ];
+        let (map, fallback) = collect_browser_urls(&items, None);
+        assert_eq!(map["chrome.exe"], vec!["https://a.com", "https://b.com"]);
+        assert!(fallback.is_empty());
+    }
+
+    #[test]
+    fn test_collect_browser_urls_falls_back_to_value_when_urls_empty() {
+        let items = vec![
+            Item {
+                item_type: ItemType::Url,
+                path: Some("firefox.exe".into()),
+                value: Some("https://fallback.com".into()),
+                urls: vec![],
+                icon_data: None, browser_name: None, run_in_terminal: true,
+                launch_desktop: None, launch_x: None, launch_y: None,
+                launch_width: None, launch_height: None,
+            },
+        ];
+        let (map, fallback) = collect_browser_urls(&items, None);
+        assert_eq!(map["firefox.exe"], vec!["https://fallback.com"]);
+        assert!(fallback.is_empty());
+    }
+
+    #[test]
+    fn test_launch_item_script_missing_path_returns_error_regardless_of_run_flag() {
+        let item = Item {
+            item_type: ItemType::Script,
+            path: None, value: None,
+            urls: vec![], icon_data: None, browser_name: None,
+            run_in_terminal: false,
+            launch_desktop: None, launch_x: None, launch_y: None,
+            launch_width: None, launch_height: None,
+        };
+        let result = launch_item(&item, &None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("missing a path"));
     }
 }
