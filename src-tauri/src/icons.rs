@@ -68,7 +68,6 @@ fn get_file_icon_windows(path: &str) -> Option<String> {
     }
 
     const SHGFI_ICON: u32 = 0x0000_0100;
-    const SHGFI_LARGEICON: u32 = 0x0000_0000;
     const DIB_RGB_COLORS: u32 = 0;
     const SIZE: u32 = 32;
 
@@ -91,7 +90,7 @@ fn get_file_icon_windows(path: &str) -> Option<String> {
             0,
             &mut sfi,
             std::mem::size_of::<ShFileInfoW>() as u32,
-            SHGFI_ICON | SHGFI_LARGEICON,
+            SHGFI_ICON,
         )
     };
 
@@ -140,7 +139,7 @@ fn get_file_icon_windows(path: &str) -> Option<String> {
         };
 
         let mut pixels = vec![0u8; (SIZE * SIZE * 4) as usize];
-        GetDIBits(
+        let dibits_result = GetDIBits(
             dc,
             icon_info.h_bm_color,
             0,
@@ -154,6 +153,11 @@ fn get_file_icon_windows(path: &str) -> Option<String> {
         DeleteObject(icon_info.h_bm_mask);
         if !icon_info.h_bm_color.is_null() {
             DeleteObject(icon_info.h_bm_color);
+        }
+
+        if dibits_result == 0 {
+            DestroyIcon(h_icon);
+            return None;
         }
 
         for chunk in pixels.chunks_exact_mut(4) {
