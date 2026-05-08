@@ -380,6 +380,11 @@ fn get_file_icon(path: String) -> Option<String> {
 }
 
 #[tauri::command]
+fn get_installed_steam_games() -> Vec<steam::SteamGame> {
+    steam::get_installed_steam_games()
+}
+
+#[tauri::command]
 fn send_feedback(message: String) -> Result<(), String> {
     if message.trim().is_empty() {
         return Err("Message is empty.".to_string());
@@ -826,6 +831,7 @@ pub fn run() {
             get_installed_browsers,
             get_browser_bookmarks,
             get_file_icon,
+            get_installed_steam_games,
             send_feedback,
             open_url,
             download_and_install_update,

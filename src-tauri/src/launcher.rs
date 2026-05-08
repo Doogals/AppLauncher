@@ -176,6 +176,62 @@ fn place_window(hwnd: *mut std::ffi::c_void, x: i32, y: i32, w: Option<u32>, h: 
     }
 }
 
+#[cfg(target_os = "windows")]
+fn set_cursor_to_monitor_center(monitor_idx: u32) {
+    extern "system" {
+        fn EnumDisplayMonitors(
+            hdc: *mut std::ffi::c_void,
+            clip: *const std::ffi::c_void,
+            callback: unsafe extern "system" fn(
+                *mut std::ffi::c_void,
+                *mut std::ffi::c_void,
+                *mut [i32; 4],
+                isize,
+            ) -> i32,
+            data: isize,
+        ) -> i32;
+        fn SetCursorPos(x: i32, y: i32) -> i32;
+    }
+
+    struct MonitorTarget {
+        idx: u32,
+        current: u32,
+        x: i32,
+        y: i32,
+        found: bool,
+    }
+
+    unsafe extern "system" fn cb(
+        _hmon: *mut std::ffi::c_void,
+        _hdc: *mut std::ffi::c_void,
+        rect: *mut [i32; 4],
+        data: isize,
+    ) -> i32 {
+        let target = &mut *(data as *mut MonitorTarget);
+        if target.current == target.idx {
+            let r = &*rect;
+            target.x = r[0] + (r[2] - r[0]) / 2;
+            target.y = r[1] + (r[3] - r[1]) / 2;
+            target.found = true;
+        }
+        target.current += 1;
+        1
+    }
+
+    let mut target = MonitorTarget { idx: monitor_idx, current: 0, x: 0, y: 0, found: false };
+    unsafe {
+        EnumDisplayMonitors(
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            cb,
+            &mut target as *mut _ as isize,
+        );
+        if target.found {
+            SetCursorPos(target.x, target.y);
+        }
+    }
+}
+
 fn is_chromium_based(path: &str) -> bool {
     let name = std::path::Path::new(path)
         .file_name()
@@ -412,7 +468,17 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
             }
         }
         ItemType::Steam => {
-            return Err("Steam launcher not yet implemented".to_string());
+            let appid = item.value.as_ref().ok_or("Steam item is missing appid")?;
+
+            // Move cursor to chosen monitor center before launch.
+            // Most Steam games open on whichever monitor the cursor is on at launch time.
+            #[cfg(target_os = "windows")]
+            if let Some(monitor_idx) = item.launch_desktop {
+                set_cursor_to_monitor_center(monitor_idx);
+            }
+
+            open::that(format!("steam://rungameid/{}", appid))
+                .map_err(|e| format!("Failed to launch Steam game '{}': {}", appid, e))?;
         }
     }
     Ok(())
@@ -542,6 +608,21 @@ mod tests {
         let (map, fallback) = collect_browser_urls(&items, None);
         assert_eq!(map["firefox.exe"], vec!["https://fallback.com"]);
         assert!(fallback.is_empty());
+    }
+
+    #[test]
+    fn test_launch_item_steam_missing_appid_returns_error() {
+        let item = Item {
+            item_type: ItemType::Steam,
+            path: Some("Counter-Strike 2".into()),
+            value: None, // missing appid
+            urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true,
+            launch_desktop: None, launch_x: None, launch_y: None,
+            launch_width: None, launch_height: None,
+        };
+        let result = launch_item(&item, &None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("missing appid"));
     }
 
     #[test]
