@@ -793,7 +793,7 @@ document.getElementById('cancel-btn').onclick = async () => {
 };
 
 // Store URL — update after creating your LemonSqueezy product
-const STORE_URL = 'https://tonictechapps.lemonsqueezy.com/checkout/buy/e14ee8eb-1a79-42a8-85a7-30aa23e66c61';
+const STORE_URL = 'https://tonictechapps.lemonsqueezy.com/checkout/buy/692bf539-a89a-4ff8-9da7-5c93507c21af';
 
 async function renderLicenseSection() {
   const config = await invoke('get_config');
