@@ -119,9 +119,11 @@ async function showWinAppPicker() {
       const row = document.createElement('div');
       row.className = 'winapp-row';
       row.textContent = app.name;
-      row.addEventListener('click', () => {
+      row.addEventListener('click', async () => {
         if (!currentItems.some(i => i.path === app.path)) {
-          currentItems.push({ item_type: 'app', path: app.path, value: app.args || null });
+          let icon_data = null;
+          try { icon_data = await invoke('get_file_icon', { path: app.path }); } catch {}
+          currentItems.push({ item_type: 'app', path: app.path, value: app.args || null, icon_data });
         }
         renderItems();
         closeModal();
@@ -344,6 +346,88 @@ async function showBookmarkStep(modal, browser, closeModal, existingItem = null,
   updateAddBtn();
 }
 
+async function showSteamPicker() {
+  const modal = document.createElement('div');
+  modal.className = 'winapp-modal';
+  modal.innerHTML = `
+    <div class="winapp-card">
+      <div class="winapp-header">
+        <input type="text" id="steam-search" placeholder="Search games..." autocomplete="off" />
+        <button class="winapp-close" id="steam-close">✕</button>
+      </div>
+      <div class="winapp-list" id="steam-list">
+        <div class="winapp-empty">Loading...</div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  const onKeyDown = (e) => { if (e.key === 'Escape') closeModal(); };
+  const closeModal = () => { document.removeEventListener('keydown', onKeyDown); modal.remove(); };
+  document.getElementById('steam-close').addEventListener('click', closeModal);
+  modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+  document.addEventListener('keydown', onKeyDown);
+
+  let games;
+  try {
+    games = await invoke('get_installed_steam_games');
+  } catch (e) {
+    games = [];
+  }
+
+  function renderGames(filter) {
+    const list = document.getElementById('steam-list');
+    if (!list) return;
+    const filtered = filter
+      ? games.filter(g => g.name.toLowerCase().includes(filter.toLowerCase()))
+      : games;
+
+    if (filtered.length === 0) {
+      list.innerHTML = games.length === 0
+        ? '<div class="winapp-empty">Steam not found or no games installed.</div>'
+        : '<div class="winapp-empty">No games match your search.</div>';
+      return;
+    }
+
+    list.innerHTML = '';
+    filtered.forEach(game => {
+      const row = document.createElement('div');
+      row.className = 'winapp-row';
+      row.style.display = 'flex';
+      row.style.alignItems = 'center';
+      row.style.gap = '8px';
+
+      const iconEl = game.icon_data
+        ? `<img src="data:image/jpeg;base64,${game.icon_data}" style="width:20px;height:20px;object-fit:contain;border-radius:3px;flex-shrink:0;" alt="" />`
+        : `<span style="width:20px;text-align:center;flex-shrink:0;">🎮</span>`;
+
+      const safeName = game.name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      row.innerHTML = `${iconEl}<span>${safeName}</span>`;
+
+      row.addEventListener('click', () => {
+        if (!currentItems.some(i => i.item_type === 'steam' && i.value === game.appid)) {
+          currentItems.push({
+            item_type: 'steam',
+            value: game.appid,
+            path: game.name,
+            icon_data: game.icon_data || null,
+            launch_desktop: null,
+            launch_x: null, launch_y: null, launch_width: null, launch_height: null,
+          });
+          renderItems();
+        }
+        closeModal();
+      });
+      list.appendChild(row);
+    });
+  }
+
+  renderGames('');
+  const searchInput = document.getElementById('steam-search');
+  searchInput.addEventListener('input', (e) => renderGames(e.target.value));
+  searchInput.focus();
+}
+
 async function fitWindow() {
   await new Promise(resolve => requestAnimationFrame(resolve));
   const h = document.querySelector('.config-window').offsetHeight;
@@ -469,6 +553,39 @@ function showPickerWindow(idx) {
 function buildExpandPanel(item, idx) {
   const panel = document.createElement('div');
   panel.className = 'item-expand';
+
+  if (item.item_type === 'steam') {
+    // Steam items: monitor dropdown instead of position picker
+    const monRow = document.createElement('div');
+    monRow.className = 'item-expand-row';
+    monRow.innerHTML = `
+      <span>Launch on screen</span>
+      <select class="steam-monitor-sel" style="flex:1;max-width:180px;background:#1e1e3e;border:1px solid #3a3a6a;border-radius:4px;color:#c8c8d8;font-size:11px;padding:3px 6px;cursor:pointer;">
+        <option value="">Any screen (default)</option>
+      </select>
+    `;
+    const sel = monRow.querySelector('.steam-monitor-sel');
+    invoke('get_monitors').then(monitors => {
+      monitors.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = String(m.index);
+        opt.textContent = m.is_primary
+          ? `Primary (${m.width}×${m.height})`
+          : `${m.name} (${m.width}×${m.height})`;
+        if (item.launch_desktop !== null && item.launch_desktop !== undefined && item.launch_desktop === m.index) {
+          opt.selected = true;
+        }
+        sel.appendChild(opt);
+      });
+    }).catch(() => {});
+    sel.addEventListener('change', e => {
+      currentItems[idx].launch_desktop = e.target.value === '' ? null : parseInt(e.target.value, 10);
+    });
+    panel.appendChild(monRow);
+    return panel;
+  }
+
+  // All non-Steam items: position picker
   const hasCoord = item.launch_x != null && item.launch_y != null;
   const hasSize = item.launch_width != null && item.launch_height != null;
   const coordText = hasCoord
@@ -553,12 +670,28 @@ function renderItems() {
       row.querySelector('.edit-url-btn').onclick = () => showUrlPicker({ item, idx });
       row.querySelector('.remove-btn').onclick = () => { currentItems.splice(idx, 1); renderItems(); };
 
+    } else if (item.item_type === 'steam') {
+      const gameName = item.path || 'Unknown Game';
+      const safeLabel = gameName.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const iconHtml = item.icon_data
+        ? `<img src="data:image/jpeg;base64,${item.icon_data}" style="width:16px;height:16px;object-fit:contain;vertical-align:middle;border-radius:2px;" alt="" />`
+        : '<span>🎮</span>';
+      row.innerHTML = `
+        ${iconHtml}
+        <span class="item-label" title="${safeLabel}">${safeLabel} <span style="color:#1b9fdb;font-size:10px;font-weight:400;">Steam</span></span>
+        <button class="remove-btn">✕</button>
+      `;
+      row.querySelector('.remove-btn').onclick = () => { currentItems.splice(idx, 1); renderItems(); };
+
     } else {
       const rawLabel = item.path || '';
       const safeLabel = rawLabel.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      const typeIcon = { app: '🖥️', file: '📄', folder: '📁', script: '⚡' }[item.item_type] || '•';
+      const typeEmoji = { app: '🖥️', file: '📄', folder: '📁', script: '⚡' }[item.item_type] || '•';
+      const iconHtml = item.icon_data
+        ? `<img src="data:image/png;base64,${item.icon_data}" style="width:16px;height:16px;object-fit:contain;vertical-align:middle;" alt="" />`
+        : `<span>${typeEmoji}</span>`;
       row.innerHTML = `
-        <span>${typeIcon}</span>
+        ${iconHtml}
         <span class="item-label" title="${safeLabel}">${safeLabel}</span>
         <button class="remove-btn">✕</button>
       `;
@@ -612,6 +745,11 @@ async function addItem(type) {
     return;
   }
 
+  if (type === 'steam') {
+    await showSteamPicker();
+    return;
+  }
+
   const filters = type === 'app' || type === 'script'
     ? [{ name: 'Executable', extensions: ['exe', 'bat', 'ps1', 'cmd'] }]
     : [];
@@ -621,7 +759,9 @@ async function addItem(type) {
     filters: filters.length ? filters : undefined,
   });
   if (!selected) return;
-  const newItem = { item_type: type, path: selected, value: null };
+  let icon_data = null;
+  try { icon_data = await invoke('get_file_icon', { path: selected }); } catch {}
+  const newItem = { item_type: type, path: selected, value: null, icon_data };
   if (type === 'script') newItem.run_in_terminal = true;
   currentItems.push(newItem);
 
