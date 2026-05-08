@@ -4,6 +4,7 @@ mod license;
 mod apps;
 mod browsers;
 mod icons;
+mod steam;
 
 use config::{AppConfig, Group, Item};
 use apps::InstalledApp;
