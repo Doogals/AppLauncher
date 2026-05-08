@@ -17,11 +17,11 @@ pub fn get_steam_path() -> Option<String> {
 #[cfg(target_os = "windows")]
 fn get_steam_path_windows() -> Option<String> {
     use std::ffi::OsString;
-    use std::os::windows::ffi::OsStrExt;
     use std::os::windows::ffi::OsStringExt;
 
     fn to_wide(s: &str) -> Vec<u16> {
         use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
         OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
     }
 
@@ -73,7 +73,8 @@ fn get_steam_path_windows() -> Option<String> {
         if ret != 0 { return None; }
 
         // REG_SZ is UTF-16LE; size includes the null terminator
-        let wchars: Vec<u16> = buf[..size as usize]
+        let byte_len = (size as usize).min(buf.len()) & !1; // round down to even
+        let wchars: Vec<u16> = buf[..byte_len]
             .chunks_exact(2)
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
             .collect();
@@ -147,10 +148,10 @@ fn extract_acf_value(line: &str, key: &str) -> Option<String> {
 }
 
 fn load_icon_base64(steam_path: &str, appid: &str) -> Option<String> {
-    let path = format!(
-        "{}/appcache/librarycache/{}_icon.jpg",
-        steam_path, appid
-    );
+    let path = std::path::Path::new(steam_path)
+        .join("appcache")
+        .join("librarycache")
+        .join(format!("{}_icon.jpg", appid));
     let bytes = std::fs::read(&path).ok()?;
     Some(base64_encode(&bytes))
 }
