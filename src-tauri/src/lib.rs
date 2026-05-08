@@ -10,6 +10,7 @@ use config::{AppConfig, Group, Item};
 use apps::InstalledApp;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
+use tauri_plugin_updater::UpdaterExt;
 
 struct AppState(Mutex<AppConfig>);
 
@@ -20,7 +21,6 @@ fn open_url(url: String) {
 
 #[tauri::command]
 async fn download_and_install_update(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri_plugin_updater::UpdaterExt;
     let updater = app.updater().map_err(|e| e.to_string())?;
     let update = updater.check().await.map_err(|e| e.to_string())?;
     if let Some(update) = update {
