@@ -10,6 +10,7 @@ pub enum ItemType {
     Url,
     Folder,
     Script,
+    Steam,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -232,5 +233,24 @@ mod tests {
         assert_eq!(loaded.icon_data.as_deref(), Some("abc123"));
         assert_eq!(loaded.browser_name.as_deref(), Some("Chrome"));
         assert!(!loaded.run_in_terminal);
+    }
+
+    #[test]
+    fn test_steam_item_type_serializes_correctly() {
+        let item = Item {
+            item_type: ItemType::Steam,
+            path: Some("Counter-Strike 2".into()),
+            value: Some("730".into()),
+            urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true,
+            launch_desktop: Some(0), launch_x: None, launch_y: None,
+            launch_width: None, launch_height: None,
+        };
+        let json = serde_json::to_string(&item).unwrap();
+        assert!(json.contains("\"steam\""), "item_type should serialize as 'steam'");
+        let loaded: Item = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.item_type, ItemType::Steam);
+        assert_eq!(loaded.value.as_deref(), Some("730"));
+        assert_eq!(loaded.path.as_deref(), Some("Counter-Strike 2"));
+        assert_eq!(loaded.launch_desktop, Some(0));
     }
 }

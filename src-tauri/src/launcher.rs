@@ -411,6 +411,9 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
                 position_window_by_snapshot(before, Some(child.id()), launcher_exe, x, y, item.launch_width, item.launch_height);
             }
         }
+        ItemType::Steam => {
+            return Err("Steam launcher not yet implemented".to_string());
+        }
     }
     Ok(())
 }
