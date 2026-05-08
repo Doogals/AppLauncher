@@ -10,7 +10,6 @@ use config::{AppConfig, Group, Item};
 use apps::InstalledApp;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
-use tauri_plugin_updater::UpdaterExt;
 
 struct AppState(Mutex<AppConfig>);
 
@@ -632,6 +631,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
+            #[allow(unused_imports)]
             use tauri::menu::{Menu, MenuItem};
             use tauri::tray::TrayIconBuilder;
 

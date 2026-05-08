@@ -47,6 +47,7 @@ pub struct Group {
 }
 
 impl Group {
+    #[allow(dead_code)]
     pub fn new(name: &str, icon: &str) -> Self {
         Group {
             id: Uuid::new_v4().to_string(),

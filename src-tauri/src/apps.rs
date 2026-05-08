@@ -11,7 +11,7 @@ pub struct InstalledApp {
 #[cfg(target_os = "windows")]
 pub fn get_installed_apps() -> Vec<InstalledApp> {
     use std::collections::HashSet;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     let should_uninit = unsafe {
         use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
