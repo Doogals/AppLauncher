@@ -629,6 +629,22 @@ function buildExpandPanel(item, idx) {
     panel.appendChild(runRow);
   }
 
+  if (item.item_type === 'app') {
+    const adminRow = document.createElement('div');
+    adminRow.className = 'item-expand-row';
+    const checked = item.run_as_admin ? 'checked' : '';
+    adminRow.innerHTML = `
+      <label class="run-toggle">
+        <input type="checkbox" class="admin-checkbox" ${checked} />
+        🛡 Run as admin
+      </label>
+    `;
+    adminRow.querySelector('.admin-checkbox').addEventListener('change', (e) => {
+      currentItems[idx].run_as_admin = e.target.checked;
+    });
+    panel.appendChild(adminRow);
+  }
+
   return panel;
 }
 
