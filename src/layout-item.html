@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Layout Editor</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      background: rgba(15, 32, 64, 0.97);
+      color: #e0e0e0;
+      font-family: 'Segoe UI', sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: space-between;
+      padding: 24px 20px 16px;
+      user-select: none;
+    }
+    #pk-body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      flex: 1;
+      justify-content: center;
+    }
+    #pk-name {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: #fff;
+      text-align: center;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #pk-cross { font-size: 2.4rem; color: #4a9eff; line-height: 1; }
+    #pk-hint {
+      font-size: 0.75rem;
+      color: #aaa;
+      text-align: center;
+      line-height: 1.5;
+    }
+    #pk-hint small { color: #666; }
+    #pk-footer { display: flex; gap: 8px; width: 100%; }
+    button {
+      flex: 1;
+      padding: 7px 0;
+      border-radius: 5px;
+      border: 1px solid #0f3460;
+      cursor: pointer;
+      font-size: 0.82rem;
+      font-family: inherit;
+    }
+    #pk-cancel  { background: #16213e; color: #aaa; }
+    #pk-cancel:hover  { border-color: #e94560; color: #e94560; }
+    #pk-save { background: #e07b39; color: #fff; border-color: #e07b39; }
+    #pk-save:hover { background: #c96a2a; }
+  </style>
+</head>
+<body>
+  <div id="pk-body">
+    <div id="pk-name"></div>
+    <div id="pk-cross">&#x2316;</div>
+    <div id="pk-hint">
+      Drag &amp; resize this window to set its launch position<br>
+      <small>Move all windows, then click Save All</small>
+    </div>
+  </div>
+  <div id="pk-footer">
+    <button id="pk-cancel">Cancel All</button>
+    <button id="pk-save">Save All Positions</button>
+  </div>
+  <script type="module" src="layout-item.js"></script>
+</body>
+</html>
