@@ -428,6 +428,63 @@ async function showSteamPicker() {
   searchInput.focus();
 }
 
+async function showLayoutEditor() {
+  if (currentItems.length === 0) return;
+
+  let monitors;
+  try { monitors = await invoke('get_monitors'); } catch { monitors = []; }
+  const primary = monitors.find(m => m.is_primary) || { x: 0, y: 0, width: 1920, height: 1080 };
+  const centerX = primary.x + Math.floor(primary.width / 2) - 400;
+  const centerY = primary.y + Math.floor(primary.height / 2) - 300;
+  const total = currentItems.length;
+
+  for (let idx = 0; idx < currentItems.length; idx++) {
+    const item = currentItems[idx];
+    const hasPos = item.launch_x != null && item.launch_y != null;
+    const x = hasPos ? item.launch_x : centerX + idx * 30;
+    const y = hasPos ? item.launch_y : centerY + idx * 30;
+    const w = Math.max(item.launch_width || 800, 300);
+    const h = Math.max(item.launch_height || 600, 200);
+
+    const rawName = item.item_type === 'steam'
+      ? (item.path || 'Steam Game')
+      : item.item_type === 'url'
+        ? browserDisplayName(item)
+        : (item.path || item.value || 'Item');
+    const safeName = encodeURIComponent(rawName);
+
+    new WebviewWindow(`layout-item-${idx}`, {
+      url: `layout-item.html?idx=${idx}&name=${safeName}&total=${total}`,
+      title: rawName,
+      x, y,
+      width: w,
+      height: h,
+      resizable: true,
+      decorations: true,
+      alwaysOnTop: true,
+    });
+  }
+
+  const unlistenSave = await listen('layout-save', ({ payload: { positions } }) => {
+    positions.forEach(([x, y, w, h], i) => {
+      if (i < currentItems.length && w > 0 && h > 0) {
+        currentItems[i].launch_x = x;
+        currentItems[i].launch_y = y;
+        currentItems[i].launch_width = w;
+        currentItems[i].launch_height = h;
+      }
+    });
+    unlistenSave();
+    unlistenCancel();
+    renderItems();
+  });
+
+  const unlistenCancel = await listen('layout-cancel', () => {
+    unlistenSave();
+    unlistenCancel();
+  });
+}
+
 async function fitWindow() {
   await new Promise(resolve => requestAnimationFrame(resolve));
   const h = document.querySelector('.config-window').offsetHeight;
@@ -438,15 +495,6 @@ async function init() {
   initTabs();
   await initSettingsTab();
   initEmojiPicker();
-
-  // Receive results from the separate picker window
-  listen('picker-result', ({ payload: { idx, x, y, w, h } }) => {
-    currentItems[idx].launch_x = x;
-    currentItems[idx].launch_y = y;
-    currentItems[idx].launch_width = w;
-    currentItems[idx].launch_height = h;
-    renderItems();
-  });
 
   document.querySelector('.license-details').addEventListener('toggle', fitWindow);
 
@@ -537,25 +585,13 @@ async function initSettingsTab() {
   });
 }
 
-function showPickerWindow(idx) {
-  new WebviewWindow('picker', {
-    url: `picker.html?idx=${idx}`,
-    title: 'Pick Launch Position',
-    width: 480,
-    height: 260,
-    resizable: true,
-    decorations: true,
-    alwaysOnTop: true,
-    center: true,
-  });
-}
 
 function buildExpandPanel(item, idx) {
   const panel = document.createElement('div');
   panel.className = 'item-expand';
 
   if (item.item_type === 'steam') {
-    // Steam items: monitor dropdown instead of position picker
+    // Steam items: monitor dropdown only
     const monRow = document.createElement('div');
     monRow.className = 'item-expand-row';
     monRow.innerHTML = `
@@ -585,33 +621,24 @@ function buildExpandPanel(item, idx) {
     return panel;
   }
 
-  // All non-Steam items: position picker
-  const hasCoord = item.launch_x != null && item.launch_y != null;
-  const hasSize = item.launch_width != null && item.launch_height != null;
-  const coordText = hasCoord
-    ? `x:${item.launch_x} y:${item.launch_y}${hasSize ? `  ${item.launch_width}\xd7${item.launch_height}` : ''}`
-    : 'not set';
-  panel.innerHTML = `
-    <div class="item-expand-row">
-      <span>Launch at</span>
-      <span class="coord-display${hasCoord ? '' : ' coord-empty'}">${coordText}</span>
-      ${hasCoord ? '<button class="coord-clear" title="Clear">✕</button>' : ''}
-      <button class="pick-btn">&#x1f4cd; Pick</button>
-    </div>
-  `;
-
-  const clearBtn = panel.querySelector('.coord-clear');
-  if (clearBtn) {
-    clearBtn.addEventListener('click', () => {
+  // All non-Steam items: optional clear row + type-specific options
+  const hasPos = item.launch_x != null && item.launch_y != null;
+  if (hasPos) {
+    const posRow = document.createElement('div');
+    posRow.className = 'item-expand-row';
+    posRow.innerHTML = `
+      <span style="color:#888;font-size:11px;">Position saved</span>
+      <button class="coord-clear" style="background:none;border:none;color:#555;font-size:11px;cursor:pointer;padding:0 4px;" title="Clear">✕ Clear</button>
+    `;
+    posRow.querySelector('.coord-clear').addEventListener('click', () => {
       currentItems[idx].launch_x = null;
       currentItems[idx].launch_y = null;
       currentItems[idx].launch_width = null;
       currentItems[idx].launch_height = null;
       renderItems();
     });
+    panel.appendChild(posRow);
   }
-
-  panel.querySelector('.pick-btn').addEventListener('click', () => showPickerWindow(idx));
 
   if (item.item_type === 'script') {
     const runRow = document.createElement('div');
@@ -807,6 +834,8 @@ document.getElementById('save-btn').onclick = async () => {
 document.getElementById('cancel-btn').onclick = async () => {
   await getCurrentWindow().close();
 };
+
+document.getElementById('layout-btn').onclick = () => showLayoutEditor();
 
 // Store URL — update after creating your LemonSqueezy product
 const STORE_URL = 'https://tonictechapps.lemonsqueezy.com/checkout/buy/692bf539-a89a-4ff8-9da7-5c93507c21af';
