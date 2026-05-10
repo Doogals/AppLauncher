@@ -90,6 +90,7 @@ async function openConfig(groupId) {
     title: groupId ? 'Edit Group' : 'New Group',
     width: 420,
     height: 460,
+    center: true,
     decorations: true,
     resizable: false,
     alwaysOnTop: true,
@@ -107,12 +108,19 @@ listen('context-menu:edit',   (e) => openConfig(e.payload));
 listen('context-menu:delete', (e) => deleteGroup(e.payload));
 
 // Show update notification banner when a new version is available
-listen('update-available', (e) => {
-  const version = e.payload;
-  const banner = document.createElement('div');
-  banner.style.cssText = 'position:fixed;bottom:0;left:0;right:0;background:#e07b39;color:#fff;font-size:11px;padding:4px 8px;display:flex;justify-content:space-between;align-items:center;z-index:9999;';
-  banner.innerHTML = `<span>v${version} available</span><a href="https://github.com/Doogals/AppLauncher/releases/latest" target="_blank" style="color:#fff;font-weight:700;text-decoration:underline;">Download</a>`;
-  document.body.appendChild(banner);
+listen('update-available', () => {
+  const btn = document.createElement('div');
+  btn.style.cssText = 'position:fixed;bottom:0;left:0;right:0;background:#e07b39;color:#fff;font-size:11px;font-weight:700;padding:3px 0;text-align:center;cursor:pointer;z-index:9999;';
+  btn.textContent = '⬆ Update';
+  btn.addEventListener('click', () => {
+    btn.textContent = 'Downloading…';
+    btn.style.cursor = 'default';
+    invoke('download_and_install_update').catch(() => {
+      btn.textContent = '⬆ Update';
+      btn.style.cursor = 'pointer';
+    });
+  });
+  document.body.appendChild(btn);
 });
 
 // Position saving after render + restore saved color
