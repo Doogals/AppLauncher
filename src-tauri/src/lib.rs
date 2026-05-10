@@ -426,6 +426,38 @@ fn get_window_frame_rect(window: tauri::WebviewWindow) -> Result<[i32; 4], Strin
 }
 
 #[tauri::command]
+fn get_all_layout_positions(app: tauri::AppHandle, labels: Vec<String>) -> Vec<[i32; 4]> {
+    #[cfg(target_os = "windows")]
+    {
+        extern "system" {
+            fn GetWindowRect(hwnd: *mut std::ffi::c_void, rect: *mut [i32; 4]) -> i32;
+        }
+        labels.iter().map(|label| {
+            app.get_webview_window(label)
+                .and_then(|w| w.hwnd().ok())
+                .map(|hwnd| {
+                    let mut rect = [0i32; 4];
+                    unsafe { GetWindowRect(hwnd.0 as *mut _, &mut rect); }
+                    [rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1]]
+                })
+                .unwrap_or([0, 0, 0, 0])
+        }).collect()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        labels.iter().map(|label| {
+            app.get_webview_window(label)
+                .and_then(|w| {
+                    let pos = w.outer_position().ok()?;
+                    let size = w.outer_size().ok()?;
+                    Some([pos.x, pos.y, size.width as i32, size.height as i32])
+                })
+                .unwrap_or([0, 0, 0, 0])
+        }).collect()
+    }
+}
+
+#[tauri::command]
 fn resize_widget(width: u32, height: u32, app: tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("widget") {
         window
@@ -825,6 +857,7 @@ pub fn run() {
             set_hotkey,
             get_monitors,
             get_window_frame_rect,
+            get_all_layout_positions,
             resize_widget,
             get_installed_apps,
             show_group_context_menu,
