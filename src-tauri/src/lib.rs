@@ -466,6 +466,60 @@ fn close_layout_windows(app: tauri::AppHandle, labels: Vec<String>) {
     }
 }
 
+#[derive(serde::Serialize, Clone)]
+struct LayoutSavePayload {
+    positions: Vec<[i32; 4]>,
+}
+
+// Collects positions, emits layout-save from the backend (reaches all windows),
+// then closes all layout windows. Using Rust avoids cross-webview JS event issues.
+#[tauri::command]
+fn complete_layout_save(app: tauri::AppHandle, labels: Vec<String>) {
+    #[cfg(target_os = "windows")]
+    let positions: Vec<[i32; 4]> = {
+        extern "system" {
+            fn GetWindowRect(hwnd: *mut std::ffi::c_void, rect: *mut [i32; 4]) -> i32;
+        }
+        labels.iter().map(|label| {
+            app.get_webview_window(label)
+                .and_then(|w| w.hwnd().ok())
+                .map(|hwnd| {
+                    let mut rect = [0i32; 4];
+                    unsafe { GetWindowRect(hwnd.0 as *mut _, &mut rect); }
+                    [rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1]]
+                })
+                .unwrap_or([0, 0, 0, 0])
+        }).collect()
+    };
+    #[cfg(not(target_os = "windows"))]
+    let positions: Vec<[i32; 4]> = labels.iter().map(|label| {
+        app.get_webview_window(label)
+            .and_then(|w| {
+                let pos = w.outer_position().ok()?;
+                let size = w.outer_size().ok()?;
+                Some([pos.x, pos.y, size.width as i32, size.height as i32])
+            })
+            .unwrap_or([0, 0, 0, 0])
+    }).collect();
+
+    let _ = app.emit("layout-save", LayoutSavePayload { positions });
+    for label in &labels {
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = window.close();
+        }
+    }
+}
+
+#[tauri::command]
+fn complete_layout_cancel(app: tauri::AppHandle, labels: Vec<String>) {
+    let _ = app.emit("layout-cancel", ());
+    for label in &labels {
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = window.close();
+        }
+    }
+}
+
 #[tauri::command]
 fn resize_widget(width: u32, height: u32, app: tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("widget") {
@@ -868,6 +922,8 @@ pub fn run() {
             get_window_frame_rect,
             get_all_layout_positions,
             close_layout_windows,
+            complete_layout_save,
+            complete_layout_cancel,
             resize_widget,
             get_installed_apps,
             show_group_context_menu,

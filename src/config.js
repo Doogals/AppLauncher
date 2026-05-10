@@ -466,11 +466,14 @@ async function showLayoutEditor() {
     });
   }
 
-  // If the config window closes for any reason, clean up layout windows
-  const onUnload = () => { invoke('close_layout_windows', { labels: layoutLabels }); };
-  window.addEventListener('beforeunload', onUnload, { once: true });
+  // If the config window closes, clean up layout windows first
+  const unlistenWindowClose = await getCurrentWindow().onCloseRequested(async (event) => {
+    event.preventDefault();
+    await invoke('close_layout_windows', { labels: layoutLabels });
+    await getCurrentWindow().destroy();
+  });
 
-  const unlistenSave = await listen('layout-save', async ({ payload: { positions } }) => {
+  const unlistenSave = await listen('layout-save', ({ payload: { positions } }) => {
     positions.forEach(([x, y, w, h], i) => {
       if (i < currentItems.length && w > 0 && h > 0) {
         currentItems[i].launch_x = x;
@@ -481,16 +484,14 @@ async function showLayoutEditor() {
     });
     unlistenSave();
     unlistenCancel();
-    window.removeEventListener('beforeunload', onUnload);
-    await closeAll();
+    unlistenWindowClose();
     renderItems();
   });
 
-  const unlistenCancel = await listen('layout-cancel', async () => {
+  const unlistenCancel = await listen('layout-cancel', () => {
     unlistenSave();
     unlistenCancel();
-    window.removeEventListener('beforeunload', onUnload);
-    await closeAll();
+    unlistenWindowClose();
   });
 }
 
