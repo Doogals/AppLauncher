@@ -458,6 +458,15 @@ fn get_all_layout_positions(app: tauri::AppHandle, labels: Vec<String>) -> Vec<[
 }
 
 #[tauri::command]
+fn close_layout_windows(app: tauri::AppHandle, labels: Vec<String>) {
+    for label in &labels {
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = window.close();
+        }
+    }
+}
+
+#[tauri::command]
 fn resize_widget(width: u32, height: u32, app: tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("widget") {
         window
@@ -858,6 +867,7 @@ pub fn run() {
             get_monitors,
             get_window_frame_rect,
             get_all_layout_positions,
+            close_layout_windows,
             resize_widget,
             get_installed_apps,
             show_group_context_menu,

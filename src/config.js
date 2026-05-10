@@ -431,12 +431,15 @@ async function showSteamPicker() {
 async function showLayoutEditor() {
   if (currentItems.length === 0) return;
 
+  const total = currentItems.length;
+  const layoutLabels = Array.from({ length: total }, (_, i) => `layout-item-${i}`);
+  const closeAll = () => invoke('close_layout_windows', { labels: layoutLabels });
+
   // Use window.screen for logical pixel coordinates (DPI-safe)
   const centerX = Math.floor(window.screen.width / 2) - 400;
   const centerY = Math.floor(window.screen.height / 2) - 300;
-  const total = currentItems.length;
 
-  for (let idx = 0; idx < currentItems.length; idx++) {
+  for (let idx = 0; idx < total; idx++) {
     const item = currentItems[idx];
     const hasPos = item.launch_x != null && item.launch_y != null;
     const x = hasPos ? item.launch_x : centerX + idx * 30;
@@ -463,14 +466,9 @@ async function showLayoutEditor() {
     });
   }
 
-  const closeLayoutWindows = async () => {
-    for (let i = 0; i < total; i++) {
-      try {
-        const win = WebviewWindow.getByLabel(`layout-item-${i}`);
-        if (win) await win.close();
-      } catch {}
-    }
-  };
+  // If the config window closes for any reason, clean up layout windows
+  const onUnload = () => { invoke('close_layout_windows', { labels: layoutLabels }); };
+  window.addEventListener('beforeunload', onUnload, { once: true });
 
   const unlistenSave = await listen('layout-save', async ({ payload: { positions } }) => {
     positions.forEach(([x, y, w, h], i) => {
@@ -483,14 +481,16 @@ async function showLayoutEditor() {
     });
     unlistenSave();
     unlistenCancel();
-    await closeLayoutWindows();
+    window.removeEventListener('beforeunload', onUnload);
+    await closeAll();
     renderItems();
   });
 
   const unlistenCancel = await listen('layout-cancel', async () => {
     unlistenSave();
     unlistenCancel();
-    await closeLayoutWindows();
+    window.removeEventListener('beforeunload', onUnload);
+    await closeAll();
   });
 }
 
