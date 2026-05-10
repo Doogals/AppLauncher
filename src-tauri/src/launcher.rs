@@ -273,6 +273,75 @@ fn collect_browser_urls(
     (browser_urls, fallback_urls)
 }
 
+#[cfg(target_os = "windows")]
+fn shell_execute_runas(path: &str) -> Result<(), String> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    fn to_wide(s: &str) -> Vec<u16> {
+        OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    #[repr(C)]
+    struct ShellExecuteInfoW {
+        cb_size: u32,
+        f_mask: u32,
+        hwnd: *mut std::ffi::c_void,
+        lp_verb: *const u16,
+        lp_file: *const u16,
+        lp_parameters: *const u16,
+        lp_directory: *const u16,
+        n_show: i32,
+        h_inst_app: *mut std::ffi::c_void,
+        lp_id_list: *mut std::ffi::c_void,
+        lp_class: *const u16,
+        h_key_class: *mut std::ffi::c_void,
+        dw_hot_key: u32,
+        _union_padding: u32,
+        h_monitor: *mut std::ffi::c_void,
+        h_process: *mut std::ffi::c_void,
+    }
+
+    extern "system" {
+        fn ShellExecuteExW(info: *mut ShellExecuteInfoW) -> i32;
+    }
+
+    const SEE_MASK_NOCLOSEPROCESS: u32 = 0x0000_0040;
+    const SW_SHOWNORMAL: i32 = 1;
+
+    let verb = to_wide("runas");
+    let file = to_wide(path);
+
+    let mut info = ShellExecuteInfoW {
+        cb_size: std::mem::size_of::<ShellExecuteInfoW>() as u32,
+        f_mask: SEE_MASK_NOCLOSEPROCESS,
+        hwnd: std::ptr::null_mut(),
+        lp_verb: verb.as_ptr(),
+        lp_file: file.as_ptr(),
+        lp_parameters: std::ptr::null(),
+        lp_directory: std::ptr::null(),
+        n_show: SW_SHOWNORMAL,
+        h_inst_app: std::ptr::null_mut(),
+        lp_id_list: std::ptr::null_mut(),
+        lp_class: std::ptr::null(),
+        h_key_class: std::ptr::null_mut(),
+        dw_hot_key: 0,
+        _union_padding: 0,
+        h_monitor: std::ptr::null_mut(),
+        h_process: std::ptr::null_mut(),
+    };
+
+    let ok = unsafe { ShellExecuteExW(&mut info) };
+    if ok == 0 {
+        Err(format!(
+            "Failed to launch '{}' as administrator (user may have cancelled UAC prompt)",
+            path
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 pub fn launch_group(group_id: &str, config: &AppConfig) -> Result<(), String> {
     let group = config
         .groups
@@ -316,6 +385,14 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
     match &item.item_type {
         ItemType::App => {
             let path = item.path.as_ref().ok_or("App item is missing a path")?;
+
+            // If run_as_admin is requested, use ShellExecuteExW with "runas" verb
+            // to trigger UAC elevation. This bypasses Command::spawn() entirely.
+            #[cfg(target_os = "windows")]
+            if item.run_as_admin {
+                return shell_execute_runas(path);
+            }
+
             let mut cmd = Command::new(path);
             if let Some(args) = &item.value {
                 if !args.is_empty() {
@@ -626,6 +703,21 @@ mod tests {
         let result = launch_item(&item, &None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("missing appid"));
+    }
+
+    #[test]
+    fn test_launch_item_app_missing_path_still_errors_with_run_as_admin() {
+        let item = Item {
+            item_type: ItemType::App,
+            path: None, value: None,
+            urls: vec![], icon_data: None, browser_name: None,
+            run_in_terminal: true, run_as_admin: true,
+            launch_desktop: None, launch_x: None, launch_y: None,
+            launch_width: None, launch_height: None,
+        };
+        let result = launch_item(&item, &None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("missing a path"));
     }
 
     #[test]
