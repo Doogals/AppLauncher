@@ -441,11 +441,13 @@ async function showLayoutEditor() {
 
   for (let idx = 0; idx < total; idx++) {
     const item = currentItems[idx];
+    const dpr = window.devicePixelRatio || 1;
     const hasPos = item.launch_x != null && item.launch_y != null;
-    const x = hasPos ? item.launch_x : centerX + idx * 30;
-    const y = hasPos ? item.launch_y : centerY + idx * 30;
-    const w = Math.max(item.launch_width || 800, 300);
-    const h = Math.max(item.launch_height || 600, 200);
+    // Saved positions are physical pixels (from GetWindowRect); WebviewWindow needs logical pixels
+    const x = hasPos ? Math.round(item.launch_x / dpr) : centerX + idx * 30;
+    const y = hasPos ? Math.round(item.launch_y / dpr) : centerY + idx * 30;
+    const w = Math.max(hasPos && item.launch_width ? Math.round(item.launch_width / dpr) : 800, 300);
+    const h = Math.max(hasPos && item.launch_height ? Math.round(item.launch_height / dpr) : 600, 200);
 
     const rawName = item.item_type === 'steam'
       ? (item.path || 'Steam Game')
