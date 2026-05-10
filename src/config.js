@@ -431,11 +431,9 @@ async function showSteamPicker() {
 async function showLayoutEditor() {
   if (currentItems.length === 0) return;
 
-  let monitors;
-  try { monitors = await invoke('get_monitors'); } catch { monitors = []; }
-  const primary = monitors.find(m => m.is_primary) || { x: 0, y: 0, width: 1920, height: 1080 };
-  const centerX = primary.x + Math.floor(primary.width / 2) - 400;
-  const centerY = primary.y + Math.floor(primary.height / 2) - 300;
+  // Use window.screen for logical pixel coordinates (DPI-safe)
+  const centerX = Math.floor(window.screen.width / 2) - 400;
+  const centerY = Math.floor(window.screen.height / 2) - 300;
   const total = currentItems.length;
 
   for (let idx = 0; idx < currentItems.length; idx++) {
@@ -465,7 +463,16 @@ async function showLayoutEditor() {
     });
   }
 
-  const unlistenSave = await listen('layout-save', ({ payload: { positions } }) => {
+  const closeLayoutWindows = async () => {
+    for (let i = 0; i < total; i++) {
+      try {
+        const win = WebviewWindow.getByLabel(`layout-item-${i}`);
+        if (win) await win.close();
+      } catch {}
+    }
+  };
+
+  const unlistenSave = await listen('layout-save', async ({ payload: { positions } }) => {
     positions.forEach(([x, y, w, h], i) => {
       if (i < currentItems.length && w > 0 && h > 0) {
         currentItems[i].launch_x = x;
@@ -476,12 +483,14 @@ async function showLayoutEditor() {
     });
     unlistenSave();
     unlistenCancel();
+    await closeLayoutWindows();
     renderItems();
   });
 
-  const unlistenCancel = await listen('layout-cancel', () => {
+  const unlistenCancel = await listen('layout-cancel', async () => {
     unlistenSave();
     unlistenCancel();
+    await closeLayoutWindows();
   });
 }
 

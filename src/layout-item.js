@@ -23,10 +23,10 @@ async function closeAll() {
 document.getElementById('pk-save').addEventListener('click', async () => {
   const positions = await invoke('get_all_layout_positions', { labels });
   await emit('layout-save', { positions });
-  await closeAll();
+  // config.js closes all windows after receiving the event
 });
 
 document.getElementById('pk-cancel').addEventListener('click', async () => {
   await emit('layout-cancel');
-  await closeAll();
+  // config.js closes all windows after receiving the event
 });
