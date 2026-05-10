@@ -512,7 +512,7 @@ mod tests {
 
     #[test]
     fn test_launch_item_app_missing_path_returns_error() {
-        let item = Item { item_type: ItemType::App, path: None, value: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None };
+        let item = Item { item_type: ItemType::App, path: None, value: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None };
         let result = launch_item(&item, &None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("missing a path"));
@@ -520,7 +520,7 @@ mod tests {
 
     #[test]
     fn test_launch_item_url_missing_value_returns_error() {
-        let item = Item { item_type: ItemType::Url, path: None, value: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None };
+        let item = Item { item_type: ItemType::Url, path: None, value: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None };
         let result = launch_item(&item, &None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("missing a value"));
@@ -528,7 +528,7 @@ mod tests {
 
     #[test]
     fn test_launch_item_script_missing_path_returns_error() {
-        let item = Item { item_type: ItemType::Script, path: None, value: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None };
+        let item = Item { item_type: ItemType::Script, path: None, value: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None };
         let result = launch_item(&item, &None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("missing a path"));
@@ -544,9 +544,9 @@ mod tests {
     #[test]
     fn test_url_items_with_same_browser_are_batched() {
         let items = vec![
-            Item { item_type: ItemType::Url, path: Some("chrome.exe".to_string()), value: Some("https://a.com".to_string()), urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
-            Item { item_type: ItemType::Url, path: Some("chrome.exe".to_string()), value: Some("https://b.com".to_string()), urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
-            Item { item_type: ItemType::Url, path: Some("firefox.exe".to_string()), value: Some("https://c.com".to_string()), urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
+            Item { item_type: ItemType::Url, path: Some("chrome.exe".to_string()), value: Some("https://a.com".to_string()), urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
+            Item { item_type: ItemType::Url, path: Some("chrome.exe".to_string()), value: Some("https://b.com".to_string()), urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
+            Item { item_type: ItemType::Url, path: Some("firefox.exe".to_string()), value: Some("https://c.com".to_string()), urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
         ];
         let (map, fallback) = collect_browser_urls(&items, None);
         assert_eq!(map["chrome.exe"].len(), 2);
@@ -557,7 +557,7 @@ mod tests {
     #[test]
     fn test_url_items_fall_back_to_preferred_browser() {
         let items = vec![
-            Item { item_type: ItemType::Url, path: None, value: Some("https://x.com".to_string()), urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
+            Item { item_type: ItemType::Url, path: None, value: Some("https://x.com".to_string()), urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
         ];
         let (map, fallback) = collect_browser_urls(&items, Some("edge.exe"));
         assert_eq!(map["edge.exe"].len(), 1);
@@ -567,7 +567,7 @@ mod tests {
     #[test]
     fn test_url_items_with_no_browser_go_to_fallback() {
         let items = vec![
-            Item { item_type: ItemType::Url, path: None, value: Some("https://y.com".to_string()), urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
+            Item { item_type: ItemType::Url, path: None, value: Some("https://y.com".to_string()), urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
         ];
         let (map, fallback) = collect_browser_urls(&items, None);
         assert!(map.is_empty());
@@ -583,6 +583,7 @@ mod tests {
                 value: Some("https://old.com".into()),
                 urls: vec!["https://a.com".into(), "https://b.com".into()],
                 icon_data: None, browser_name: None, run_in_terminal: true,
+                run_as_admin: false,
                 launch_desktop: None, launch_x: None, launch_y: None,
                 launch_width: None, launch_height: None,
             },
@@ -601,6 +602,7 @@ mod tests {
                 value: Some("https://fallback.com".into()),
                 urls: vec![],
                 icon_data: None, browser_name: None, run_in_terminal: true,
+                run_as_admin: false,
                 launch_desktop: None, launch_x: None, launch_y: None,
                 launch_width: None, launch_height: None,
             },
@@ -617,6 +619,7 @@ mod tests {
             path: Some("Counter-Strike 2".into()),
             value: None, // missing appid
             urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true,
+            run_as_admin: false,
             launch_desktop: None, launch_x: None, launch_y: None,
             launch_width: None, launch_height: None,
         };
@@ -632,6 +635,7 @@ mod tests {
             path: None, value: None,
             urls: vec![], icon_data: None, browser_name: None,
             run_in_terminal: false,
+            run_as_admin: false,
             launch_desktop: None, launch_x: None, launch_y: None,
             launch_width: None, launch_height: None,
         };
