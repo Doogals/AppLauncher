@@ -88,6 +88,7 @@ The expand panel for non-Steam, non-script items becomes empty (only the script 
    - Config.js maps results back to item indices and updates `launch_x/y/width/height` on each item
    - All layout windows close
    - `renderItems()` is called to reflect cleared/updated coord displays
+7. If a user closes an individual layout window manually (via title bar X), that item's position is unchanged — only Save All writes positions back.
 
 ### New Files
 
