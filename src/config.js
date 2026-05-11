@@ -789,6 +789,7 @@ document.querySelectorAll('[data-type]').forEach(el => {
 
 async function addItem(type) {
   document.getElementById('add-type-menu').style.display = 'none';
+  fitWindow();
 
   if (type === 'winapp') {
     await showWinAppPicker();
