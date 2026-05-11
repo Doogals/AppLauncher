@@ -43,7 +43,7 @@ html, body {
 .group-btn:hover { background: rgba(15, 52, 96, 1); }
 
 .group-btn .icon { font-size: 1.5rem; line-height: 1; }
-.group-btn .label { font-size: 0.7rem; color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 68px; }
+.group-btn .label { font-size: 0.7rem; color: #ccc; white-space: nowrap; }
 
 .add-btn {
   border: 1.5px dashed rgba(255, 255, 255, 0.4);
