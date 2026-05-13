@@ -468,10 +468,11 @@ async function showLayoutEditor() {
     });
   }
 
-  // If the config window closes, clean up layout windows first
+  // If the config window closes, clean up layout windows first.
+  // Always call destroy() — don't let a stuck layout window block the close.
   const unlistenWindowClose = await getCurrentWindow().onCloseRequested(async (event) => {
     event.preventDefault();
-    await invoke('close_layout_windows', { labels: layoutLabels });
+    try { await invoke('close_layout_windows', { labels: layoutLabels }); } catch {}
     await getCurrentWindow().destroy();
   });
 
