@@ -119,6 +119,7 @@ fn position_window_by_snapshot(
     preferred_pid: Option<u32>,
     preferred_exe: Option<String>,
     x: i32, y: i32, w: Option<u32>, h: Option<u32>,
+    virtual_desktop: Option<Vec<u8>>,
 ) {
     use std::thread;
     use std::time::Duration;
@@ -126,23 +127,42 @@ fn position_window_by_snapshot(
     // --- Phase 1: synchronous (caller blocks here) ---
     if let Some(found) = poll_for_new_window(&before, preferred_pid, preferred_exe.as_deref(), 5) {
         place_window(found as *mut _, x, y, w, h);
+        if let Some(ref guid) = virtual_desktop {
+            crate::virtual_desktop::move_window_to_virtual_desktop(found as *mut _, guid);
+        }
+        let vd = virtual_desktop.clone();
         thread::spawn(move || {
             thread::sleep(Duration::from_millis(1000));
             place_window(found as *mut _, x, y, w, h);
+            if let Some(ref guid) = vd {
+                crate::virtual_desktop::move_window_to_virtual_desktop(found as *mut _, guid);
+            }
             thread::sleep(Duration::from_millis(2000));
             place_window(found as *mut _, x, y, w, h);
+            if let Some(ref guid) = vd {
+                crate::virtual_desktop::move_window_to_virtual_desktop(found as *mut _, guid);
+            }
         });
         return;
     }
 
-    // --- Phase 2: background fallback for slow apps (>1.5 s to show window) ---
+    // --- Phase 2: background fallback for slow apps ---
     thread::spawn(move || {
         if let Some(found) = poll_for_new_window(&before, preferred_pid, preferred_exe.as_deref(), 15) {
             place_window(found as *mut _, x, y, w, h);
+            if let Some(ref guid) = virtual_desktop {
+                crate::virtual_desktop::move_window_to_virtual_desktop(found as *mut _, guid);
+            }
             thread::sleep(Duration::from_millis(1000));
             place_window(found as *mut _, x, y, w, h);
+            if let Some(ref guid) = virtual_desktop {
+                crate::virtual_desktop::move_window_to_virtual_desktop(found as *mut _, guid);
+            }
             thread::sleep(Duration::from_millis(2000));
             place_window(found as *mut _, x, y, w, h);
+            if let Some(ref guid) = virtual_desktop {
+                crate::virtual_desktop::move_window_to_virtual_desktop(found as *mut _, guid);
+            }
         }
     });
 }
@@ -407,7 +427,7 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
                 let exe = std::path::Path::new(path)
                     .file_name().and_then(|n| n.to_str())
                     .map(|s| s.to_ascii_lowercase());
-                position_window_by_snapshot(before, Some(child.id()), exe, x, y, item.launch_width, item.launch_height);
+                position_window_by_snapshot(before, Some(child.id()), exe, x, y, item.launch_width, item.launch_height, item.launch_virtual_desktop.clone());
             }
         }
         ItemType::File | ItemType::Folder => {
@@ -417,7 +437,7 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
             open::that(path).map_err(|e| format!("Failed to open '{}': {}", path, e))?;
             #[cfg(target_os = "windows")]
             if let (Some(before), Some(x), Some(y)) = (before, item.launch_x, item.launch_y) {
-                position_window_by_snapshot(before, None, None, x, y, item.launch_width, item.launch_height);
+                position_window_by_snapshot(before, None, None, x, y, item.launch_width, item.launch_height, item.launch_virtual_desktop.clone());
             }
         }
         ItemType::Url => {
@@ -447,7 +467,7 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
                         let exe = std::path::Path::new(bp)
                             .file_name().and_then(|n| n.to_str())
                             .map(|s| s.to_ascii_lowercase());
-                        position_window_by_snapshot(before, Some(child.id()), exe, x, y, item.launch_width, item.launch_height);
+                        position_window_by_snapshot(before, Some(child.id()), exe, x, y, item.launch_width, item.launch_height, item.launch_virtual_desktop.clone());
                         return Ok(());
                     }
                     // Non-Windows: fall through to the flag-based launch below
@@ -491,7 +511,7 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
                 open::that(path).map_err(|e| format!("Failed to open script '{}': {}", path, e))?;
                 #[cfg(target_os = "windows")]
                 if let (Some(before), Some(x), Some(y)) = (before, item.launch_x, item.launch_y) {
-                    position_window_by_snapshot(before, None, None, x, y, item.launch_width, item.launch_height);
+                    position_window_by_snapshot(before, None, None, x, y, item.launch_width, item.launch_height, item.launch_virtual_desktop.clone());
                 }
                 return Ok(());
             }
@@ -541,7 +561,7 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
                 } else {
                     Some("cmd.exe".to_string())
                 };
-                position_window_by_snapshot(before, Some(child.id()), launcher_exe, x, y, item.launch_width, item.launch_height);
+                position_window_by_snapshot(before, Some(child.id()), launcher_exe, x, y, item.launch_width, item.launch_height, item.launch_virtual_desktop.clone());
             }
         }
         ItemType::Steam => {
@@ -739,5 +759,21 @@ mod tests {
         let result = launch_item(&item, &None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("missing a path"));
+    }
+
+    #[test]
+    fn test_launch_item_app_with_virtual_desktop_field_no_crash() {
+        let item = Item {
+            item_type: ItemType::App,
+            path: Some("C:\\nonexistent.exe".into()),
+            value: None,
+            urls: vec![], icon_data: None, browser_name: None,
+            run_in_terminal: true, run_as_admin: false,
+            launch_virtual_desktop: Some(vec![0u8; 16]),
+            launch_desktop: None, launch_x: None, launch_y: None,
+            launch_width: None, launch_height: None,
+        };
+        let result = launch_item(&item, &None);
+        assert!(result.is_err()); // nonexistent exe → error, not crash
     }
 }
