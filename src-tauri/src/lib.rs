@@ -5,6 +5,7 @@ mod apps;
 mod browsers;
 mod icons;
 mod steam;
+pub(crate) mod virtual_desktop;
 
 use config::{AppConfig, Group, Item};
 use apps::InstalledApp;
