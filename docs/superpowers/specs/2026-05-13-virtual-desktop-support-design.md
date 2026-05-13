@@ -137,19 +137,99 @@ Actually: `launcher.rs` already imports `crate::config::...`. So declare `mod vi
 
 ---
 
+## Desktop Picker in Layout Editor Windows
+
+Not all users know how to drag windows between virtual desktops in Task View. Each `layout-item` window gets a small "Launch on desktop" dropdown so users can pick the target desktop directly from the UI. Changing the dropdown immediately moves that layout-item window to the selected desktop.
+
+### Enumerating virtual desktops
+
+Windows stores virtual desktop GUIDs in the registry at:
+`HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VirtualDesktops\VirtualDesktopIDs`
+
+This is a `REG_BINARY` value containing 16-byte GUIDs concatenated in order — Desktop 1, Desktop 2, etc.
+
+**New function in `virtual_desktop.rs`:**
+
+```rust
+pub struct VirtualDesktop {
+    pub index: u32,       // 1-based
+    pub guid: Vec<u8>,    // 16 bytes
+    pub name: String,     // "Desktop 1", "Desktop 2", etc.
+}
+
+pub fn get_virtual_desktops() -> Vec<VirtualDesktop>
+```
+
+Reads `VirtualDesktopIDs` from registry, parses into 16-byte chunks, returns a sorted list. Names are "Desktop 1", "Desktop 2", etc. Non-Windows returns empty vec.
+
+### New Tauri commands (lib.rs)
+
+```rust
+#[tauri::command]
+fn get_virtual_desktops() -> Vec<virtual_desktop::VirtualDesktop>
+
+#[tauri::command]
+fn move_layout_window_to_desktop(app: tauri::AppHandle, label: String, guid: Vec<u8>)
+```
+
+`move_layout_window_to_desktop` looks up the window by label, gets its HWND, calls `virtual_desktop::move_window_to_virtual_desktop(hwnd, &guid)`.
+
+Both registered in `generate_handler![]`.
+
+### layout-item.html changes
+
+Add a desktop dropdown row above the footer buttons:
+
+```html
+<div id="pk-desktop-row" style="width:100%;display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:8px;">
+  <span style="font-size:0.75rem;color:#aaa;">Launch on:</span>
+  <select id="pk-desktop-sel" style="background:#16213e;color:#c8c8d8;border:1px solid #0f3460;border-radius:4px;font-size:0.75rem;padding:3px 6px;cursor:pointer;">
+    <option value="">Any desktop</option>
+  </select>
+</div>
+```
+
+### layout-item.js changes
+
+On load:
+1. Call `invoke('get_virtual_desktops')` → populate dropdown with options
+2. Call `invoke('get_current_window_desktop')` → set the selected option to match current desktop
+
+On dropdown change:
+```js
+sel.addEventListener('change', async (e) => {
+  const guid = JSON.parse(e.target.value); // stored as JSON array
+  const label = await getCurrentWindow().label;
+  await invoke('move_layout_window_to_desktop', { label, guid });
+});
+```
+
+**New Tauri command `get_current_window_desktop`:**
+
+```rust
+#[tauri::command]
+fn get_current_window_desktop(window: tauri::WebviewWindow) -> Option<Vec<u8>>
+```
+
+Gets the calling window's HWND, calls `get_window_virtual_desktop(hwnd)`, returns the GUID. Used by layout-item.js to pre-select the correct dropdown option.
+
+---
+
 ## File Map
 
 | Action | File | Purpose |
 |--------|------|---------|
 | Modify | `src-tauri/src/config.rs` | Add `launch_virtual_desktop: Option<Vec<u8>>` to Item |
-| Create | `src-tauri/src/virtual_desktop.rs` | COM interface: get + move virtual desktop |
-| Modify | `src-tauri/src/lib.rs` | `mod virtual_desktop`, extend LayoutSavePayload, update complete_layout_save |
+| Create | `src-tauri/src/virtual_desktop.rs` | COM interface: get + move + enumerate virtual desktops |
+| Modify | `src-tauri/src/lib.rs` | `mod virtual_desktop`, extend LayoutSavePayload, update complete_layout_save, add 3 new commands |
 | Modify | `src-tauri/src/launcher.rs` | Add virtual_desktop param to position_window_by_snapshot, call move after place_window |
 | Modify | `src/config.js` | Save launch_virtual_desktop from layout-save payload |
+| Modify | `src/layout-item.html` | Add desktop dropdown row |
+| Modify | `src/layout-item.js` | Populate dropdown, handle change → move window immediately |
 
 ---
 
 ## Out of Scope
-- Showing which virtual desktop a layout window is on in the UI (automatic, no label needed)
+- Custom desktop names (shows "Desktop 1", "Desktop 2" etc. — not user-renamed names)
 - Switching the user's view to the target desktop at launch time (stays on current desktop)
 - Non-Windows virtual desktop support (macOS Spaces, Linux workspaces)
