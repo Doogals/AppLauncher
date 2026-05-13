@@ -476,13 +476,15 @@ async function showLayoutEditor() {
     await getCurrentWindow().destroy();
   });
 
-  const unlistenSave = await listen('layout-save', ({ payload: { positions } }) => {
+  const unlistenSave = await listen('layout-save', ({ payload }) => {
+    const { positions, virtual_desktops } = payload;
     positions.forEach(([x, y, w, h], i) => {
       if (i < currentItems.length && w > 0 && h > 0) {
         currentItems[i].launch_x = x;
         currentItems[i].launch_y = y;
         currentItems[i].launch_width = w;
         currentItems[i].launch_height = h;
+        currentItems[i].launch_virtual_desktop = virtual_desktops?.[i] ?? null;
       }
     });
     unlistenSave();
