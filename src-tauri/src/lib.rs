@@ -470,6 +470,7 @@ fn close_layout_windows(app: tauri::AppHandle, labels: Vec<String>) {
 #[derive(serde::Serialize, Clone)]
 struct LayoutSavePayload {
     positions: Vec<[i32; 4]>,
+    virtual_desktops: Vec<Option<Vec<u8>>>,
 }
 
 // Collects positions, emits layout-save from the backend (reaches all windows),
@@ -477,7 +478,7 @@ struct LayoutSavePayload {
 #[tauri::command]
 fn complete_layout_save(app: tauri::AppHandle, labels: Vec<String>) {
     #[cfg(target_os = "windows")]
-    let positions: Vec<[i32; 4]> = {
+    let (positions, virtual_desktops): (Vec<[i32; 4]>, Vec<Option<Vec<u8>>>) = {
         extern "system" {
             fn GetWindowRect(hwnd: *mut std::ffi::c_void, rect: *mut [i32; 4]) -> i32;
         }
@@ -487,23 +488,27 @@ fn complete_layout_save(app: tauri::AppHandle, labels: Vec<String>) {
                 .map(|hwnd| {
                     let mut rect = [0i32; 4];
                     unsafe { GetWindowRect(hwnd.0 as *mut _, &mut rect); }
-                    [rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1]]
+                    (
+                        [rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1]],
+                        crate::virtual_desktop::get_window_virtual_desktop(hwnd.0 as *mut _),
+                    )
                 })
-                .unwrap_or([0, 0, 0, 0])
-        }).collect()
+                .unwrap_or(([0, 0, 0, 0], None))
+        }).unzip()
     };
     #[cfg(not(target_os = "windows"))]
-    let positions: Vec<[i32; 4]> = labels.iter().map(|label| {
-        app.get_webview_window(label)
+    let (positions, virtual_desktops): (Vec<[i32; 4]>, Vec<Option<Vec<u8>>>) = labels.iter().map(|label| {
+        let pos = app.get_webview_window(label)
             .and_then(|w| {
-                let pos = w.outer_position().ok()?;
-                let size = w.outer_size().ok()?;
-                Some([pos.x, pos.y, size.width as i32, size.height as i32])
+                let p = w.outer_position().ok()?;
+                let s = w.outer_size().ok()?;
+                Some([p.x, p.y, s.width as i32, s.height as i32])
             })
-            .unwrap_or([0, 0, 0, 0])
-    }).collect();
+            .unwrap_or([0, 0, 0, 0]);
+        (pos, None)
+    }).unzip();
 
-    let _ = app.emit("layout-save", LayoutSavePayload { positions });
+    let _ = app.emit("layout-save", LayoutSavePayload { positions, virtual_desktops });
     for label in &labels {
         if let Some(window) = app.get_webview_window(label) {
             let _ = window.close();
@@ -517,6 +522,33 @@ fn complete_layout_cancel(app: tauri::AppHandle, labels: Vec<String>) {
     for label in &labels {
         if let Some(window) = app.get_webview_window(label) {
             let _ = window.close();
+        }
+    }
+}
+
+#[tauri::command]
+fn get_virtual_desktops() -> Vec<virtual_desktop::VirtualDesktop> {
+    virtual_desktop::get_virtual_desktops()
+}
+
+#[tauri::command]
+fn get_current_window_desktop(window: tauri::WebviewWindow) -> Option<Vec<u8>> {
+    #[cfg(target_os = "windows")]
+    {
+        window.hwnd().ok().and_then(|hwnd|
+            virtual_desktop::get_window_virtual_desktop(hwnd.0 as *mut _)
+        )
+    }
+    #[cfg(not(target_os = "windows"))]
+    None
+}
+
+#[tauri::command]
+fn move_layout_window_to_desktop(app: tauri::AppHandle, label: String, guid: Vec<u8>) {
+    #[cfg(target_os = "windows")]
+    if let Some(window) = app.get_webview_window(&label) {
+        if let Ok(hwnd) = window.hwnd() {
+            virtual_desktop::move_window_to_virtual_desktop(hwnd.0 as *mut _, &guid);
         }
     }
 }
@@ -925,6 +957,9 @@ pub fn run() {
             close_layout_windows,
             complete_layout_save,
             complete_layout_cancel,
+            get_virtual_desktops,
+            get_current_window_desktop,
+            move_layout_window_to_desktop,
             resize_widget,
             get_installed_apps,
             show_group_context_menu,
