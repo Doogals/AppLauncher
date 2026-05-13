@@ -29,6 +29,8 @@ pub struct Item {
     #[serde(default)]
     pub run_as_admin: bool,
     #[serde(default)]
+    pub launch_virtual_desktop: Option<Vec<u8>>,
+    #[serde(default)]
     pub launch_desktop: Option<u32>,
     #[serde(default)]
     pub launch_x: Option<i32>,
@@ -168,8 +170,8 @@ mod tests {
             name: "Work".to_string(),
             icon: "💼".to_string(),
             items: vec![
-                Item { item_type: ItemType::App, path: Some("C:\\slack.exe".to_string()), value: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
-                Item { item_type: ItemType::Url, path: None, value: Some("https://github.com".to_string()), urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
+                Item { item_type: ItemType::App, path: Some("C:\\slack.exe".to_string()), value: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
+                Item { item_type: ItemType::Url, path: None, value: Some("https://github.com".to_string()), urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
             ],
         });
 
@@ -228,6 +230,7 @@ mod tests {
             browser_name: Some("Chrome".into()),
             run_in_terminal: false,
             run_as_admin: false,
+            launch_virtual_desktop: None,
             launch_desktop: None, launch_x: None, launch_y: None,
             launch_width: None, launch_height: None,
         };
@@ -247,6 +250,7 @@ mod tests {
             value: Some("730".into()),
             urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true,
             run_as_admin: false,
+            launch_virtual_desktop: None,
             launch_desktop: Some(0), launch_x: None, launch_y: None,
             launch_width: None, launch_height: None,
         };
@@ -274,11 +278,37 @@ mod tests {
             value: None,
             urls: vec![], icon_data: None, browser_name: None,
             run_in_terminal: true, run_as_admin: true,
+            launch_virtual_desktop: None,
             launch_desktop: None, launch_x: None, launch_y: None,
             launch_width: None, launch_height: None,
         };
         let json = serde_json::to_string(&item).unwrap();
         let loaded: Item = serde_json::from_str(&json).unwrap();
         assert!(loaded.run_as_admin);
+    }
+
+    #[test]
+    fn test_launch_virtual_desktop_defaults_to_none_when_absent() {
+        let json = r#"{"item_type":"app","path":"C:\\foo.exe","value":null}"#;
+        let item: Item = serde_json::from_str(json).unwrap();
+        assert!(item.launch_virtual_desktop.is_none());
+    }
+
+    #[test]
+    fn test_launch_virtual_desktop_roundtrip() {
+        let guid: Vec<u8> = (0u8..16).collect();
+        let item = Item {
+            item_type: ItemType::App,
+            path: Some("C:\\foo.exe".into()),
+            value: None,
+            urls: vec![], icon_data: None, browser_name: None,
+            run_in_terminal: true, run_as_admin: false,
+            launch_virtual_desktop: Some(guid.clone()),
+            launch_desktop: None, launch_x: None, launch_y: None,
+            launch_width: None, launch_height: None,
+        };
+        let json = serde_json::to_string(&item).unwrap();
+        let loaded: Item = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.launch_virtual_desktop, Some(guid));
     }
 }
