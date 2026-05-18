@@ -456,8 +456,11 @@ async function showLayoutEditor() {
         : (item.path || item.value || 'Item');
     const safeName = encodeURIComponent(rawName);
 
+    const vdParam = item.launch_virtual_desktop
+      ? '&vd=' + encodeURIComponent(JSON.stringify(item.launch_virtual_desktop))
+      : '';
     new WebviewWindow(`layout-item-${idx}`, {
-      url: `layout-item.html?idx=${idx}&name=${safeName}&total=${total}`,
+      url: `layout-item.html?idx=${idx}&name=${safeName}&total=${total}${vdParam}`,
       title: rawName,
       x, y,
       width: w,

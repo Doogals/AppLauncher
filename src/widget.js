@@ -1,5 +1,4 @@
 import { invoke } from '@tauri-apps/api/core';
-import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 
@@ -84,28 +83,18 @@ async function launchGroup(groupId) {
   }
 }
 
-async function openConfig(groupId) {
-  const win = new WebviewWindow('config', {
-    url: groupId ? `config.html?id=${groupId}` : 'config.html',
-    title: groupId ? 'Edit Group' : 'New Group',
-    width: 420,
-    height: 460,
-    center: true,
-    decorations: true,
-    resizable: false,
-    alwaysOnTop: true,
-  });
-  win.once('tauri://destroyed', () => render());
+// Opens config window via Rust so its lifecycle is independent of this window's context.
+function openConfig(groupId) {
+  invoke('open_config_window', { groupId: groupId || null })
+    .catch(err => console.error('openConfig error:', err));
 }
 
-async function deleteGroup(groupId) {
-  await invoke('delete_group', { groupId });
-  render();
-}
+// Re-render when a group is saved or deleted (emitted by save_group / delete_group).
+listen('groups-updated', () => render());
 
 // Listen for native context menu selections
 listen('context-menu:edit',   (e) => openConfig(e.payload));
-listen('context-menu:delete', (e) => deleteGroup(e.payload));
+listen('context-menu:delete', (e) => invoke('delete_group', { groupId: e.payload }).catch(() => {}));
 
 // Show update notification banner when a new version is available
 listen('update-available', () => {

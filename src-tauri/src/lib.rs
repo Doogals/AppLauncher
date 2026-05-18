@@ -9,11 +9,15 @@ pub(crate) mod virtual_desktop;
 
 use config::{AppConfig, Group, Item};
 use apps::InstalledApp;
+use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_updater::UpdaterExt;
 
 struct AppState(Mutex<AppConfig>);
+
+// Transient per-layout-editor session: maps window label → chosen VD GUID.
+struct LayoutDesktops(Mutex<HashMap<String, Vec<u8>>>);
 
 #[tauri::command]
 fn open_url(url: String) {
@@ -49,7 +53,7 @@ fn get_config(state: State<AppState>) -> AppConfig {
 }
 
 #[tauri::command]
-fn save_group(group: Group, state: State<AppState>) -> Result<(), String> {
+fn save_group(group: Group, state: State<AppState>, app: tauri::AppHandle) -> Result<(), String> {
     let mut config = state.0.lock().unwrap();
     let limit = license::group_limit(&config.license_key, &config.license_instance_id);
     if let Some(pos) = config.groups.iter().position(|g| g.id == group.id) {
@@ -63,14 +67,18 @@ fn save_group(group: Group, state: State<AppState>) -> Result<(), String> {
         }
         config.groups.push(group);
     }
-    config::save_config(&config)
+    config::save_config(&config)?;
+    let _ = app.emit("groups-updated", ());
+    Ok(())
 }
 
 #[tauri::command]
-fn delete_group(group_id: String, state: State<AppState>) -> Result<(), String> {
+fn delete_group(group_id: String, state: State<AppState>, app: tauri::AppHandle) -> Result<(), String> {
     let mut config = state.0.lock().unwrap();
     config.groups.retain(|g| g.id != group_id);
-    config::save_config(&config)
+    config::save_config(&config)?;
+    let _ = app.emit("groups-updated", ());
+    Ok(())
 }
 
 #[tauri::command]
@@ -473,27 +481,26 @@ struct LayoutSavePayload {
     virtual_desktops: Vec<Option<Vec<u8>>>,
 }
 
-// Collects positions, emits layout-save from the backend (reaches all windows),
-// then closes all layout windows. Using Rust avoids cross-webview JS event issues.
+// Collects positions + stored VD selections, emits layout-save, closes layout windows.
 #[tauri::command]
-fn complete_layout_save(app: tauri::AppHandle, labels: Vec<String>) {
+fn complete_layout_save(app: tauri::AppHandle, labels: Vec<String>, ld: State<LayoutDesktops>) {
+    let desktops = ld.0.lock().unwrap().clone();
     #[cfg(target_os = "windows")]
     let (positions, virtual_desktops): (Vec<[i32; 4]>, Vec<Option<Vec<u8>>>) = {
         extern "system" {
             fn GetWindowRect(hwnd: *mut std::ffi::c_void, rect: *mut [i32; 4]) -> i32;
         }
         labels.iter().map(|label| {
-            app.get_webview_window(label)
+            let rect = app.get_webview_window(label)
                 .and_then(|w| w.hwnd().ok())
                 .map(|hwnd| {
-                    let mut rect = [0i32; 4];
-                    unsafe { GetWindowRect(hwnd.0 as *mut _, &mut rect); }
-                    (
-                        [rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1]],
-                        crate::virtual_desktop::get_window_virtual_desktop(hwnd.0 as *mut _),
-                    )
+                    let mut r = [0i32; 4];
+                    unsafe { GetWindowRect(hwnd.0 as *mut _, &mut r); }
+                    [r[0], r[1], r[2] - r[0], r[3] - r[1]]
                 })
-                .unwrap_or(([0, 0, 0, 0], None))
+                .unwrap_or([0, 0, 0, 0]);
+            let guid = desktops.get(label).cloned();
+            (rect, guid)
         }).unzip()
     };
     #[cfg(not(target_os = "windows"))]
@@ -505,9 +512,11 @@ fn complete_layout_save(app: tauri::AppHandle, labels: Vec<String>) {
                 Some([p.x, p.y, s.width as i32, s.height as i32])
             })
             .unwrap_or([0, 0, 0, 0]);
-        (pos, None)
+        let guid = desktops.get(label).cloned();
+        (pos, guid)
     }).unzip();
 
+    ld.0.lock().unwrap().clear();
     let _ = app.emit("layout-save", LayoutSavePayload { positions, virtual_desktops });
     for label in &labels {
         if let Some(window) = app.get_webview_window(label) {
@@ -517,7 +526,8 @@ fn complete_layout_save(app: tauri::AppHandle, labels: Vec<String>) {
 }
 
 #[tauri::command]
-fn complete_layout_cancel(app: tauri::AppHandle, labels: Vec<String>) {
+fn complete_layout_cancel(app: tauri::AppHandle, labels: Vec<String>, ld: State<LayoutDesktops>) {
+    ld.0.lock().unwrap().clear();
     let _ = app.emit("layout-cancel", ());
     for label in &labels {
         if let Some(window) = app.get_webview_window(label) {
@@ -531,26 +541,52 @@ fn get_virtual_desktops() -> Vec<virtual_desktop::VirtualDesktop> {
     virtual_desktop::get_virtual_desktops()
 }
 
+// Stores the user's virtual desktop choice for a layout-item window.
+// Called by each layout-item window when the dropdown changes.
+// `guid: None` clears the entry (use "any desktop").
+// Also immediately moves the window to the chosen desktop so the user sees it land there.
 #[tauri::command]
-fn get_current_window_desktop(window: tauri::WebviewWindow) -> Option<Vec<u8>> {
-    #[cfg(target_os = "windows")]
-    {
-        window.hwnd().ok().and_then(|hwnd|
-            virtual_desktop::get_window_virtual_desktop(hwnd.0 as *mut _)
-        )
+fn set_layout_item_desktop(app: tauri::AppHandle, ld: State<LayoutDesktops>, label: String, guid: Option<Vec<u8>>) {
+    let mut map = ld.0.lock().unwrap();
+    match guid {
+        Some(g) => {
+            #[cfg(target_os = "windows")]
+            if let Some(hwnd) = app.get_webview_window(&label).and_then(|w| w.hwnd().ok()) {
+                crate::virtual_desktop::move_window_to_virtual_desktop(hwnd.0 as *mut _, &g);
+            }
+            map.insert(label, g);
+        }
+        None => { map.remove(&label); }
     }
-    #[cfg(not(target_os = "windows"))]
-    None
 }
 
+// Opens the config window from Rust so its lifecycle is independent of widget.js.
 #[tauri::command]
-fn move_layout_window_to_desktop(app: tauri::AppHandle, label: String, guid: Vec<u8>) {
-    #[cfg(target_os = "windows")]
-    if let Some(window) = app.get_webview_window(&label) {
-        if let Ok(hwnd) = window.hwnd() {
-            virtual_desktop::move_window_to_virtual_desktop(hwnd.0 as *mut _, &guid);
+fn open_config_window(app: tauri::AppHandle, group_id: Option<String>) {
+    let app2 = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Some(existing) = app2.get_webview_window("config") {
+            let _ = existing.set_focus();
+            return;
         }
-    }
+        let url = match &group_id {
+            Some(id) => format!("config.html?id={}", id),
+            None => "config.html".to_string(),
+        };
+        let title = if group_id.is_some() { "Edit Group" } else { "New Group" };
+        let _ = tauri::WebviewWindowBuilder::new(
+            &app2,
+            "config",
+            tauri::WebviewUrl::App(url.into()),
+        )
+        .title(title)
+        .inner_size(420.0, 460.0)
+        .center()
+        .decorations(true)
+        .resizable(false)
+        .always_on_top(true)
+        .build();
+    });
 }
 
 #[tauri::command]
@@ -934,6 +970,7 @@ pub fn run() {
             Ok(())
         })
         .manage(AppState(Mutex::new(config)))
+        .manage(LayoutDesktops(Mutex::new(HashMap::new())))
         .invoke_handler(tauri::generate_handler![
             get_config,
             save_group,
@@ -958,8 +995,8 @@ pub fn run() {
             complete_layout_save,
             complete_layout_cancel,
             get_virtual_desktops,
-            get_current_window_desktop,
-            move_layout_window_to_desktop,
+            set_layout_item_desktop,
+            open_config_window,
             resize_widget,
             get_installed_apps,
             show_group_context_menu,

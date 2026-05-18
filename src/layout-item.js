@@ -4,6 +4,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 const params = new URLSearchParams(window.location.search);
 const name = decodeURIComponent(params.get('name') || 'Item');
 const total = parseInt(params.get('total') || '1', 10);
+const label = getCurrentWindow().label;
 
 document.getElementById('pk-name').textContent = name;
 
@@ -28,22 +29,25 @@ async function initDesktopDropdown() {
     sel.appendChild(opt);
   }
 
-  try {
-    const currentGuid = await invoke('get_current_window_desktop');
-    if (currentGuid) {
-      const currentStr = JSON.stringify(currentGuid);
-      for (const opt of sel.options) {
-        if (opt.value === currentStr) { opt.selected = true; break; }
+  // Pre-select the previously saved virtual desktop for this item (passed via URL param).
+  const vdParam = params.get('vd');
+  if (vdParam) {
+    const savedGuid = JSON.parse(decodeURIComponent(vdParam));
+    const savedStr = JSON.stringify(savedGuid);
+    for (const opt of sel.options) {
+      if (opt.value === savedStr) {
+        opt.selected = true;
+        // Store in Rust so complete_layout_save picks it up even if user doesn't change it.
+        invoke('set_layout_item_desktop', { label, guid: savedGuid }).catch(() => {});
+        break;
       }
     }
-  } catch {}
+  }
 
   sel.addEventListener('change', async () => {
-    if (!sel.value) return;
-    const guid = JSON.parse(sel.value);
-    const label = getCurrentWindow().label;
+    const guid = sel.value ? JSON.parse(sel.value) : null;
     try {
-      await invoke('move_layout_window_to_desktop', { label, guid });
+      await invoke('set_layout_item_desktop', { label, guid });
     } catch {}
   });
 }

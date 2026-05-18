@@ -109,6 +109,22 @@ fn poll_for_new_window(
     None
 }
 
+// Positions the window immediately and re-applies after short delays to handle apps
+// that reset their own position after initialization.
+// Desktop targeting is handled upstream (switch-before-launch in launch_group).
+#[cfg(target_os = "windows")]
+fn apply_window_placement(found: usize, x: i32, y: i32, w: Option<u32>, h: Option<u32>) {
+    use std::thread;
+    use std::time::Duration;
+    place_window(found as *mut _, x, y, w, h);
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(1000));
+        place_window(found as *mut _, x, y, w, h);
+        thread::sleep(Duration::from_millis(2000));
+        place_window(found as *mut _, x, y, w, h);
+    });
+}
+
 // Phase 1 runs synchronously on the caller's thread (up to 1.5 s / 5 polls) so
 // the next item in the group isn't launched until we've claimed this window —
 // preventing concurrent launches from stealing each other's windows.
@@ -122,47 +138,19 @@ fn position_window_by_snapshot(
     virtual_desktop: Option<Vec<u8>>,
 ) {
     use std::thread;
-    use std::time::Duration;
+
+    let _ = virtual_desktop; // desktop targeting now handled by switch-before-launch in launch_group
 
     // --- Phase 1: synchronous (caller blocks here) ---
     if let Some(found) = poll_for_new_window(&before, preferred_pid, preferred_exe.as_deref(), 5) {
-        place_window(found as *mut _, x, y, w, h);
-        if let Some(ref guid) = virtual_desktop {
-            crate::virtual_desktop::move_window_to_virtual_desktop(found as *mut _, guid);
-        }
-        let vd = virtual_desktop.clone();
-        thread::spawn(move || {
-            thread::sleep(Duration::from_millis(1000));
-            place_window(found as *mut _, x, y, w, h);
-            if let Some(ref guid) = vd {
-                crate::virtual_desktop::move_window_to_virtual_desktop(found as *mut _, guid);
-            }
-            thread::sleep(Duration::from_millis(2000));
-            place_window(found as *mut _, x, y, w, h);
-            if let Some(ref guid) = vd {
-                crate::virtual_desktop::move_window_to_virtual_desktop(found as *mut _, guid);
-            }
-        });
+        apply_window_placement(found, x, y, w, h);
         return;
     }
 
     // --- Phase 2: background fallback for slow apps ---
     thread::spawn(move || {
         if let Some(found) = poll_for_new_window(&before, preferred_pid, preferred_exe.as_deref(), 15) {
-            place_window(found as *mut _, x, y, w, h);
-            if let Some(ref guid) = virtual_desktop {
-                crate::virtual_desktop::move_window_to_virtual_desktop(found as *mut _, guid);
-            }
-            thread::sleep(Duration::from_millis(1000));
-            place_window(found as *mut _, x, y, w, h);
-            if let Some(ref guid) = virtual_desktop {
-                crate::virtual_desktop::move_window_to_virtual_desktop(found as *mut _, guid);
-            }
-            thread::sleep(Duration::from_millis(2000));
-            place_window(found as *mut _, x, y, w, h);
-            if let Some(ref guid) = virtual_desktop {
-                crate::virtual_desktop::move_window_to_virtual_desktop(found as *mut _, guid);
-            }
+            apply_window_placement(found, x, y, w, h);
         }
     });
 }
@@ -273,7 +261,7 @@ fn collect_browser_urls(
 
     for item in items {
         if let ItemType::Url = &item.item_type {
-            if item.launch_x.is_some() { continue; }
+            if item.launch_x.is_some() || item.launch_virtual_desktop.is_some() { continue; }
 
             let url_list: Vec<String> = if !item.urls.is_empty() {
                 item.urls.clone()
@@ -369,21 +357,45 @@ pub fn launch_group(group_id: &str, config: &AppConfig) -> Result<(), String> {
         .find(|g| g.id == group_id)
         .ok_or_else(|| format!("Group '{}' not found", group_id))?;
 
-    // Launch non-URL items individually
+    // Capture current desktop before any switching so we can restore it afterward.
+    #[cfg(target_os = "windows")]
+    let original_desktop = if group.items.iter().any(|i| i.launch_virtual_desktop.is_some()) {
+        crate::virtual_desktop::get_current_virtual_desktop_guid()
+    } else {
+        None
+    };
+
+    // Launch non-URL items: switch to target desktop first, then launch.
     for item in &group.items {
         if !matches!(item.item_type, ItemType::Url) {
+            #[cfg(target_os = "windows")]
+            if let Some(ref guid) = item.launch_virtual_desktop {
+                crate::virtual_desktop::switch_virtual_desktop(guid);
+            }
             launch_item(item, &config.preferred_browser)?;
         }
     }
 
-    // Launch URL items that have a saved position individually (with browser flags)
+    // URL items with a saved position or target desktop: launch individually.
     for item in &group.items {
-        if matches!(item.item_type, ItemType::Url) && item.launch_x.is_some() {
+        if matches!(item.item_type, ItemType::Url)
+            && (item.launch_x.is_some() || item.launch_virtual_desktop.is_some())
+        {
+            #[cfg(target_os = "windows")]
+            if let Some(ref guid) = item.launch_virtual_desktop {
+                crate::virtual_desktop::switch_virtual_desktop(guid);
+            }
             launch_item(item, &config.preferred_browser)?;
         }
     }
 
-    // Batch remaining URL items (no position) for multi-tab launch
+    // Restore original desktop before batching remaining URLs (they go on the user's current desktop).
+    #[cfg(target_os = "windows")]
+    if let Some(ref orig) = original_desktop {
+        crate::virtual_desktop::switch_virtual_desktop(orig);
+    }
+
+    // Batch remaining URL items (no position, no target desktop) for multi-tab launch.
     let (browser_urls, fallback_urls) =
         collect_browser_urls(&group.items, config.preferred_browser.as_deref());
 
