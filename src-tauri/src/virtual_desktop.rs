@@ -120,15 +120,17 @@ pub fn get_current_virtual_desktop_guid() -> Option<Vec<u8>> {
     return None;
 }
 
-/// Switches to the desktop with the given 16-byte GUID using Win+Ctrl+Arrow keyboard simulation.
-/// Reads the ordered desktop list from the registry to determine direction and step count.
-/// Waits for the switch to complete before returning.
-pub fn switch_virtual_desktop(target_guid: &[u8]) -> bool {
-    if target_guid.len() != 16 { return false; }
+/// Switches from `from_guid` to `to_guid` using Win+Ctrl+Arrow keyboard simulation.
+/// Caller must pass the actual current desktop GUID — do NOT re-read from the registry
+/// mid-sequence, as it may lag behind after a recent switch.
+/// Waits for the switch animation to complete before returning.
+pub fn switch_virtual_desktop(from_guid: &[u8], to_guid: &[u8]) -> bool {
+    if from_guid.len() != 16 || to_guid.len() != 16 { return false; }
+    if from_guid == to_guid { return true; }
     #[cfg(target_os = "windows")]
-    return switch_vd_windows(target_guid);
+    return switch_vd_windows(from_guid, to_guid);
     #[cfg(not(target_os = "windows"))]
-    { let _ = target_guid; false }
+    { let _ = (from_guid, to_guid); false }
 }
 
 #[cfg(target_os = "windows")]
@@ -163,26 +165,26 @@ fn get_current_vd_windows() -> Option<Vec<u8>> {
 }
 
 #[cfg(target_os = "windows")]
-fn switch_vd_windows(target_guid: &[u8]) -> bool {
+fn switch_vd_windows(from_guid: &[u8], to_guid: &[u8]) -> bool {
     use std::thread;
     use std::time::Duration;
 
-    let current_guid = match get_current_vd_windows() {
-        Some(g) => g,
-        None => return false,
-    };
-    if current_guid.as_slice() == target_guid { return true; }
-
     let desktops = get_virtual_desktops();
-    let current_idx = match desktops.iter().position(|d| d.guid == current_guid) {
+    let current_idx = match desktops.iter().position(|d| d.guid.as_slice() == from_guid) {
         Some(i) => i,
         None => return false,
     };
-    let target_idx = match desktops.iter().position(|d| d.guid.as_slice() == target_guid) {
+    let target_idx = match desktops.iter().position(|d| d.guid.as_slice() == to_guid) {
         Some(i) => i,
         None => return false,
     };
     if current_idx == target_idx { return true; }
+
+    crate::debug_log::write_debug_log(&format!(
+        "VD switch Desktop{}→Desktop{} ({} step(s))",
+        current_idx + 1, target_idx + 1,
+        if target_idx > current_idx { target_idx - current_idx } else { current_idx - target_idx }
+    ));
 
     let (vk, steps) = if target_idx > current_idx {
         (0x27u16, target_idx - current_idx) // VK_RIGHT
@@ -190,11 +192,37 @@ fn switch_vd_windows(target_guid: &[u8]) -> bool {
         (0x25u16, current_idx - target_idx) // VK_LEFT
     };
 
-    for i in 0..steps {
+    for step in 0..steps {
+        // The expected desktop index after this keypress
+        let expected_idx = if target_idx > current_idx {
+            current_idx + step + 1
+        } else {
+            current_idx - step - 1
+        };
+        let expected_guid = &desktops[expected_idx].guid;
+
         send_vd_key(vk);
-        // Allow extra settle time on the final step
-        let ms = if i + 1 == steps { 250 } else { 150 };
-        thread::sleep(Duration::from_millis(ms));
+
+        // Poll the registry until it confirms the switch completed, or 600 ms timeout.
+        // Fixed sleeps are unreliable — Windows 11 animation takes 300-400 ms and varies.
+        let deadline = std::time::Instant::now() + Duration::from_millis(600);
+        let poll_start = std::time::Instant::now();
+        loop {
+            thread::sleep(Duration::from_millis(50));
+            if let Some(cur) = get_current_vd_windows() {
+                if cur.as_slice() == expected_guid.as_slice() {
+                    crate::debug_log::write_debug_log(&format!(
+                        "VD switch confirmed after {}ms",
+                        poll_start.elapsed().as_millis()
+                    ));
+                    break;
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                crate::debug_log::write_debug_log("VD switch timed out after 600ms — proceeding");
+                break;
+            }
+        }
     }
     true
 }
@@ -227,7 +255,7 @@ fn send_vd_key(vk: u16) {
         b
     }
 
-    let inputs = [
+    let events = [
         key(VK_LWIN, 0),
         key(VK_CTRL, 0),
         key(vk, 0),
@@ -235,8 +263,14 @@ fn send_vd_key(vk: u16) {
         key(VK_CTRL, KEYEVENTF_KEYUP),
         key(VK_LWIN, KEYEVENTF_KEYUP),
     ];
-    let flat: Vec<u8> = inputs.iter().flat_map(|a| a.iter().copied()).collect();
-    unsafe { SendInput(6, flat.as_ptr(), 40); }
+
+    // Send each event individually with a gap so Windows registers the full chord.
+    // Batching all 6 at once makes them arrive too fast — Windows processes Win as
+    // a standalone press and opens the Start menu instead of switching desktops.
+    for event in &events {
+        unsafe { SendInput(1, event.as_ptr(), 40); }
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
 }
 
 #[cfg(target_os = "windows")]
