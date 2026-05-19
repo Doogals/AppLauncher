@@ -15,7 +15,7 @@ use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_updater::UpdaterExt;
 
-struct AppState(Mutex<AppConfig>);
+pub(crate) struct AppState(Mutex<AppConfig>);
 
 // Transient per-layout-editor session: maps window label → chosen VD GUID.
 struct LayoutDesktops(Mutex<HashMap<String, Vec<u8>>>);
