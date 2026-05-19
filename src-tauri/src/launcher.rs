@@ -92,18 +92,22 @@ fn poll_for_new_window(
         // Tier 1: PID
         if let Some(pid) = preferred_pid {
             if let Some(&h) = new_hwnds.iter().find(|&&h| get_hwnd_pid(h) == pid) {
+                crate::debug_log::write_debug_log(&format!("LAUNCH HWND 0x{:X} found (PID match) poll={}", h, i));
                 return Some(h);
             }
         }
         // Tier 2: exe name (handles Store apps with hosted window process)
         if let Some(exe) = preferred_exe {
             if let Some(&h) = new_hwnds.iter().find(|&&h| get_hwnd_exe(h).as_deref() == Some(exe)) {
+                crate::debug_log::write_debug_log(&format!("LAUNCH HWND 0x{:X} found (exe match) poll={}", h, i));
                 return Some(h);
             }
         }
         // Tier 3: any new window — only on the last poll
         if i == polls - 1 {
-            return new_hwnds.into_iter().next();
+            let h = new_hwnds.into_iter().next();
+            crate::debug_log::write_debug_log(&format!("LAUNCH HWND {:?} found (any-new fallback)", h));
+            return h;
         }
     }
     None
@@ -117,6 +121,11 @@ fn apply_window_placement(found: usize, x: i32, y: i32, w: Option<u32>, h: Optio
     use std::thread;
     use std::time::Duration;
     place_window(found as *mut _, x, y, w, h);
+    crate::debug_log::write_debug_log(&format!(
+        "LAUNCH window HWND 0x{:X} positioned at ({}, {}) {}x{}",
+        found, x, y,
+        w.unwrap_or(0), h.unwrap_or(0)
+    ));
     thread::spawn(move || {
         thread::sleep(Duration::from_millis(1000));
         place_window(found as *mut _, x, y, w, h);
@@ -356,21 +365,42 @@ pub fn launch_group(group_id: &str, config: &AppConfig) -> Result<(), String> {
         .iter()
         .find(|g| g.id == group_id)
         .ok_or_else(|| format!("Group '{}' not found", group_id))?;
+    crate::debug_log::write_debug_log(&format!(
+        "LAUNCH group \"{}\" ({} items)", group.name, group.items.len()
+    ));
 
-    // Capture current desktop before any switching so we can restore it afterward.
+    // Read current desktop once and track it manually throughout the launch sequence.
+    // Re-reading from the registry mid-sequence returns stale data — the registry lags
+    // behind keyboard-simulated switches, causing wrong step counts on the 3rd+ item.
     #[cfg(target_os = "windows")]
-    let original_desktop = if group.items.iter().any(|i| i.launch_virtual_desktop.is_some()) {
+    let needs_vd = group.items.iter().any(|i| i.launch_virtual_desktop.is_some());
+    #[cfg(target_os = "windows")]
+    let original_desktop: Option<Vec<u8>> = if needs_vd {
         crate::virtual_desktop::get_current_virtual_desktop_guid()
     } else {
         None
     };
+    #[cfg(target_os = "windows")]
+    let mut current_desktop: Vec<u8> = original_desktop.clone().unwrap_or_default();
 
-    // Launch non-URL items: switch to target desktop first, then launch.
+    // Launch non-URL items: switch to target desktop first (using tracked current), then launch.
     for item in &group.items {
         if !matches!(item.item_type, ItemType::Url) {
+            crate::debug_log::write_debug_log(&format!(
+                "LAUNCH item type={:?} path=\"{}\"",
+                item.item_type,
+                item.path.as_deref().or(item.value.as_deref()).unwrap_or("?")
+            ));
             #[cfg(target_os = "windows")]
             if let Some(ref guid) = item.launch_virtual_desktop {
-                crate::virtual_desktop::switch_virtual_desktop(guid);
+                if guid.as_slice() != current_desktop.as_slice() {
+                    crate::debug_log::write_debug_log(&format!(
+                        "LAUNCH item \"{}\" switching desktop",
+                        item.path.as_deref().or(item.value.as_deref()).unwrap_or("?")
+                    ));
+                    crate::virtual_desktop::switch_virtual_desktop(&current_desktop, guid);
+                    current_desktop = guid.clone();
+                }
             }
             launch_item(item, &config.preferred_browser)?;
         }
@@ -383,16 +413,21 @@ pub fn launch_group(group_id: &str, config: &AppConfig) -> Result<(), String> {
         {
             #[cfg(target_os = "windows")]
             if let Some(ref guid) = item.launch_virtual_desktop {
-                crate::virtual_desktop::switch_virtual_desktop(guid);
+                if guid.as_slice() != current_desktop.as_slice() {
+                    crate::virtual_desktop::switch_virtual_desktop(&current_desktop, guid);
+                    current_desktop = guid.clone();
+                }
             }
             launch_item(item, &config.preferred_browser)?;
         }
     }
 
-    // Restore original desktop before batching remaining URLs (they go on the user's current desktop).
+    // Restore original desktop before batching remaining URLs.
     #[cfg(target_os = "windows")]
     if let Some(ref orig) = original_desktop {
-        crate::virtual_desktop::switch_virtual_desktop(orig);
+        if orig.as_slice() != current_desktop.as_slice() {
+            crate::virtual_desktop::switch_virtual_desktop(&current_desktop, orig);
+        }
     }
 
     // Batch remaining URL items (no position, no target desktop) for multi-tab launch.
