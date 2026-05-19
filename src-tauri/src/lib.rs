@@ -590,6 +590,33 @@ fn open_config_window(app: tauri::AppHandle, group_id: Option<String>) {
     });
 }
 
+pub(crate) fn open_config_window_inner(app: tauri::AppHandle, group_id: Option<String>) {
+    let app2 = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Some(existing) = app2.get_webview_window("config") {
+            let _ = existing.set_focus();
+            return;
+        }
+        let url = match &group_id {
+            Some(id) => format!("config.html?id={}", id),
+            None => "config.html".to_string(),
+        };
+        let title = if group_id.is_some() { "Edit Group" } else { "New Group" };
+        let _ = tauri::WebviewWindowBuilder::new(
+            &app2,
+            "config",
+            tauri::WebviewUrl::App(url.into()),
+        )
+        .title(title)
+        .inner_size(420.0, 460.0)
+        .center()
+        .decorations(true)
+        .resizable(false)
+        .always_on_top(true)
+        .build();
+    });
+}
+
 #[tauri::command]
 fn resize_widget(width: u32, height: u32, app: tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("widget") {
