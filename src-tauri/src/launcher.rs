@@ -103,8 +103,17 @@ fn poll_for_new_window(
                 return Some(h);
             }
         }
-        // Tier 3: any new window — only on the last poll
-        if i == polls - 1 {
+        // Tier 3: any new window.
+        // Items with no PID/exe hint (File/Folder via open::that) have no specific match
+        // to wait for — accept after 2 polls (600ms grace) so a brief transient window
+        // doesn't get grabbed on the very first poll.
+        // Items with PID/exe hints that haven't matched yet: last poll only (true last resort).
+        let tier3_ready = if preferred_pid.is_none() && preferred_exe.is_none() {
+            i >= 2
+        } else {
+            i == polls - 1
+        };
+        if tier3_ready {
             let h = new_hwnds.into_iter().next();
             crate::debug_log::write_debug_log(&format!("LAUNCH HWND {:?} found (any-new fallback)", h));
             return h;
