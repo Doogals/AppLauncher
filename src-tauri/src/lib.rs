@@ -997,6 +997,10 @@ pub fn run() {
                 });
             }
 
+            // Start debug HTTP server on port 7891 (dev builds only)
+            #[cfg(debug_assertions)]
+            debug_server::start(app.handle().clone());
+
             Ok(())
         })
         .manage(AppState(Mutex::new(config)))
