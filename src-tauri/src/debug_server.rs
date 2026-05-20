@@ -37,13 +37,13 @@ pub fn start(app: tauri::AppHandle) {
 
 // GET /state — full config from live AppState
 async fn get_state(State(app): State<AppHandle>) -> impl IntoResponse {
-    let config = app.state::<crate::AppState>().0.lock().unwrap().clone();
+    let config = app.state::<crate::AppState>().0.lock().unwrap_or_else(|e| e.into_inner()).clone();
     Json(config)
 }
 
 // POST /launch/:group_id
 async fn do_launch(State(app): State<AppHandle>, Path(group_id): Path<String>) -> impl IntoResponse {
-    let config = app.state::<crate::AppState>().0.lock().unwrap().clone();
+    let config = app.state::<crate::AppState>().0.lock().unwrap_or_else(|e| e.into_inner()).clone();
     match crate::launcher::launch_group(&group_id, &config) {
         Ok(_)  => Json(serde_json::json!({ "ok": true })),
         Err(e) => Json(serde_json::json!({ "error": e })),
@@ -59,7 +59,7 @@ async fn do_edit(State(app): State<AppHandle>, Path(group_id): Path<String>) -> 
 // POST /reload — re-read config.json into AppState
 async fn do_reload(State(app): State<AppHandle>) -> impl IntoResponse {
     let new_config = crate::config::load_config();
-    *app.state::<crate::AppState>().0.lock().unwrap() = new_config;
+    *app.state::<crate::AppState>().0.lock().unwrap_or_else(|e| e.into_inner()) = new_config;
     Json(serde_json::json!({ "ok": true }))
 }
 
