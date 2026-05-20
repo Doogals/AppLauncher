@@ -7,6 +7,8 @@ mod icons;
 mod steam;
 pub(crate) mod virtual_desktop;
 mod debug_log;
+#[cfg(debug_assertions)]
+mod debug_server;
 
 use config::{AppConfig, Group, Item};
 use apps::InstalledApp;
