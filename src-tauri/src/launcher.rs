@@ -154,10 +154,12 @@ fn apply_window_placement(found: usize, x: i32, y: i32, w: Option<u32>, h: Optio
     });
 }
 
-// Phase 1 runs synchronously on the caller's thread (up to 1.5 s / 5 polls) so
-// the next item in the group isn't launched until we've claimed this window —
-// preventing concurrent launches from stealing each other's windows.
-// Phase 2 continues in a background thread for slow/Store apps that take longer.
+// Phase 1 runs synchronously on the caller's thread so the next item in the group
+// isn't launched until we've claimed this window — preventing concurrent launches from
+// stealing each other's windows and ensuring slow-starting apps open on the correct
+// virtual desktop before we switch away for the next item.
+// 12 polls × 300 ms = 3.6 s: measured worst-case for Windows Terminal cold-start.
+// Phase 2 continues in a background thread for very slow apps.
 #[cfg(target_os = "windows")]
 fn position_window_by_snapshot(
     before: std::collections::HashSet<usize>,
@@ -171,7 +173,7 @@ fn position_window_by_snapshot(
     let _ = virtual_desktop; // desktop targeting now handled by switch-before-launch in launch_group
 
     // --- Phase 1: synchronous (caller blocks here) ---
-    if let Some(found) = poll_for_new_window(&before, preferred_pid, preferred_exe.as_deref(), 5) {
+    if let Some(found) = poll_for_new_window(&before, preferred_pid, preferred_exe.as_deref(), 12) {
         apply_window_placement(found, x, y, w, h);
         return;
     }
