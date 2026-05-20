@@ -120,17 +120,37 @@ fn poll_for_new_window(
 fn apply_window_placement(found: usize, x: i32, y: i32, w: Option<u32>, h: Option<u32>) {
     use std::thread;
     use std::time::Duration;
-    place_window(found as *mut _, x, y, w, h);
+
+    // Walk up to the root-owner window. The PID-matched HWND may be an inner/embedded window
+    // (e.g., a conhost pseudo-window inside Windows Terminal). GA_ROOTOWNER (3) follows both
+    // the parent and owner chains to find the actual top-level visible frame.
+    extern "system" {
+        fn GetAncestor(hwnd: *mut std::ffi::c_void, flags: u32) -> *mut std::ffi::c_void;
+        fn IsWindowVisible(hwnd: *mut std::ffi::c_void) -> i32;
+    }
+    let target = unsafe {
+        let root = GetAncestor(found as *mut _, 3 /* GA_ROOTOWNER */);
+        if !root.is_null() && IsWindowVisible(root) != 0 && root as usize != found {
+            crate::debug_log::write_debug_log(&format!(
+                "LAUNCH GetAncestor: 0x{:X} → root 0x{:X} (using root)", found, root as usize
+            ));
+            root as usize
+        } else {
+            found
+        }
+    };
+
+    place_window(target as *mut _, x, y, w, h);
     crate::debug_log::write_debug_log(&format!(
         "LAUNCH window HWND 0x{:X} positioned at ({}, {}) {}x{}",
-        found, x, y,
+        target, x, y,
         w.unwrap_or(0), h.unwrap_or(0)
     ));
     thread::spawn(move || {
         thread::sleep(Duration::from_millis(1000));
-        place_window(found as *mut _, x, y, w, h);
+        place_window(target as *mut _, x, y, w, h);
         thread::sleep(Duration::from_millis(2000));
-        place_window(found as *mut _, x, y, w, h);
+        place_window(target as *mut _, x, y, w, h);
     });
 }
 
@@ -167,7 +187,6 @@ fn position_window_by_snapshot(
 #[cfg(target_os = "windows")]
 fn place_window(hwnd: *mut std::ffi::c_void, x: i32, y: i32, w: Option<u32>, h: Option<u32>) {
     extern "system" {
-        fn ShowWindow(hwnd: *mut std::ffi::c_void, cmd: i32) -> i32;
         fn SetWindowPos(
             hwnd: *mut std::ffi::c_void,
             insert: *mut std::ffi::c_void,
@@ -175,19 +194,23 @@ fn place_window(hwnd: *mut std::ffi::c_void, x: i32, y: i32, w: Option<u32>, h: 
             flags: u32,
         ) -> i32;
     }
-    const SW_RESTORE: i32 = 9;
+    // Do NOT call ShowWindow before SetWindowPos.
+    // poll_for_new_window already verifies IsWindowVisible, so the window is visible.
+    // Any ShowWindow call (SW_RESTORE or SW_SHOWNOACTIVATE) before SetWindowPos triggers
+    // Windows 11's snap/restore tracking when the saved height exceeds the screen height,
+    // causing the window to revert to its pre-snap position on subsequent calls.
+    // SWP_FRAMECHANGED forces the window to recalculate its frame, clearing snap state.
     const SWP_NOSIZE: u32 = 0x0001;
     const SWP_NOZORDER: u32 = 0x0004;
     const SWP_NOACTIVATE: u32 = 0x0010;
+    const SWP_FRAMECHANGED: u32 = 0x0020;
     unsafe {
-        // Restore first — SetWindowPos silently fails on maximized windows
-        ShowWindow(hwnd, SW_RESTORE);
         match (w, h) {
             (Some(cw), Some(ch)) => {
-                SetWindowPos(hwnd, std::ptr::null_mut(), x, y, cw as i32, ch as i32, SWP_NOZORDER | SWP_NOACTIVATE);
+                SetWindowPos(hwnd, std::ptr::null_mut(), x, y, cw as i32, ch as i32, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
             }
             _ => {
-                SetWindowPos(hwnd, std::ptr::null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                SetWindowPos(hwnd, std::ptr::null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
             }
         }
     }

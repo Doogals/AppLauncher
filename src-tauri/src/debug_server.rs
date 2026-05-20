@@ -17,12 +17,13 @@ pub fn start(app: tauri::AppHandle) {
     let state: AppHandle = Arc::new(app);
     tauri::async_runtime::spawn(async move {
         let router = Router::new()
-            .route("/state",              get(get_state))
-            .route("/launch/:group_id",   post(do_launch))
-            .route("/edit/:group_id",     post(do_edit))
-            .route("/reload",             post(do_reload))
-            .route("/log",                get(get_log))
-            .route("/windows",            get(get_windows))
+            .route("/state",                  get(get_state))
+            .route("/launch/:group_id",       post(do_launch))
+            .route("/edit/:group_id",         post(do_edit))
+            .route("/reload",                 post(do_reload))
+            .route("/log",                    get(get_log))
+            .route("/windows",                get(get_windows))
+            .route("/close_group/:group_id",  post(close_group_windows))
             .with_state(state);
 
         match tokio::net::TcpListener::bind("127.0.0.1:7891").await {
@@ -126,4 +127,66 @@ fn enumerate_windows() -> Vec<serde_json::Value> {
 
     #[cfg(not(target_os = "windows"))]
     vec![]
+}
+
+// POST /close_group/:group_id — close all visible windows whose titles match group item filenames.
+// Sends WM_CLOSE (graceful) to each matching window. Returns count of windows closed.
+async fn close_group_windows(State(app): State<AppHandle>, Path(group_id): Path<String>) -> impl IntoResponse {
+    let config = app.state::<crate::AppState>().0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let group = match config.groups.iter().find(|g| g.id == group_id) {
+        Some(g) => g.clone(),
+        None => return Json(serde_json::json!({ "error": "group not found" })),
+    };
+
+    // Collect lowercase file stems from each item's path (e.g. "test-script" from "test-script.bat")
+    let keywords: Vec<String> = group.items.iter()
+        .filter_map(|item| item.path.as_ref())
+        .filter_map(|p| std::path::Path::new(p).file_stem()?.to_str().map(|s| s.to_lowercase()))
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let closed = tokio::task::spawn_blocking(move || close_windows_by_keywords(&keywords))
+        .await
+        .unwrap_or(0);
+
+    Json(serde_json::json!({ "closed": closed }))
+}
+
+fn close_windows_by_keywords(keywords: &[String]) -> u32 {
+    #[cfg(target_os = "windows")]
+    {
+        extern "system" {
+            fn EnumWindows(cb: unsafe extern "system" fn(*mut std::ffi::c_void, isize) -> i32, data: isize) -> i32;
+            fn IsWindowVisible(hwnd: *mut std::ffi::c_void) -> i32;
+            fn GetWindowTextW(hwnd: *mut std::ffi::c_void, buf: *mut u16, max: i32) -> i32;
+            fn PostMessageW(hwnd: *mut std::ffi::c_void, msg: u32, wparam: usize, lparam: isize) -> i32;
+        }
+        const WM_CLOSE: u32 = 0x0010;
+
+        struct Data { keywords: Vec<String>, count: u32 }
+        let mut data = Data { keywords: keywords.to_vec(), count: 0 };
+
+        unsafe extern "system" fn cb(hwnd: *mut std::ffi::c_void, param: isize) -> i32 {
+            if IsWindowVisible(hwnd) == 0 { return 1; }
+            let data = &mut *(param as *mut Data);
+            let mut buf = [0u16; 256];
+            let len = GetWindowTextW(hwnd, buf.as_mut_ptr(), 256);
+            if len == 0 { return 1; }
+            let title = String::from_utf16_lossy(&buf[..len as usize]).to_lowercase();
+            for kw in &data.keywords {
+                if title.contains(kw.as_str()) {
+                    PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                    data.count += 1;
+                    break;
+                }
+            }
+            1
+        }
+
+        unsafe { EnumWindows(cb, &mut data as *mut _ as isize); }
+        return data.count;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    { let _ = keywords; 0 }
 }
