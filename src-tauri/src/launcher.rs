@@ -486,7 +486,10 @@ pub fn launch_group(group_id: &str, config: &AppConfig) -> Result<(), String> {
                 crate::debug_log::write_debug_log(&format!(
                     "LAUNCH batch switching desktop ({} item(s))", items.len()
                 ));
-                crate::virtual_desktop::switch_virtual_desktop(&current_desktop, target_guid);
+                let switched = crate::virtual_desktop::switch_virtual_desktop(&current_desktop, target_guid);
+                if !switched {
+                    crate::debug_log::write_debug_log("LAUNCH batch desktop switch timed out or failed");
+                }
                 current_desktop = target_guid.clone();
             }
             for item in items {
