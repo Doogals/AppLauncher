@@ -29,20 +29,20 @@ async function initDesktopDropdown() {
     sel.appendChild(opt);
   }
 
-  // Pre-select the previously saved virtual desktop for this item (passed via URL param).
+  // Pre-select the saved desktop, or default to Desktop 1 for items with no explicit target.
   const vdParam = params.get('vd');
-  if (vdParam) {
-    const savedGuid = JSON.parse(decodeURIComponent(vdParam));
-    const savedStr = JSON.stringify(savedGuid);
-    for (const opt of sel.options) {
-      if (opt.value === savedStr) {
-        opt.selected = true;
-        // Store in Rust so complete_layout_save picks it up even if user doesn't change it.
-        invoke('set_layout_item_desktop', { label, guid: savedGuid }).catch(() => {});
-        break;
-      }
+  const savedGuid = vdParam
+    ? JSON.parse(decodeURIComponent(vdParam))
+    : desktops[0].guid;
+  const savedStr = JSON.stringify(savedGuid);
+  for (const opt of sel.options) {
+    if (opt.value === savedStr) {
+      opt.selected = true;
+      break;
     }
   }
+  // Always register with Rust so complete_layout_save captures it without requiring a change.
+  invoke('set_layout_item_desktop', { label, guid: savedGuid }).catch(() => {});
 
   sel.addEventListener('change', async () => {
     const guid = sel.value ? JSON.parse(sel.value) : null;
