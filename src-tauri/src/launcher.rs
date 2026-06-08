@@ -1,6 +1,21 @@
 use crate::config::{AppConfig, Item, ItemType};
 use std::collections::HashMap;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
+
+// Tracks the most recent "placer generation" for each HWND (by usize address).
+// When apply_window_placement claims a window it stores a generation counter.
+// The background re-apply thread checks that it is still the current owner
+// before re-applying — if a later item has since claimed the same HWND the
+// re-apply is skipped rather than overwriting the newer placement.
+static CLAIM_GEN: AtomicU64 = AtomicU64::new(0);
+static CLAIMS: OnceLock<Mutex<HashMap<usize, u64>>> = OnceLock::new();
+
+#[cfg(target_os = "windows")]
+fn claims() -> &'static Mutex<HashMap<usize, u64>> {
+    CLAIMS.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 // ── Snapshot-based window positioning (Windows only) ─────────────────────────
 //
@@ -149,6 +164,13 @@ fn apply_window_placement(found: usize, x: i32, y: i32, w: Option<u32>, h: Optio
         }
     };
 
+    // Claim this HWND with a unique generation counter. The background re-apply
+    // thread checks the counter before each re-apply — if a later item claimed
+    // the same HWND in the meantime the re-apply is skipped to avoid overwriting
+    // a correct placement made by the subsequent item.
+    let gen = CLAIM_GEN.fetch_add(1, Ordering::SeqCst);
+    claims().lock().unwrap().insert(target, gen);
+
     place_window(target as *mut _, x, y, w, h);
     crate::debug_log::write_debug_log(&format!(
         "LAUNCH window HWND 0x{:X} positioned at ({}, {}) {}x{}",
@@ -157,9 +179,13 @@ fn apply_window_placement(found: usize, x: i32, y: i32, w: Option<u32>, h: Optio
     ));
     thread::spawn(move || {
         thread::sleep(Duration::from_millis(1000));
-        place_window(target as *mut _, x, y, w, h);
+        if claims().lock().unwrap().get(&target) == Some(&gen) {
+            place_window(target as *mut _, x, y, w, h);
+        }
         thread::sleep(Duration::from_millis(2000));
-        place_window(target as *mut _, x, y, w, h);
+        if claims().lock().unwrap().get(&target) == Some(&gen) {
+            place_window(target as *mut _, x, y, w, h);
+        }
     });
 }
 
@@ -182,12 +208,24 @@ fn position_window_by_snapshot(
     let _ = virtual_desktop; // desktop targeting now handled by switch-before-launch in launch_group
 
     // --- Phase 1: synchronous — wait for launch confirmation ---
-    if let Some(found) = poll_for_new_window(&before, preferred_pid, preferred_exe.as_deref(), 50) {
+    // Items with no PID/exe hint (File/Folder/Script-open) rely on tier-3 any-new,
+    // which fires at poll ≥ 2 (600ms). If nothing appears by poll 10 (3s) the file
+    // likely opened inside an existing app window (e.g. tabbed Notepad) — bail early.
+    // Items with a hint (App/Script-run) keep 50 polls (15s) for slow cold-start apps.
+    let phase1_polls = if preferred_pid.is_none() && preferred_exe.is_none() { 10 } else { 50 };
+    if let Some(found) = poll_for_new_window(&before, preferred_pid, preferred_exe.as_deref(), phase1_polls) {
         apply_window_placement(found, x, y, w, h);
         return;
     }
 
     // --- Phase 2: background fallback for slow apps ---
+    // Only useful for items with a PID/exe hint. File/Folder items have no hint so
+    // their any-new fallback in Phase 2 would race with the next item's launch and
+    // steal its window. If Phase 1's 50-poll any-new couldn't find a window, Phase 2
+    // won't do better — it will just claim whatever new window the next item opens.
+    if preferred_pid.is_none() && preferred_exe.is_none() {
+        return;
+    }
     thread::spawn(move || {
         if let Some(found) = poll_for_new_window(&before, preferred_pid, preferred_exe.as_deref(), 15) {
             apply_window_placement(found, x, y, w, h);
@@ -417,42 +455,92 @@ pub fn launch_group(group_id: &str, config: &AppConfig) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     let mut current_desktop: Vec<u8> = original_desktop.clone().unwrap_or_default();
 
-    // Launch non-URL items: switch to target desktop first (using tracked current), then launch.
-    for item in &group.items {
-        if !matches!(item.item_type, ItemType::Url) {
-            crate::debug_log::write_debug_log(&format!(
-                "LAUNCH item type={:?} path=\"{}\"",
-                item.item_type,
-                item.path.as_deref().or(item.value.as_deref()).unwrap_or("?")
-            ));
-            #[cfg(target_os = "windows")]
-            if let Some(ref guid) = item.launch_virtual_desktop {
-                if guid.as_slice() != current_desktop.as_slice() {
-                    crate::debug_log::write_debug_log(&format!(
-                        "LAUNCH item \"{}\" switching desktop",
-                        item.path.as_deref().or(item.value.as_deref()).unwrap_or("?")
-                    ));
-                    crate::virtual_desktop::switch_virtual_desktop(&current_desktop, guid);
-                    current_desktop = guid.clone();
-                }
+    // Windows: when at least one item has an explicit desktop target, build ordered batches
+    // (grouped by target GUID, first-appearance order) and execute each batch with a single
+    // desktop switch. Items with no explicit target are folded into the Desktop-1 batch.
+    // When no items have explicit targets (needs_vd = false), fall through to the sequential
+    // path below — identical to pre-batch behavior, no VD switches.
+    #[cfg(target_os = "windows")]
+    if needs_vd {
+        let desktop_1_guid: Vec<u8> = {
+            let desktops = crate::virtual_desktop::get_virtual_desktops();
+            desktops.into_iter().next().map(|d| d.guid).unwrap_or_default()
+        };
+        let mut batches: Vec<(Vec<u8>, Vec<&Item>)> = Vec::new();
+        for item in &group.items {
+            // URL items without a position or explicit desktop skip the batch loop entirely;
+            // they are collected into the multi-tab batch at the end of launch_group.
+            let in_batch = !matches!(item.item_type, ItemType::Url)
+                || item.launch_x.is_some()
+                || item.launch_virtual_desktop.is_some();
+            if !in_batch { continue; }
+            let target = item.launch_virtual_desktop.clone()
+                .unwrap_or_else(|| desktop_1_guid.clone());
+            match batches.iter_mut().find(|(guid, _)| *guid == target) {
+                Some(batch) => batch.1.push(item),
+                None => batches.push((target, vec![item])),
             }
-            launch_item(item, &config.preferred_browser)?;
+        }
+        for (target_guid, items) in &batches {
+            if target_guid.as_slice() != current_desktop.as_slice() {
+                crate::debug_log::write_debug_log(&format!(
+                    "LAUNCH batch switching desktop ({} item(s))", items.len()
+                ));
+                crate::virtual_desktop::switch_virtual_desktop(&current_desktop, target_guid);
+                current_desktop = target_guid.clone();
+            }
+            for item in items {
+                crate::debug_log::write_debug_log(&format!(
+                    "LAUNCH item type={:?} path=\"{}\"",
+                    item.item_type,
+                    item.path.as_deref().or(item.value.as_deref()).unwrap_or("?")
+                ));
+                launch_item(item, &config.preferred_browser)?;
+            }
         }
     }
 
-    // URL items with a saved position or target desktop: launch individually.
-    for item in &group.items {
-        if matches!(item.item_type, ItemType::Url)
-            && (item.launch_x.is_some() || item.launch_virtual_desktop.is_some())
-        {
-            #[cfg(target_os = "windows")]
-            if let Some(ref guid) = item.launch_virtual_desktop {
-                if guid.as_slice() != current_desktop.as_slice() {
-                    crate::virtual_desktop::switch_virtual_desktop(&current_desktop, guid);
-                    current_desktop = guid.clone();
-                }
+    // Sequential fallback — two cases:
+    // (a) Windows + needs_vd = false: no desktop targets, launch items in order, no switching.
+    // (b) Non-Windows: desktop targeting not supported, always sequential.
+    #[cfg(target_os = "windows")]
+    if !needs_vd {
+        for item in &group.items {
+            if !matches!(item.item_type, ItemType::Url) {
+                crate::debug_log::write_debug_log(&format!(
+                    "LAUNCH item type={:?} path=\"{}\"",
+                    item.item_type,
+                    item.path.as_deref().or(item.value.as_deref()).unwrap_or("?")
+                ));
+                launch_item(item, &config.preferred_browser)?;
             }
-            launch_item(item, &config.preferred_browser)?;
+        }
+        for item in &group.items {
+            if matches!(item.item_type, ItemType::Url)
+                && (item.launch_x.is_some() || item.launch_virtual_desktop.is_some())
+            {
+                launch_item(item, &config.preferred_browser)?;
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        for item in &group.items {
+            if !matches!(item.item_type, ItemType::Url) {
+                crate::debug_log::write_debug_log(&format!(
+                    "LAUNCH item type={:?} path=\"{}\"",
+                    item.item_type,
+                    item.path.as_deref().or(item.value.as_deref()).unwrap_or("?")
+                ));
+                launch_item(item, &config.preferred_browser)?;
+            }
+        }
+        for item in &group.items {
+            if matches!(item.item_type, ItemType::Url)
+                && (item.launch_x.is_some() || item.launch_virtual_desktop.is_some())
+            {
+                launch_item(item, &config.preferred_browser)?;
+            }
         }
     }
 
