@@ -45,7 +45,7 @@ async function initDesktopDropdown() {
   invoke('set_layout_item_desktop', { label, guid: savedGuid }).catch(() => {});
 
   sel.addEventListener('change', async () => {
-    const guid = sel.value ? JSON.parse(sel.value) : null;
+    const guid = JSON.parse(sel.value);
     try {
       await invoke('set_layout_item_desktop', { label, guid });
     } catch {}
