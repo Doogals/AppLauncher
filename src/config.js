@@ -819,19 +819,18 @@ async function addItem(type) {
     return;
   }
 
-  const filters = type === 'app' || type === 'script'
-    ? [{ name: 'Executable', extensions: ['exe', 'bat', 'ps1', 'cmd'] }]
-    : [];
   const selected = await open({
-    title: `Select ${type}`,
+    title: type === 'folder' ? 'Select folder' : 'Select file or program',
     directory: type === 'folder',
-    filters: filters.length ? filters : undefined,
   });
   if (!selected) return;
+
+  const item_type = type === 'folder' ? 'folder' : detectItemType(selected);
+
   let icon_data = null;
   try { icon_data = await invoke('get_file_icon', { path: selected }); } catch {}
-  const newItem = { item_type: type, path: selected, value: null, icon_data };
-  if (type === 'script') newItem.run_in_terminal = true;
+  const newItem = { item_type, path: selected, value: null, icon_data };
+  if (item_type === 'script') newItem.run_in_terminal = true;
   currentItems.push(newItem);
 
   renderItems();
