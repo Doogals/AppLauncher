@@ -793,6 +793,13 @@ document.querySelectorAll('[data-type]').forEach(el => {
   el.addEventListener('click', () => addItem(el.dataset.type));
 });
 
+function detectItemType(path) {
+  const ext = path.split('.').pop().toLowerCase();
+  if (ext === 'exe') return 'app';
+  if (['bat', 'cmd', 'ps1'].includes(ext)) return 'script';
+  return 'file';
+}
+
 async function addItem(type) {
   document.getElementById('add-type-menu').style.display = 'none';
   fitWindow();
