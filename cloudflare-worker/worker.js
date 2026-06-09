@@ -6,7 +6,7 @@ const FEEDBACK_TO = 'tonictech.inquiry@gmail.com';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 
@@ -20,12 +20,16 @@ async function handleRequest(request) {
     return new Response(null, { status: 204, headers: CORS_HEADERS });
   }
 
+  const url = new URL(request.url);
+  const action = url.pathname.slice(1);
+
+  if (action === 'downloads' && request.method === 'GET') {
+    return handleDownloads();
+  }
+
   if (request.method !== 'POST') {
     return new Response('Method not allowed', { status: 405, headers: CORS_HEADERS });
   }
-
-  const url = new URL(request.url);
-  const action = url.pathname.slice(1);
 
   if (!['activate', 'deactivate', 'validate', 'feedback'].includes(action)) {
     return new Response('Not found', { status: 404, headers: CORS_HEADERS });
@@ -85,6 +89,23 @@ async function handleRequest(request) {
 
   // validate
   return json({ valid: lsRes.ok && data.valid === true });
+}
+
+async function handleDownloads() {
+  const res = await fetch('https://api.github.com/repos/Doogals/AppLauncher/releases', {
+    headers: { 'User-Agent': 'tonic-tech-worker' },
+  });
+  if (!res.ok) return json({ error: 'Failed to fetch' }, 500);
+  const releases = await res.json();
+  let total = 0;
+  for (const release of releases) {
+    for (const asset of release.assets) {
+      if (asset.name.endsWith('.msi')) total += asset.download_count;
+    }
+  }
+  return new Response(JSON.stringify({ total }), {
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=300', ...CORS_HEADERS },
+  });
 }
 
 function json(data, status = 200) {
