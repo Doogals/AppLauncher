@@ -84,15 +84,23 @@ fn get_hwnd_exe(hwnd_usize: usize) -> Option<String> {
     }
 }
 
-// Searches for a new visible HWND (not in `before`) using a three-tier strategy:
+#[cfg(target_os = "windows")]
+fn get_foreground_hwnd() -> usize {
+    extern "system" { fn GetForegroundWindow() -> *mut std::ffi::c_void; }
+    unsafe { GetForegroundWindow() as usize }
+}
+
+// Searches for a new visible HWND (not in `before`) using a four-tier strategy:
 //   1. PID match  — works for regular apps (Command::spawn gives the right PID)
 //   2. Exe match  — works for Store apps whose window lives in a hosted process
 //   3. Any new    — last-resort on the final poll only
+//   4. Foreground changed to already-open window — handles files already open in an app
 #[cfg(target_os = "windows")]
 fn poll_for_new_window(
     before: &std::collections::HashSet<usize>,
     preferred_pid: Option<u32>,
     preferred_exe: Option<&str>,
+    fg_before: usize,
     polls: usize,
 ) -> Option<usize> {
     use std::thread;
@@ -103,35 +111,49 @@ fn poll_for_new_window(
             .into_iter()
             .filter(|h| !before.contains(h))
             .collect();
-        if new_hwnds.is_empty() { continue; }
-        // Tier 1: PID
-        if let Some(pid) = preferred_pid {
-            if let Some(&h) = new_hwnds.iter().find(|&&h| get_hwnd_pid(h) == pid) {
-                crate::debug_log::write_debug_log(&format!("LAUNCH HWND 0x{:X} found (PID match) poll={}", h, i));
-                return Some(h);
+        if !new_hwnds.is_empty() {
+            // Tier 1: PID
+            if let Some(pid) = preferred_pid {
+                if let Some(&h) = new_hwnds.iter().find(|&&h| get_hwnd_pid(h) == pid) {
+                    crate::debug_log::write_debug_log(&format!("LAUNCH HWND 0x{:X} found (PID match) poll={}", h, i));
+                    return Some(h);
+                }
+            }
+            // Tier 2: exe name (handles Store apps with hosted window process)
+            if let Some(exe) = preferred_exe {
+                if let Some(&h) = new_hwnds.iter().find(|&&h| get_hwnd_exe(h).as_deref() == Some(exe)) {
+                    crate::debug_log::write_debug_log(&format!("LAUNCH HWND 0x{:X} found (exe match) poll={}", h, i));
+                    return Some(h);
+                }
+            }
+            // Tier 3: any new window.
+            // Items with no PID/exe hint (File/Folder via open::that) have no specific match
+            // to wait for — accept after 2 polls (600ms grace) so a brief transient window
+            // doesn't get grabbed on the very first poll.
+            // Items with PID/exe hints that haven't matched yet: last poll only (true last resort).
+            let tier3_ready = if preferred_pid.is_none() && preferred_exe.is_none() {
+                i >= 2
+            } else {
+                i == polls - 1
+            };
+            if tier3_ready {
+                let h = new_hwnds.into_iter().next();
+                crate::debug_log::write_debug_log(&format!("LAUNCH HWND {:?} found (any-new fallback)", h));
+                return h;
             }
         }
-        // Tier 2: exe name (handles Store apps with hosted window process)
-        if let Some(exe) = preferred_exe {
-            if let Some(&h) = new_hwnds.iter().find(|&&h| get_hwnd_exe(h).as_deref() == Some(exe)) {
-                crate::debug_log::write_debug_log(&format!("LAUNCH HWND 0x{:X} found (exe match) poll={}", h, i));
-                return Some(h);
+        // Tier 4: no new window appeared, but the foreground changed to a window that was
+        // already open before launch — open::that focused an existing instance rather than
+        // creating a new one. Only fires for File/Folder items (no PID/exe hint), starting
+        // at poll ≥ 1 (≥600ms) so any transient launcher-window focus has settled.
+        if preferred_pid.is_none() && preferred_exe.is_none() && fg_before != 0 && i >= 1 {
+            let fg_now = get_foreground_hwnd();
+            if fg_now != fg_before && fg_now != 0 && before.contains(&fg_now) {
+                crate::debug_log::write_debug_log(&format!(
+                    "LAUNCH HWND 0x{:X} found (already-open foreground fallback) poll={}", fg_now, i
+                ));
+                return Some(fg_now);
             }
-        }
-        // Tier 3: any new window.
-        // Items with no PID/exe hint (File/Folder via open::that) have no specific match
-        // to wait for — accept after 2 polls (600ms grace) so a brief transient window
-        // doesn't get grabbed on the very first poll.
-        // Items with PID/exe hints that haven't matched yet: last poll only (true last resort).
-        let tier3_ready = if preferred_pid.is_none() && preferred_exe.is_none() {
-            i >= 2
-        } else {
-            i == polls - 1
-        };
-        if tier3_ready {
-            let h = new_hwnds.into_iter().next();
-            crate::debug_log::write_debug_log(&format!("LAUNCH HWND {:?} found (any-new fallback)", h));
-            return h;
         }
     }
     None
@@ -200,6 +222,7 @@ fn position_window_by_snapshot(
     before: std::collections::HashSet<usize>,
     preferred_pid: Option<u32>,
     preferred_exe: Option<String>,
+    fg_before: usize,
     x: i32, y: i32, w: Option<u32>, h: Option<u32>,
     virtual_desktop: Option<Vec<u8>>,
 ) {
@@ -213,7 +236,7 @@ fn position_window_by_snapshot(
     // likely opened inside an existing app window (e.g. tabbed Notepad) — bail early.
     // Items with a hint (App/Script-run) keep 50 polls (15s) for slow cold-start apps.
     let phase1_polls = if preferred_pid.is_none() && preferred_exe.is_none() { 10 } else { 50 };
-    if let Some(found) = poll_for_new_window(&before, preferred_pid, preferred_exe.as_deref(), phase1_polls) {
+    if let Some(found) = poll_for_new_window(&before, preferred_pid, preferred_exe.as_deref(), fg_before, phase1_polls) {
         apply_window_placement(found, x, y, w, h);
         return;
     }
@@ -227,7 +250,7 @@ fn position_window_by_snapshot(
         return;
     }
     thread::spawn(move || {
-        if let Some(found) = poll_for_new_window(&before, preferred_pid, preferred_exe.as_deref(), 15) {
+        if let Some(found) = poll_for_new_window(&before, preferred_pid, preferred_exe.as_deref(), fg_before, 15) {
             apply_window_placement(found, x, y, w, h);
         }
     });
@@ -599,17 +622,19 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
                 let exe = std::path::Path::new(path)
                     .file_name().and_then(|n| n.to_str())
                     .map(|s| s.to_ascii_lowercase());
-                position_window_by_snapshot(before, Some(child.id()), exe, x, y, item.launch_width, item.launch_height, item.launch_virtual_desktop.clone());
+                position_window_by_snapshot(before, Some(child.id()), exe, 0, x, y, item.launch_width, item.launch_height, item.launch_virtual_desktop.clone());
             }
         }
         ItemType::File | ItemType::Folder => {
             let path = item.path.as_ref().ok_or("Item is missing a path")?;
             #[cfg(target_os = "windows")]
             let before = if item.launch_x.is_some() { Some(collect_visible_hwnds()) } else { None };
+            #[cfg(target_os = "windows")]
+            let fg_before = if item.launch_x.is_some() { get_foreground_hwnd() } else { 0 };
             open::that(path).map_err(|e| format!("Failed to open '{}': {}", path, e))?;
             #[cfg(target_os = "windows")]
             if let (Some(before), Some(x), Some(y)) = (before, item.launch_x, item.launch_y) {
-                position_window_by_snapshot(before, None, None, x, y, item.launch_width, item.launch_height, item.launch_virtual_desktop.clone());
+                position_window_by_snapshot(before, None, None, fg_before, x, y, item.launch_width, item.launch_height, item.launch_virtual_desktop.clone());
             }
         }
         ItemType::Url => {
@@ -639,7 +664,7 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
                         let exe = std::path::Path::new(bp)
                             .file_name().and_then(|n| n.to_str())
                             .map(|s| s.to_ascii_lowercase());
-                        position_window_by_snapshot(before, Some(child.id()), exe, x, y, item.launch_width, item.launch_height, item.launch_virtual_desktop.clone());
+                        position_window_by_snapshot(before, Some(child.id()), exe, 0, x, y, item.launch_width, item.launch_height, item.launch_virtual_desktop.clone());
                         return Ok(());
                     }
                     // Non-Windows: fall through to the flag-based launch below
@@ -680,10 +705,12 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
             if !item.run_in_terminal {
                 #[cfg(target_os = "windows")]
                 let before = if item.launch_x.is_some() { Some(collect_visible_hwnds()) } else { None };
+                #[cfg(target_os = "windows")]
+                let fg_before = if item.launch_x.is_some() { get_foreground_hwnd() } else { 0 };
                 open::that(path).map_err(|e| format!("Failed to open script '{}': {}", path, e))?;
                 #[cfg(target_os = "windows")]
                 if let (Some(before), Some(x), Some(y)) = (before, item.launch_x, item.launch_y) {
-                    position_window_by_snapshot(before, None, None, x, y, item.launch_width, item.launch_height, item.launch_virtual_desktop.clone());
+                    position_window_by_snapshot(before, None, None, fg_before, x, y, item.launch_width, item.launch_height, item.launch_virtual_desktop.clone());
                 }
                 return Ok(());
             }
@@ -733,7 +760,7 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
                 } else {
                     Some("cmd.exe".to_string())
                 };
-                position_window_by_snapshot(before, Some(child.id()), launcher_exe, x, y, item.launch_width, item.launch_height, item.launch_virtual_desktop.clone());
+                position_window_by_snapshot(before, Some(child.id()), launcher_exe, 0, x, y, item.launch_width, item.launch_height, item.launch_virtual_desktop.clone());
             }
         }
         ItemType::Steam => {
