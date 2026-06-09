@@ -45,7 +45,30 @@ async fn get_state(State(app): State<AppHandle>) -> impl IntoResponse {
 // POST /launch/:group_id
 async fn do_launch(State(app): State<AppHandle>, Path(group_id): Path<String>) -> impl IntoResponse {
     let config = app.state::<crate::AppState>().0.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    match crate::launcher::launch_group(&group_id, &config) {
+
+    // Show launch overlay (same logic as the Tauri command)
+    let label = config.groups.iter()
+        .find(|g| g.id == group_id)
+        .map(|g| format!("{} {}", g.icon, g.name))
+        .unwrap_or_else(|| "Apps".to_string());
+    let url = format!("launch-overlay.html?label={}", crate::percent_encode(&label));
+    let app2 = (*app).clone();
+    let _ = app2.clone().run_on_main_thread(move || {
+        if let Some(old) = app2.get_webview_window("launch-overlay") { let _ = old.close(); }
+        let _ = tauri::WebviewWindowBuilder::new(&app2, "launch-overlay", tauri::WebviewUrl::App(url.into()))
+            .title("").inner_size(320.0, 72.0).center()
+            .decorations(false).resizable(false).always_on_top(true)
+            .skip_taskbar(true).build();
+    });
+
+    let result = crate::launcher::launch_group(&group_id, &config);
+
+    let app3 = (*app).clone();
+    let _ = app3.clone().run_on_main_thread(move || {
+        if let Some(w) = app3.get_webview_window("launch-overlay") { let _ = w.close(); }
+    });
+
+    match result {
         Ok(_)  => Json(serde_json::json!({ "ok": true })),
         Err(e) => Json(serde_json::json!({ "error": e })),
     }

@@ -19,6 +19,7 @@ export default defineConfig({
         widget: resolve(__dirname, 'src/widget.html'),
         config: resolve(__dirname, 'src/config.html'),
         layoutItem: resolve(__dirname, 'src/layout-item.html'),
+        launchOverlay: resolve(__dirname, 'src/launch-overlay.html'),
       },
     },
   },

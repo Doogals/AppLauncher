@@ -84,10 +84,64 @@ fn delete_group(group_id: String, state: State<AppState>, app: tauri::AppHandle)
     Ok(())
 }
 
+pub(crate) fn percent_encode(s: &str) -> String {
+    let mut out = String::new();
+    for byte in s.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{:02X}", byte));
+        }
+    }
+    out
+}
+
 #[tauri::command]
-fn launch_group(group_id: String, state: State<AppState>) -> Result<(), String> {
-    let config = state.0.lock().unwrap().clone();
-    launcher::launch_group(&group_id, &config)
+async fn launch_group(group_id: String, app: tauri::AppHandle) -> Result<(), String> {
+    // Clone config while holding the lock, then release before any await.
+    let config = app.state::<AppState>().0.lock().unwrap().clone();
+
+    // Show a centered overlay while the group is launching.
+    let label = config.groups.iter()
+        .find(|g| g.id == group_id)
+        .map(|g| format!("{} {}", g.icon, g.name))
+        .unwrap_or_else(|| "Apps".to_string());
+    let url = format!("launch-overlay.html?label={}", percent_encode(&label));
+    let app2 = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(old) = app2.get_webview_window("launch-overlay") {
+            let _ = old.close();
+        }
+        let _ = tauri::WebviewWindowBuilder::new(
+            &app2,
+            "launch-overlay",
+            tauri::WebviewUrl::App(url.into()),
+        )
+        .title("")
+        .inner_size(320.0, 72.0)
+        .center()
+        .decorations(false)
+        .resizable(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .build();
+    });
+
+    // Run the blocking launch on a thread-pool thread so the main thread
+    // stays free to paint the overlay and process the message pump.
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        launcher::launch_group(&group_id, &config)
+    }).await.map_err(|e| e.to_string())?;
+
+    // Dismiss overlay.
+    let app3 = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(w) = app3.get_webview_window("launch-overlay") {
+            let _ = w.close();
+        }
+    });
+
+    result
 }
 
 #[tauri::command]
