@@ -110,8 +110,10 @@ Step "Signing installer"
 # -f loads the private key FROM A FILE PATH. -k instead treats its argument
 # as the literal key content and tries to base64-decode it directly -- that
 # was the bug here, it was choking on the ":" in "C:\Users\..." as invalid
-# base64.
-npx tauri signer sign --no-password -f $KeyPath $signTarget
+# base64. --no-password isn't a real flag on this CLI version (it suggested
+# --password instead) -- passing an explicit empty password is the actual
+# way to skip the interactive prompt for a key that has none.
+npx tauri signer sign --password "" -f $KeyPath $signTarget
 if ($LASTEXITCODE -ne 0) { throw "Signing failed." }
 $sigFile = "$signTarget.sig"
 if (-not (Test-Path $sigFile)) { throw "Expected signature file not found at $sigFile" }
