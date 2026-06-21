@@ -112,8 +112,12 @@ Step "Signing installer"
 # was the bug here, it was choking on the ":" in "C:\Users\..." as invalid
 # base64. --no-password isn't a real flag on this CLI version (it suggested
 # --password instead) -- passing an explicit empty password is the actual
-# way to skip the interactive prompt for a key that has none.
-npx tauri signer sign --password "" -f $KeyPath $signTarget
+# way to skip the interactive prompt for a key that has none. Using
+# --password= (attached, one token) rather than --password "" (two tokens)
+# because Windows PowerShell 5.1 silently drops empty-string arguments when
+# calling a native exe, which turned "" into nothing and left --password
+# with no value at all.
+npx tauri signer sign "--password=" -f $KeyPath $signTarget
 if ($LASTEXITCODE -ne 0) { throw "Signing failed." }
 $sigFile = "$signTarget.sig"
 if (-not (Test-Path $sigFile)) { throw "Expected signature file not found at $sigFile" }
