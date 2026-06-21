@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Read(*)",
+      "Write(*)",
+      "Edit(*)",
+      "Glob(*)",
+      "Grep(*)",
+      "mcp__local-hub__deploy_app(*)",
+      "mcp__local-hub__session_save(*)",
+      "mcp__local-hub__session_get(*)"
+    ]
+  }
+}

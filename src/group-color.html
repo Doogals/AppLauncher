@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="styles.css" />
+  <style>
+    html, body { margin: 0; background: #1a1a2e; overflow: hidden; }
+    .group-color-window { box-sizing: border-box; padding: 16px; }
+
+    /* Scoped copy of the global .tab-bar/.tab styling, calibrated to this
+       window's own 16px padding (the global version assumes 20px). */
+    .gc-tab-bar {
+      display: flex;
+      border-bottom: 1px solid #0f3460;
+      margin: -16px -16px 16px;
+      padding: 0 16px;
+    }
+    .gc-tab {
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: #888;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 0.85rem;
+      margin-bottom: -1px;
+      padding: 10px 12px;
+      transition: color 0.1s;
+    }
+    .gc-tab.active { border-bottom-color: #e94560; color: #e0e0e0; }
+    .gc-tab:hover:not(.active) { color: #ccc; }
+
+    /* 20 colors wrap into a 5-per-row grid (4 rows) — the window width is
+       sized to fit exactly 5 per row, for both tabs. Bottom margin keeps the
+       last row's labels (absolutely positioned below each swatch, see
+       .swatch-label in styles.css) from getting clipped by the window edge. */
+    .group-color-swatches, .solid-color-swatches { margin-bottom: 18px; }
+  </style>
+  <title>Group Color</title>
+</head>
+<body>
+  <div class="group-color-window">
+    <div class="gc-tab-bar">
+      <button class="gc-tab active" data-tab="theme">Theme Colors</button>
+      <button class="gc-tab" data-tab="solid">Solid Colors</button>
+    </div>
+
+    <div id="gc-tab-theme">
+      <div class="color-swatches group-color-swatches" id="group-color-swatches"></div>
+    </div>
+
+    <div id="gc-tab-solid" style="display:none">
+      <div class="color-swatches solid-color-swatches" id="solid-color-swatches"></div>
+    </div>
+  </div>
+  <script type="module" src="group-color.js"></script>
+</body>
+</html>

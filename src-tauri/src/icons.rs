@@ -7,6 +7,29 @@ pub fn get_file_icon(path: String) -> Option<String> {
 
 #[cfg(target_os = "windows")]
 fn get_file_icon_windows(path: &str) -> Option<String> {
+    // SHGetFileInfoW relies on shell extension COM objects for some file
+    // types' icons. Now that get_file_icon runs via spawn_blocking, multiple
+    // calls can execute concurrently on fresh threads with no COM apartment
+    // initialized — those icons fail silently and fall back to generic ones.
+    // Same pattern already used in apps.rs's get_installed_apps for the same
+    // reason. The actual logic (with its several early-return paths) is
+    // split into a helper so cleanup always runs, however it exits.
+    let should_uninit = unsafe {
+        use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+        CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok()
+    };
+
+    let result = get_file_icon_windows_inner(path);
+
+    if should_uninit {
+        unsafe { windows::Win32::System::Com::CoUninitialize() };
+    }
+
+    result
+}
+
+#[cfg(target_os = "windows")]
+fn get_file_icon_windows_inner(path: &str) -> Option<String> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
 
@@ -17,15 +40,6 @@ fn get_file_icon_windows(path: &str) -> Option<String> {
         dw_attributes: u32,
         sz_display_name: [u16; 260],
         sz_type_name: [u16; 80],
-    }
-
-    #[repr(C)]
-    struct IconInfo {
-        f_icon: i32,
-        x_hotspot: u32,
-        y_hotspot: u32,
-        h_bm_mask: *mut std::ffi::c_void,
-        h_bm_color: *mut std::ffi::c_void,
     }
 
     #[repr(C)]
@@ -43,6 +57,12 @@ fn get_file_icon_windows(path: &str) -> Option<String> {
         bi_clr_important: u32,
     }
 
+    #[repr(C)]
+    struct BitmapInfo {
+        bmi_header: BitmapInfoHeader,
+        bmi_colors: [u32; 1],
+    }
+
     extern "system" {
         fn SHGetFileInfoW(
             psz_path: *const u16,
@@ -52,23 +72,40 @@ fn get_file_icon_windows(path: &str) -> Option<String> {
             u_flags: u32,
         ) -> usize;
         fn DestroyIcon(h_icon: *mut std::ffi::c_void) -> i32;
-        fn GetIconInfo(h_icon: *mut std::ffi::c_void, p_icon_info: *mut IconInfo) -> i32;
+        fn GetDC(hwnd: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+        fn ReleaseDC(hwnd: *mut std::ffi::c_void, hdc: *mut std::ffi::c_void) -> i32;
         fn CreateCompatibleDC(hdc: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
-        fn GetDIBits(
-            hdc: *mut std::ffi::c_void,
-            hbm: *mut std::ffi::c_void,
-            start: u32,
-            c_lines: u32,
-            lpv_bits: *mut std::ffi::c_void,
-            lpbmi: *mut BitmapInfoHeader,
-            usage: u32,
-        ) -> i32;
         fn DeleteDC(hdc: *mut std::ffi::c_void) -> i32;
+        fn CreateDIBSection(
+            hdc: *mut std::ffi::c_void,
+            pbmi: *const BitmapInfo,
+            usage: u32,
+            ppv_bits: *mut *mut std::ffi::c_void,
+            h_section: *mut std::ffi::c_void,
+            offset: u32,
+        ) -> *mut std::ffi::c_void;
+        fn SelectObject(
+            hdc: *mut std::ffi::c_void,
+            h: *mut std::ffi::c_void,
+        ) -> *mut std::ffi::c_void;
         fn DeleteObject(hgdiobj: *mut std::ffi::c_void) -> i32;
+        fn DrawIconEx(
+            hdc: *mut std::ffi::c_void,
+            x_left: i32,
+            y_top: i32,
+            h_icon: *mut std::ffi::c_void,
+            cx_width: i32,
+            cy_width: i32,
+            ist_ep_index: u32,
+            h_fl_bk: *mut std::ffi::c_void,
+            di_flags: u32,
+        ) -> i32;
     }
 
     const SHGFI_ICON: u32 = 0x0000_0100;
+    const SHGFI_LARGEICON: u32 = 0x0000_0000;
     const DIB_RGB_COLORS: u32 = 0;
+    const DI_NORMAL: u32 = 0x0003;
     const SIZE: u32 = 32;
 
     let wide: Vec<u16> = OsStr::new(path)
@@ -90,7 +127,7 @@ fn get_file_icon_windows(path: &str) -> Option<String> {
             0,
             &mut sfi,
             std::mem::size_of::<ShFileInfoW>() as u32,
-            SHGFI_ICON,
+            SHGFI_ICON | SHGFI_LARGEICON,
         )
     };
 
@@ -101,74 +138,90 @@ fn get_file_icon_windows(path: &str) -> Option<String> {
     let h_icon = sfi.h_icon;
 
     let rgba_pixels = unsafe {
-        let mut icon_info = IconInfo {
-            f_icon: 0,
-            x_hotspot: 0,
-            y_hotspot: 0,
-            h_bm_mask: std::ptr::null_mut(),
-            h_bm_color: std::ptr::null_mut(),
-        };
+        // Get a reference DC from the screen so CreateCompatibleDC works correctly
+        let screen_dc = GetDC(std::ptr::null_mut());
+        let dc = CreateCompatibleDC(screen_dc);
+        ReleaseDC(std::ptr::null_mut(), screen_dc);
 
-        if GetIconInfo(h_icon, &mut icon_info) == 0 {
-            DestroyIcon(h_icon);
-            return None;
-        }
-
-        let dc = CreateCompatibleDC(std::ptr::null_mut());
         if dc.is_null() {
             DestroyIcon(h_icon);
-            DeleteObject(icon_info.h_bm_mask);
-            if !icon_info.h_bm_color.is_null() {
-                DeleteObject(icon_info.h_bm_color);
-            }
             return None;
         }
 
-        let mut bmi = BitmapInfoHeader {
-            bi_size: std::mem::size_of::<BitmapInfoHeader>() as u32,
-            bi_width: SIZE as i32,
-            bi_height: -(SIZE as i32),
-            bi_planes: 1,
-            bi_bit_count: 32,
-            bi_compression: 0,
-            bi_size_image: 0,
-            bi_x_pels_per_meter: 0,
-            bi_y_pels_per_meter: 0,
-            bi_clr_used: 0,
-            bi_clr_important: 0,
+        // Create a 32-bit top-down DIB section to draw the icon into.
+        // The pixel memory is zeroed by Windows (fully transparent black).
+        let bmi = BitmapInfo {
+            bmi_header: BitmapInfoHeader {
+                bi_size: std::mem::size_of::<BitmapInfoHeader>() as u32,
+                bi_width: SIZE as i32,
+                bi_height: -(SIZE as i32), // negative = top-down
+                bi_planes: 1,
+                bi_bit_count: 32,
+                bi_compression: 0,
+                bi_size_image: 0,
+                bi_x_pels_per_meter: 0,
+                bi_y_pels_per_meter: 0,
+                bi_clr_used: 0,
+                bi_clr_important: 0,
+            },
+            bmi_colors: [0],
         };
 
-        let mut pixels = vec![0u8; (SIZE * SIZE * 4) as usize];
-        let dibits_result = GetDIBits(
+        let mut bits_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+        let hbm = CreateDIBSection(
             dc,
-            icon_info.h_bm_color,
-            0,
-            SIZE,
-            pixels.as_mut_ptr() as *mut _,
-            &mut bmi,
+            &bmi,
             DIB_RGB_COLORS,
+            &mut bits_ptr,
+            std::ptr::null_mut(),
+            0,
         );
 
-        DeleteDC(dc);
-        DeleteObject(icon_info.h_bm_mask);
-        if !icon_info.h_bm_color.is_null() {
-            DeleteObject(icon_info.h_bm_color);
-        }
-
-        if dibits_result == 0 {
+        if hbm.is_null() || bits_ptr.is_null() {
+            DeleteDC(dc);
             DestroyIcon(h_icon);
             return None;
         }
 
-        for chunk in pixels.chunks_exact_mut(4) {
-            chunk.swap(0, 2);
-        }
+        let old_bm = SelectObject(dc, hbm);
+
+        // DrawIconEx handles both classic DIB icons and modern PNG-based icons
+        // (Edge, Chrome, UWP apps, etc.) — unlike GetDIBits which only works
+        // for the color bitmap and fails when h_bm_color is null.
+        let draw_result = DrawIconEx(
+            dc,
+            0,
+            0,
+            h_icon,
+            SIZE as i32,
+            SIZE as i32,
+            0,
+            std::ptr::null_mut(),
+            DI_NORMAL,
+        );
+
+        let pixels = if draw_result != 0 {
+            // Pixels are in BGRA order — swap B and R to get RGBA
+            let mut p = vec![0u8; (SIZE * SIZE * 4) as usize];
+            std::ptr::copy_nonoverlapping(bits_ptr as *const u8, p.as_mut_ptr(), p.len());
+            for chunk in p.chunks_exact_mut(4) {
+                chunk.swap(0, 2);
+            }
+            Some(p)
+        } else {
+            None
+        };
+
+        SelectObject(dc, old_bm);
+        DeleteObject(hbm);
+        DeleteDC(dc);
 
         pixels
     };
 
     unsafe { DestroyIcon(h_icon); }
 
+    let rgba_pixels = rgba_pixels?;
     let img = image::RgbaImage::from_raw(SIZE, SIZE, rgba_pixels)?;
     let mut png_bytes: Vec<u8> = Vec::new();
     img.write_to(

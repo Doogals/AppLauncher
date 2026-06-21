@@ -17,16 +17,104 @@ function urlHostname(url) {
   catch { return url; }
 }
 
+const BROWSER_NAMES = {
+  'chrome.exe': 'Chrome', 'msedge.exe': 'Edge', 'brave.exe': 'Brave',
+  'firefox.exe': 'Firefox', 'opera.exe': 'Opera', 'operagx.exe': 'Opera GX',
+  'vivaldi.exe': 'Vivaldi', 'arc.exe': 'Arc', 'thorium.exe': 'Thorium',
+};
+
 function browserDisplayName(item) {
   if (item.browser_name) return item.browser_name;
   if (!item.path) return 'Browser';
-  const NAMES = {
-    'chrome.exe': 'Chrome', 'msedge.exe': 'Edge', 'brave.exe': 'Brave',
-    'firefox.exe': 'Firefox', 'opera.exe': 'Opera', 'operagx.exe': 'Opera GX',
-    'vivaldi.exe': 'Vivaldi', 'arc.exe': 'Arc', 'thorium.exe': 'Thorium',
-  };
   const exe = item.path.replace(/.*[/\\]/, '').toLowerCase();
-  return NAMES[exe] || exe.replace(/\.exe$/i, '');
+  return BROWSER_NAMES[exe] || exe.replace(/\.exe$/i, '');
+}
+
+// Inline SVG instead of an emoji glyph — the pencil emoji rendered tiny and
+// oddly (looked like a needle) at this button size; an SVG stays crisp and
+// always inherits the button's text color via currentColor.
+const EDIT_ICON_SVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>';
+
+// Same rationale as EDIT_ICON_SVG above — a plain "copy" glyph SVG instead of
+// an emoji, for crisp rendering at this small button size.
+const DUPLICATE_ICON_SVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+
+// Terminal/console glyph for the "Edit Command Line" button.
+const CMDLINE_ICON_SVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px;margin-right:3px;"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 9l4 3-4 3M12 15h6"/></svg>';
+
+// Deep-clones an item for the duplicate button, then resets its saved layout
+// position/desktop targeting back to default (unset) — duplicates start
+// fresh and the user repositions them via Edit Layout like any new item,
+// instead of silently overlapping the original at the same saved spot.
+// Async because a linked command file needs its own independent copy on the
+// Rust side (see duplicate_command_file) — sharing the same path as-is would
+// mean clearing/deleting either item's command breaks the other.
+async function duplicateItem(item) {
+  const clone = JSON.parse(JSON.stringify(item));
+  clone.launch_desktop = null;
+  clone.launch_x = null;
+  clone.launch_y = null;
+  clone.launch_width = null;
+  clone.launch_height = null;
+  clone.launch_virtual_desktop = null;
+  clone.launch_desktop_index = null;
+  if (clone.command_file_path) {
+    try {
+      const newPath = await invoke('duplicate_command_file', { path: clone.command_file_path });
+      clone.command_file_path = newPath;
+      // An app-managed file gets copied to a new path — track it the same as
+      // Create/Link, so it's cleaned up correctly if this session ends
+      // without saving. A directly-linked external file comes back as the
+      // same path (shared on purpose, see duplicate_command_file) and isn't
+      // tracked, since this app never owns or deletes it either way.
+      if (newPath !== item.command_file_path) {
+        sessionCreatedCommandFiles.push(newPath);
+      }
+    } catch (e) {
+      console.error('duplicate_command_file failed:', e);
+      clone.command_file_path = null;
+    }
+  }
+  return clone;
+}
+
+// Universal fallback for items without a stored display_name (older saved
+// items, or anything added via the plain File/Program/Folder dialog) — shows
+// just the filename instead of the full absolute path.
+function fallbackDisplayName(path) {
+  if (!path) return '';
+  const base = path.replace(/[/\\]+$/, '').replace(/.*[/\\]/, '');
+  return base.replace(/\.(exe|lnk|bat|cmd|ps1|sh)$/i, '') || path;
+}
+
+// Used by the suggested-apps bar to route browsers through the URL/bookmark
+// picker instead of adding them as a bare app launch.
+function isBrowserPath(path) {
+  if (!path) return false;
+  const exe = path.replace(/.*[/\\]/, '').toLowerCase();
+  return exe in BROWSER_NAMES;
+}
+
+// Gates the "Edit Command Line" button — mirrors the Rust-side
+// terminal_shell_kind() in launcher.rs (cmd.exe / powershell.exe / pwsh.exe).
+function isTerminalPath(path) {
+  if (!path) return false;
+  const exe = path.replace(/.*[/\\]/, '').toLowerCase();
+  return exe === 'cmd.exe' || exe === 'powershell.exe' || exe === 'pwsh.exe';
+}
+
+// Opens the bookmark/URL picker directly for a known browser, skipping the
+// "Select Browser" list step since we already know which one was clicked.
+function openBrowserUrlPicker(app) {
+  const modal = document.createElement('div');
+  modal.className = 'winapp-modal';
+  modal.innerHTML = `<div class="winapp-card"></div>`;
+  document.body.appendChild(modal);
+  const onKeyDown = (e) => { if (e.key === 'Escape') closeModal(); };
+  const closeModal = () => { document.removeEventListener('keydown', onKeyDown); modal.remove(); };
+  modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+  document.addEventListener('keydown', onKeyDown);
+  showBookmarkStep(modal, { name: app.name, path: app.path }, closeModal, null, null);
 }
 
 function buildEmojiGrid() {
@@ -67,6 +155,30 @@ const groupId = params.get('id');
 
 let currentItems = [];
 let existingGroup = null;
+let activeLayoutLabels = null; // set while layout editor is open
+// Paths created/imported via "Edit Command Line" during this editing
+// session. If the window closes without saving, these are the only command
+// files cleaned up — anything that already existed before this session
+// opened is left alone regardless of what Clear did to it in memory, since
+// the unchanged saved config may still legitimately reference it.
+let sessionCreatedCommandFiles = [];
+
+// A few extremely common nicknames don't appear as a literal substring of
+// the app's real Start Menu name at all (e.g. "cmd" never appears in
+// "Command Prompt" — c-o-m-m-a-n-d has no consecutive "cmd"), so a plain
+// substring search can never find them by the name people actually type.
+// Key is the nickname, value is a substring of the real name it should
+// surface.
+const APP_SEARCH_ALIASES = {
+  cmd: 'command prompt',
+};
+
+function appMatchesSearch(nameLower, filterLower) {
+  if (nameLower.includes(filterLower)) return true;
+  return Object.entries(APP_SEARCH_ALIASES).some(([alias, targetSubstring]) =>
+    nameLower.includes(targetSubstring) && (alias.includes(filterLower) || filterLower.includes(alias))
+  );
+}
 
 async function showWinAppPicker() {
   const modal = document.createElement('div');
@@ -105,8 +217,9 @@ async function showWinAppPicker() {
   function renderApps(filter) {
     const list = document.getElementById('winapp-list');
     if (!list) return;
+    const filterLower = filter.toLowerCase();
     const filtered = filter
-      ? apps.filter(a => a.name.toLowerCase().includes(filter.toLowerCase()))
+      ? apps.filter(a => appMatchesSearch(a.name.toLowerCase(), filterLower))
       : apps;
 
     if (filtered.length === 0) {
@@ -120,11 +233,9 @@ async function showWinAppPicker() {
       row.className = 'winapp-row';
       row.textContent = app.name;
       row.addEventListener('click', async () => {
-        if (!currentItems.some(i => i.path === app.path)) {
-          let icon_data = null;
-          try { icon_data = await invoke('get_file_icon', { path: app.path }); } catch {}
-          currentItems.push({ item_type: 'app', path: app.path, value: app.args || null, icon_data });
-        }
+        let icon_data = null;
+        try { icon_data = await invoke('get_file_icon', { path: app.path, args: app.args || '' }); } catch {}
+        currentItems.push({ item_type: 'app', path: app.path, value: app.args || null, display_name: app.name, icon_data });
         renderItems();
         closeModal();
       });
@@ -136,6 +247,152 @@ async function showWinAppPicker() {
   const searchInput = document.getElementById('winapp-search');
   searchInput.addEventListener('input', (e) => renderApps(e.target.value));
   searchInput.focus();
+}
+
+// Suggested apps — a strip of icon-only chips inline next to the "Items"
+// label. Shown by default, no menu required. Cross-references the curated
+// well-known-app list against what's actually installed (see apps.rs).
+let suggestedAppsCache = null;
+
+async function renderSuggestedBar() {
+  const wrap = document.getElementById('suggested-wrap');
+  const bar = document.getElementById('suggested-bar');
+  if (!bar || !wrap) return;
+
+  if (suggestedAppsCache === null) {
+    try {
+      suggestedAppsCache = await invoke('get_suggested_apps');
+      // Pre-fetch icons in parallel for apps that don't already have one —
+      // packaged/MSIX apps (Claude, ChatGPT, Copilot) come back with
+      // icon_data already filled in from Rust (read from their manifest),
+      // so only traditional .exe apps need this on-demand fetch.
+      //
+      // Fetched one at a time on purpose, not Promise.all — Windows' Shell
+      // icon extraction (SHGetFileInfoW) has real thread-safety quirks for
+      // some file types even with a COM apartment initialized, and running
+      // many of these truly concurrently caused most icons to silently fail
+      // back to a generic one. The window itself isn't blocked by this either
+      // way (get_file_icon is async on the Rust side), so going sequential
+      // here only adds a small delay before the bar populates, not a freeze.
+      for (const app of suggestedAppsCache) {
+        if (app.icon_data) continue;
+        try { app.icon_data = await invoke('get_file_icon', { path: app.path, args: app.args || '' }); } catch {}
+      }
+    } catch {
+      suggestedAppsCache = [];
+    }
+  }
+
+  const addedPaths = new Set(currentItems.map(i => (i.path || '').toLowerCase()));
+  const remaining = suggestedAppsCache.filter(app => !addedPaths.has((app.path || '').toLowerCase()));
+
+  if (remaining.length === 0) {
+    wrap.style.display = 'none';
+    bar.innerHTML = '';
+    return;
+  }
+
+  wrap.style.display = 'flex';
+  bar.innerHTML = '';
+
+  remaining.forEach(app => {
+    let chip;
+    if (app.icon_data) {
+      chip = document.createElement('img');
+      chip.className = 'suggested-chip';
+      chip.src = `data:image/png;base64,${app.icon_data}`;
+    } else {
+      chip = document.createElement('div');
+      chip.className = 'suggested-chip-fallback';
+      chip.textContent = '🖥️';
+    }
+    chip.title = `Add ${app.name}`;
+    chip.addEventListener('click', () => {
+      if (app.is_packaged) {
+        // Packaged/MSIX apps: path holds the AUMID (launcher ignores value
+        // for this item type, so it's left null; display_name carries the
+        // friendly name shown in the items list)
+        currentItems.push({ item_type: 'uwp', path: app.path, value: null, display_name: app.name, icon_data: app.icon_data || null });
+        renderItems();
+      } else if (isBrowserPath(app.path)) {
+        // Browsers go through the same URL/bookmark picker as "Add Item →
+        // URL / Bookmark" instead of just launching bare to the homepage.
+        openBrowserUrlPicker(app);
+      } else {
+        currentItems.push({ item_type: 'app', path: app.path, value: app.args || null, display_name: app.name, icon_data: app.icon_data || null });
+        renderItems();
+      }
+    });
+    bar.appendChild(chip);
+  });
+}
+
+// "Edit Command Line" — Create generates a new app-managed script and opens
+// it in the user's default editor; Link imports an existing file (used
+// directly if it's already a matching .bat/.ps1/.cmd, copied in once
+// otherwise). Either way, command_file_path ends up pointing at a directly
+// launchable script — see launcher.rs's terminal_shell_kind handling.
+function showCommandLinePicker({ item, idx }) {
+  const modal = document.createElement('div');
+  modal.className = 'winapp-modal';
+  modal.innerHTML = `
+    <div class="winapp-card">
+      <div class="winapp-header">
+        <span class="url-step-title">Edit Command Line</span>
+        <button class="winapp-close" id="cmdline-close">✕</button>
+      </div>
+      <div class="winapp-list" id="cmdline-list">
+        <div class="winapp-row" id="cmdline-create">Create Command</div>
+        <div class="winapp-row" id="cmdline-link">Link Command</div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  const onKeyDown = (e) => { if (e.key === 'Escape') closeModal(); };
+  const closeModal = () => { document.removeEventListener('keydown', onKeyDown); modal.remove(); };
+  document.getElementById('cmdline-close').addEventListener('click', closeModal);
+  modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+  document.addEventListener('keydown', onKeyDown);
+
+  // Used as the generated script's filename instead of a random id, so it
+  // reads as e.g. "Command Prompt.bat" in Notepad/Explorer rather than a
+  // UUID. The Rust side de-dupes with " (2)", " (3)", etc. if another item
+  // already used the same name.
+  const label = item.display_name || fallbackDisplayName(item.path) || 'Command';
+
+  document.getElementById('cmdline-create').addEventListener('click', async () => {
+    closeModal();
+    try {
+      const path = await invoke('create_command_file', { shellPath: item.path, label });
+      sessionCreatedCommandFiles.push(path);
+      currentItems[idx].command_file_path = path;
+      renderItems();
+    } catch (e) {
+      console.error('create_command_file failed:', e);
+    }
+  });
+
+  document.getElementById('cmdline-link').addEventListener('click', async () => {
+    closeModal();
+    try {
+      const picked = await invoke('pick_command_file');
+      if (!picked) return;
+      const path = await invoke('import_linked_command_file', { pickedPath: picked, shellPath: item.path, label });
+      // If the picked file didn't already match the shell's script extension,
+      // the Rust side imported its content into a brand-new app-managed copy
+      // (path !== picked) — track that one the same as Create. If it's the
+      // same path, the user's own file is used directly/live and isn't ours
+      // to ever delete.
+      if (path !== picked) {
+        sessionCreatedCommandFiles.push(path);
+      }
+      currentItems[idx].command_file_path = path;
+      renderItems();
+    } catch (e) {
+      console.error('import_linked_command_file failed:', e);
+    }
+  });
 }
 
 async function showUrlPicker(editContext = null) {
@@ -227,6 +484,7 @@ async function showBookmarkStep(modal, browser, closeModal, existingItem = null,
       <input type="text" id="custom-url-input" placeholder="Or enter a custom URL: https://..." autocomplete="off" />
     </div>
     <div class="url-footer">
+      ${isEdit ? '' : '<button class="btn btn-cancel" id="skip-url-btn">Just Open Browser (No URL)</button>'}
       <button class="btn btn-save" id="add-selected-btn" disabled>${isEdit ? 'Save' : 'Add Selected'}</button>
     </div>
   `;
@@ -235,6 +493,13 @@ async function showBookmarkStep(modal, browser, closeModal, existingItem = null,
     document.getElementById('url-back').addEventListener('click', () => {
       closeModal();
       showUrlPicker();
+    });
+    document.getElementById('skip-url-btn').addEventListener('click', async () => {
+      let icon_data = null;
+      try { icon_data = await invoke('get_file_icon', { path: browser.path }); } catch {}
+      currentItems.push({ item_type: 'app', path: browser.path, value: null, display_name: browser.name, icon_data });
+      renderItems();
+      closeModal();
     });
   }
   document.getElementById('url-close2').addEventListener('click', closeModal);
@@ -247,11 +512,13 @@ async function showBookmarkStep(modal, browser, closeModal, existingItem = null,
       .filter(cb => cb.closest('.bookmark-row')?.style.display !== 'none').length;
     const hasCustom = customInput.value.trim().length > 0;
     const total = checkedCount + (hasCustom ? 1 : 0);
+    // A url-type item with zero URLs is invalid — it can't launch (there's
+    // nothing to open) and used to silently break the whole group's launch.
+    // Disabled at zero in both modes now, not just the "add" flow.
+    addBtn.disabled = total === 0;
     if (isEdit) {
-      addBtn.disabled = false;
       addBtn.textContent = total > 0 ? `Save (${total} URL${total === 1 ? '' : 's'})` : 'Save';
     } else {
-      addBtn.disabled = total === 0;
       addBtn.textContent = total > 0 ? `Add ${total} Selected` : 'Add Selected';
     }
   }
@@ -308,7 +575,7 @@ async function showBookmarkStep(modal, browser, closeModal, existingItem = null,
     const customUrl = customInput.value.trim();
     if (customUrl) urls.push(customUrl);
 
-    if (!isEdit && urls.length === 0) return;
+    if (urls.length === 0) return;
 
     let icon_data = null;
     try { icon_data = await invoke('get_file_icon', { path: browser.path }); } catch {}
@@ -459,7 +726,8 @@ async function showLayoutEditor() {
     const vdParam = item.launch_virtual_desktop
       ? '&vd=' + encodeURIComponent(JSON.stringify(item.launch_virtual_desktop))
       : '';
-    new WebviewWindow(`layout-item-${idx}`, {
+    const label = `layout-item-${idx}`;
+    new WebviewWindow(label, {
       url: `layout-item.html?idx=${idx}&name=${safeName}&total=${total}${vdParam}`,
       title: rawName,
       x, y,
@@ -469,18 +737,13 @@ async function showLayoutEditor() {
       decorations: true,
       alwaysOnTop: true,
     });
+
   }
 
-  // If the config window closes, clean up layout windows first.
-  // Always call destroy() — don't let a stuck layout window block the close.
-  const unlistenWindowClose = await getCurrentWindow().onCloseRequested(async (event) => {
-    event.preventDefault();
-    try { await invoke('close_layout_windows', { labels: layoutLabels }); } catch {}
-    await getCurrentWindow().destroy();
-  });
+  activeLayoutLabels = layoutLabels;
 
   const unlistenSave = await listen('layout-save', ({ payload }) => {
-    const { positions, virtual_desktops } = payload;
+    const { positions, virtual_desktops, virtual_desktop_indices } = payload;
     positions.forEach(([x, y, w, h], i) => {
       if (i < currentItems.length && w > 0 && h > 0) {
         currentItems[i].launch_x = x;
@@ -488,18 +751,21 @@ async function showLayoutEditor() {
         currentItems[i].launch_width = w;
         currentItems[i].launch_height = h;
         currentItems[i].launch_virtual_desktop = virtual_desktops?.[i] ?? null;
+        // Fallback for when the desktop's GUID stops matching at launch time
+        // (virtual desktop GUIDs aren't permanently stable across reboots).
+        currentItems[i].launch_desktop_index = virtual_desktop_indices?.[i] ?? null;
       }
     });
+    activeLayoutLabels = null;
     unlistenSave();
     unlistenCancel();
-    unlistenWindowClose();
     renderItems();
   });
 
   const unlistenCancel = await listen('layout-cancel', () => {
+    activeLayoutLabels = null;
     unlistenSave();
     unlistenCancel();
-    unlistenWindowClose();
   });
 }
 
@@ -510,6 +776,13 @@ async function fitWindow() {
 }
 
 async function init() {
+  // Single close handler — covers OS X button and Alt+F4.
+  // Save/Cancel buttons use closeConfigWindow() directly instead of close().
+  getCurrentWindow().onCloseRequested(async (event) => {
+    event.preventDefault();
+    await closeConfigWindow();
+  });
+
   initTabs();
   await initSettingsTab();
   initEmojiPicker();
@@ -523,9 +796,23 @@ async function init() {
       document.getElementById('icon-input').value = existingGroup.icon;
       document.getElementById('name-input').value = existingGroup.name;
       currentItems = [...existingGroup.items];
-      renderItems();
     }
   }
+
+  // Only an already-saved group can have its color set — a brand new group
+  // doesn't exist in the backend's config yet, so there's nothing for
+  // open_group_color_window to find until after the first Save & Close.
+  const colorBtn = document.getElementById('group-color-btn');
+  if (existingGroup) {
+    colorBtn.disabled = false;
+    colorBtn.title = 'Group Color';
+    colorBtn.addEventListener('click', () => {
+      invoke('open_group_color_window', { groupId: existingGroup.id })
+        .catch(err => console.error('open_group_color_window error:', err));
+    });
+  }
+
+  renderItems();
   await renderLicenseSection();
 
   // Silent background validation — check if license is still valid on LS
@@ -563,6 +850,15 @@ function initTabs() {
 async function initSettingsTab() {
   const config = await invoke('get_config');
   document.getElementById('hotkey-input').value = config.hotkey || 'Ctrl+Alt+Space';
+
+  // Widget color picking moved to its own window (same tabbed picker the
+  // group "Change Color" button uses, in "widget" mode) — keeps this
+  // Settings tab from getting cluttered with a 20-swatch grid inline.
+  document.getElementById('widget-color-btn').addEventListener('click', () => {
+    invoke('open_widget_color_window').catch(err => console.error('open_widget_color_window error:', err));
+  });
+
+  initHotkeyRecorder();
 
   document.getElementById('hotkey-save-btn').addEventListener('click', async () => {
     const hotkey = document.getElementById('hotkey-input').value.trim();
@@ -603,6 +899,83 @@ async function initSettingsTab() {
   });
 }
 
+// Keys that only count as modifiers — keep listening until a "real" key
+// arrives. Matches the global-hotkey crate's accepted modifier names.
+const HOTKEY_MODIFIER_CODES = new Set([
+  'ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight',
+  'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight',
+]);
+
+let hotkeyRecording = false;
+
+function initHotkeyRecorder() {
+  const recordBtn = document.getElementById('hotkey-record-btn');
+  if (!recordBtn) return;
+
+  recordBtn.addEventListener('click', () => {
+    if (hotkeyRecording) return;
+    hotkeyRecording = true;
+
+    const input = document.getElementById('hotkey-input');
+    const statusEl = document.getElementById('hotkey-save-status');
+    const previousValue = input.value;
+
+    input.value = 'Press a key combo…';
+    input.disabled = true;
+    recordBtn.textContent = 'Listening… (Esc to cancel)';
+    recordBtn.disabled = true;
+    statusEl.style.color = '#888';
+    statusEl.textContent = '';
+
+    const stop = () => {
+      hotkeyRecording = false;
+      document.removeEventListener('keydown', onKeyDown, true);
+      input.disabled = false;
+      recordBtn.textContent = '⌨ Record';
+      recordBtn.disabled = false;
+    };
+
+    const onKeyDown = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const hasModifier = e.ctrlKey || e.altKey || e.shiftKey || e.metaKey;
+
+      // Bare Escape (no modifiers held) cancels — Ctrl+Escape etc. still works as a combo
+      if (e.code === 'Escape' && !hasModifier) {
+        input.value = previousValue;
+        stop();
+        return;
+      }
+
+      // Still just a modifier being held down — keep waiting for the real key
+      if (HOTKEY_MODIFIER_CODES.has(e.code)) return;
+
+      // Require at least one modifier so we don't register a bare key globally
+      if (!hasModifier) {
+        statusEl.style.color = '#e94560';
+        statusEl.textContent = 'Hold Ctrl, Alt, Shift, or Win plus a key';
+        return;
+      }
+
+      // e.code already matches the format the global-hotkey crate expects
+      // (KeyN, Digit5, Space, ArrowUp, F5, etc.) — no translation needed.
+      const parts = [];
+      if (e.ctrlKey) parts.push('Ctrl');
+      if (e.altKey) parts.push('Alt');
+      if (e.shiftKey) parts.push('Shift');
+      if (e.metaKey) parts.push('Super');
+      parts.push(e.code);
+
+      input.value = parts.join('+');
+      statusEl.style.color = '#4caf50';
+      statusEl.textContent = 'Recorded — click Save to apply';
+      stop();
+    };
+
+    document.addEventListener('keydown', onKeyDown, true);
+  });
+}
 
 function buildExpandPanel(item, idx) {
   const panel = document.createElement('div');
@@ -690,12 +1063,61 @@ function buildExpandPanel(item, idx) {
     panel.appendChild(adminRow);
   }
 
+  if (item.item_type === 'app' && isTerminalPath(item.path)) {
+    const cmdRow = document.createElement('div');
+    cmdRow.className = 'item-expand-row';
+    cmdRow.style.justifyContent = 'space-between';
+    const hasCmd = !!item.command_file_path;
+    cmdRow.innerHTML = `
+      <span style="color:#888;font-size:11px;">${hasCmd ? 'Command attached' : ''}</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        ${hasCmd ? '<button class="cmdline-clear" style="background:none;border:none;color:#555;font-size:11px;cursor:pointer;padding:0 4px;" title="Clear">✕ Clear</button>' : ''}
+        <button class="pick-btn cmdline-edit-btn">${CMDLINE_ICON_SVG}Edit Command Line</button>
+      </div>
+    `;
+    cmdRow.querySelector('.cmdline-edit-btn').addEventListener('click', () => {
+      const current = currentItems[idx].command_file_path;
+      if (current) {
+        invoke('open_command_file', { path: current }).catch(err => console.error('open_command_file error:', err));
+      } else {
+        showCommandLinePicker({ item: currentItems[idx], idx });
+      }
+    });
+    if (hasCmd) {
+      cmdRow.querySelector('.cmdline-clear').addEventListener('click', () => {
+        // Deliberately NOT calling clear_command_file here — deleting the file
+        // immediately on click meant Clear-then-Cancel permanently deleted a
+        // file the unchanged saved config still referenced. Just update local
+        // state; save_group's old-vs-new diff (see lib.rs) cleans up the file
+        // for real if this is actually saved, and closeConfigWindow's session
+        // cleanup only ever touches files created during THIS session anyway,
+        // so a pre-existing file is never at risk on cancel either way.
+        currentItems[idx].command_file_path = null;
+        renderItems();
+      });
+    }
+    panel.appendChild(cmdRow);
+  }
+
   return panel;
 }
 
 function renderItems() {
+  renderSuggestedBar();
+
   const list = document.getElementById('items-list');
   list.innerHTML = '';
+
+  if (currentItems.length === 0) {
+    list.style.overflowY = 'hidden';
+    const empty = document.createElement('div');
+    empty.style.cssText = 'color:#4a5568;font-size:0.8rem;text-align:center;padding:12px 0;';
+    empty.textContent = 'No items yet';
+    list.appendChild(empty);
+    return;
+  }
+
+  list.style.overflowY = 'auto';
 
   currentItems.forEach((item, idx) => {
     const wrapper = document.createElement('div');
@@ -712,8 +1134,8 @@ function renderItems() {
       const subtitle = hostnames.join(', ') + (allUrls.length > 2 ? ` +${allUrls.length - 2}` : '');
 
       const iconHtml = item.icon_data
-        ? `<img src="data:image/png;base64,${item.icon_data}" style="width:16px;height:16px;object-fit:contain;vertical-align:middle;" alt="" />`
-        : '<span>🌐</span>';
+        ? `<img src="data:image/png;base64,${item.icon_data}" style="width:20px;height:20px;object-fit:contain;flex-shrink:0;" alt="" />`
+        : '<span style="flex-shrink:0;">🌐</span>';
 
       const safeLabel    = label.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const safeSubtitle = subtitle.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -724,38 +1146,70 @@ function renderItems() {
           <div class="item-label">${safeLabel}</div>
           <div style="font-size:10px;color:#888;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${safeSubtitle}</div>
         </div>
-        <button class="edit-url-btn" style="font-size:11px;padding:2px 6px;margin-right:4px;">✏</button>
+        <button class="edit-url-btn" title="Edit URLs">${EDIT_ICON_SVG}</button>
+        <button class="duplicate-btn" title="Duplicate">${DUPLICATE_ICON_SVG}</button>
         <button class="remove-btn">✕</button>
       `;
 
       row.querySelector('.edit-url-btn').onclick = () => showUrlPicker({ item, idx });
+      row.querySelector('.duplicate-btn').onclick = async () => {
+        const clone = await duplicateItem(item);
+        currentItems.splice(idx + 1, 0, clone);
+        renderItems();
+      };
       row.querySelector('.remove-btn').onclick = () => { currentItems.splice(idx, 1); renderItems(); };
 
     } else if (item.item_type === 'steam') {
       const gameName = item.path || 'Unknown Game';
       const safeLabel = gameName.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const iconHtml = item.icon_data
-        ? `<img src="data:image/jpeg;base64,${item.icon_data}" style="width:16px;height:16px;object-fit:contain;vertical-align:middle;border-radius:2px;" alt="" />`
-        : '<span>🎮</span>';
+        ? `<img src="data:image/jpeg;base64,${item.icon_data}" style="width:20px;height:20px;object-fit:contain;flex-shrink:0;border-radius:2px;" alt="" />`
+        : '<span style="flex-shrink:0;">🎮</span>';
       row.innerHTML = `
         ${iconHtml}
         <span class="item-label" title="${safeLabel}">${safeLabel} <span style="color:#1b9fdb;font-size:10px;font-weight:400;">Steam</span></span>
+        <button class="duplicate-btn" title="Duplicate">${DUPLICATE_ICON_SVG}</button>
         <button class="remove-btn">✕</button>
       `;
+      row.querySelector('.duplicate-btn').onclick = async () => {
+        const clone = await duplicateItem(item);
+        currentItems.splice(idx + 1, 0, clone);
+        renderItems();
+      };
       row.querySelector('.remove-btn').onclick = () => { currentItems.splice(idx, 1); renderItems(); };
 
     } else {
-      const rawLabel = item.path || '';
+      // Prefer a curated display_name (set when adding via Windows Apps,
+      // Suggested Items, or a browser); otherwise fall back to just the
+      // filename rather than showing the whole absolute path. The full path
+      // still shows up as a hover tooltip either way.
+      const rawLabel = item.display_name || fallbackDisplayName(item.path) || item.path || '';
+      const rawTitle = item.path || rawLabel;
       const safeLabel = rawLabel.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      const typeEmoji = { app: '🖥️', file: '📄', folder: '📁', script: '⚡' }[item.item_type] || '•';
+      const safeTitle = rawTitle.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const typeEmoji = { app: '🖥️', file: '📄', folder: '📁', script: '⚡', uwp: '🪟' }[item.item_type] || '•';
       const iconHtml = item.icon_data
-        ? `<img src="data:image/png;base64,${item.icon_data}" style="width:16px;height:16px;object-fit:contain;vertical-align:middle;" alt="" />`
-        : `<span>${typeEmoji}</span>`;
+        ? `<img src="data:image/png;base64,${item.icon_data}" style="width:20px;height:20px;object-fit:contain;flex-shrink:0;" alt="" />`
+        : `<span style="flex-shrink:0;">${typeEmoji}</span>`;
+      // Browsers added bare (no URL yet, e.g. via "Just Open Browser") can
+      // still get URLs added later — same edit button the url-type rows use.
+      const isBareBrowser = item.item_type === 'app' && isBrowserPath(item.path);
+      const editBtnHtml = isBareBrowser ? `<button class="edit-url-btn" title="Add URLs">${EDIT_ICON_SVG}</button>` : '';
       row.innerHTML = `
         ${iconHtml}
-        <span class="item-label" title="${safeLabel}">${safeLabel}</span>
+        <span class="item-label" title="${safeTitle}">${safeLabel}</span>
+        ${editBtnHtml}
+        <button class="duplicate-btn" title="Duplicate">${DUPLICATE_ICON_SVG}</button>
         <button class="remove-btn">✕</button>
       `;
+      if (isBareBrowser) {
+        row.querySelector('.edit-url-btn').onclick = () => showUrlPicker({ item, idx });
+      }
+      row.querySelector('.duplicate-btn').onclick = async () => {
+        const clone = await duplicateItem(item);
+        currentItems.splice(idx + 1, 0, clone);
+        renderItems();
+      };
       row.querySelector('.remove-btn').onclick = () => { currentItems.splice(idx, 1); renderItems(); };
     }
 
@@ -836,10 +1290,93 @@ async function addItem(type) {
   renderItems();
 }
 
+async function closeConfigWindow(saved = false) {
+  // Anything created/imported via "Edit Command Line" this session that
+  // didn't end up persisted gets cleaned up here — save_group's own
+  // old-vs-new diff (see lib.rs) only catches items that existed in the
+  // PREVIOUS saved config, so it can't see a file whose item was created
+  // and then removed again within this same session before saving. Files
+  // that already existed before this session opened are never in this
+  // list, so they're untouched regardless of what Clear did to them in
+  // memory — kept here covers exactly what's true after this close:
+  // nothing from an unsaved session, or whatever's left in currentItems
+  // for a saved one.
+  const kept = saved
+    ? new Set(currentItems.map(i => i.command_file_path).filter(Boolean))
+    : new Set();
+  for (const path of sessionCreatedCommandFiles) {
+    if (!kept.has(path)) {
+      try { await invoke('clear_command_file', { path }); } catch {}
+    }
+  }
+  if (activeLayoutLabels) {
+    // complete_layout_cancel (not the bare close_layout_windows) — it also
+    // clears the transient LayoutDesktops map on the Rust side. Skipping that
+    // left stale virtual-desktop assignments behind for the next layout
+    // session that happens to reuse the same window labels (layout-item-0,
+    // layout-item-1, ...), which is what caused launches to misbehave after
+    // someone abandoned an Edit Layout session without saving or cancelling.
+    try { await invoke('complete_layout_cancel', { labels: activeLayoutLabels }); } catch {}
+    activeLayoutLabels = null;
+  }
+  await getCurrentWindow().destroy();
+}
+
+// Shown only when Save & Close is hit while an Edit Layout session is still
+// open (never went through that session's own Save All Positions / Cancel).
+// No backdrop-click or Escape dismissal — this needs an explicit choice so
+// position data isn't silently lost.
+function confirmLayoutPrompt() {
+  return new Promise((resolve) => {
+    const modal = document.createElement('div');
+    modal.className = 'winapp-modal';
+    modal.innerHTML = `
+      <div class="winapp-card" style="width:300px;padding:18px;">
+        <p style="font-size:13px;font-weight:600;margin-bottom:8px;">Save window positions?</p>
+        <p style="font-size:12px;color:#aaa;margin-bottom:16px;">
+          Edit Layout is still open and you never hit Save All Positions.
+          Save those window positions before closing?
+        </p>
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-cancel" id="layout-prompt-no" style="flex:1;">Don't Save</button>
+          <button class="btn btn-save" id="layout-prompt-yes" style="flex:1;">Save Positions</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    const cleanup = (result) => { modal.remove(); resolve(result); };
+    document.getElementById('layout-prompt-yes').addEventListener('click', () => cleanup(true));
+    document.getElementById('layout-prompt-no').addEventListener('click', () => cleanup(false));
+  });
+}
+
+// Runs the same Rust-side logic as the layout editor's own Save All
+// Positions / Cancel buttons, and waits for the resulting event so
+// currentItems is fully updated (save case) before we read it.
+async function resolveLayoutSession(shouldSave) {
+  if (!activeLayoutLabels) return;
+  const labels = activeLayoutLabels;
+  const eventName = shouldSave ? 'layout-save' : 'layout-cancel';
+  let resolveFn;
+  const settled = new Promise((resolve) => { resolveFn = resolve; });
+  const unlisten = await listen(eventName, () => resolveFn());
+  try {
+    await invoke(shouldSave ? 'complete_layout_save' : 'complete_layout_cancel', { labels });
+    await settled;
+  } finally {
+    unlisten();
+  }
+}
+
 document.getElementById('save-btn').onclick = async () => {
   const name = document.getElementById('name-input').value.trim();
   const icon = document.getElementById('icon-input').value.trim() || '📁';
   if (!name) { alert('Please enter a group name.'); return; }
+
+  if (activeLayoutLabels) {
+    const shouldSave = await confirmLayoutPrompt();
+    await resolveLayoutSession(shouldSave);
+  }
 
   const group = {
     id: existingGroup?.id ?? crypto.randomUUID(),
@@ -850,15 +1387,14 @@ document.getElementById('save-btn').onclick = async () => {
 
   try {
     await invoke('save_group', { group });
-    await getCurrentWindow().close();
+    existingGroup = group; // prevent new UUID on double-click
+    await closeConfigWindow(true);
   } catch (e) {
     alert(e);
   }
 };
 
-document.getElementById('cancel-btn').onclick = async () => {
-  await getCurrentWindow().close();
-};
+document.getElementById('cancel-btn').onclick = () => closeConfigWindow();
 
 document.getElementById('layout-btn').onclick = () => showLayoutEditor();
 

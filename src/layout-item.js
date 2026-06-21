@@ -29,11 +29,18 @@ async function initDesktopDropdown() {
     sel.appendChild(opt);
   }
 
-  // Pre-select the saved desktop, or default to Desktop 1 for items with no explicit target.
+  // Pre-select the saved desktop; for items with no saved VD, use the current desktop
+  // (never default to Desktop 1, which would physically move the window there).
   const vdParam = params.get('vd');
-  const savedGuid = vdParam
-    ? JSON.parse(decodeURIComponent(vdParam))
-    : desktops[0].guid;
+  let savedGuid;
+  if (vdParam) {
+    savedGuid = JSON.parse(decodeURIComponent(vdParam));
+  } else {
+    try {
+      savedGuid = await invoke('get_current_virtual_desktop_guid');
+    } catch { savedGuid = null; }
+    if (!savedGuid) savedGuid = desktops[0].guid;
+  }
   const savedStr = JSON.stringify(savedGuid);
   for (const opt of sel.options) {
     if (opt.value === savedStr) {

@@ -4,7 +4,18 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="stylesheet" href="styles.css" />
-  <style>html, body { height: auto; }</style>
+  <style>
+    html, body { height: 100%; margin: 0; background: #1a1a2e; overflow: hidden; }
+    .config-window { height: 100%; display: flex; flex-direction: column; box-sizing: border-box; }
+    #tab-group { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+    .items-list { flex: 1; overflow-y: auto; min-height: 40px; margin-bottom: 8px; scrollbar-width: thin; scrollbar-color: #0f3460 transparent; }
+    .items-list::-webkit-scrollbar { width: 4px; }
+    .items-list::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 2px; }
+    .items-list::-webkit-scrollbar-track { background: transparent; }
+    #add-item-area { flex-shrink: 0; }
+    .btn-row { flex-shrink: 0; margin-top: 8px; }
+    .config-bottom { flex-shrink: 0; }
+  </style>
   <title>Edit Group</title>
 </head>
 <body>
@@ -15,20 +26,26 @@
     </div>
     <div id="tab-group">
     <div class="config-header">
-      <input type="text" class="icon-picker" id="icon-input" value="📁" maxlength="2" title="Click to change emoji" />
-      <input type="text" class="name-input" id="name-input" placeholder="Group name..." />
+      <input type="text" class="icon-picker" id="icon-input" value="📁" maxlength="2" title="Click to change emoji" autocomplete="off" />
+      <input type="text" class="name-input" id="name-input" placeholder="Group name..." autocomplete="off" />
+      <button class="btn btn-cancel" id="group-color-btn" title="Save the group first to set a custom color" style="flex-shrink:0;padding:8px 10px;" disabled>🎨</button>
     </div>
     <div id="emoji-grid" class="emoji-grid" style="display:none"></div>
 
-    <p class="section-label">Items</p>
+    <div class="suggested-wrap" id="suggested-wrap">
+      <span class="suggested-label">Suggested Items</span>
+      <div class="suggested-bar" id="suggested-bar">
+        <div class="suggested-loading"><span class="suggested-spinner"></span>Finding suggestions…</div>
+      </div>
+    </div>
     <div class="items-list" id="items-list"></div>
 
     <div id="add-item-area">
       <div class="add-item-btn" id="add-item-btn">+ Add Item</div>
       <div id="add-type-menu" style="display:none; background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:4px 0; margin-bottom:10px;">
-        <div class="context-menu-item" data-type="file">📄 File / Program</div>
         <div class="context-menu-item" data-type="winapp">🪟 Windows Apps</div>
         <div class="context-menu-item" data-type="url">🌐 URL / Bookmark</div>
+        <div class="context-menu-item" data-type="file">📄 File / Program</div>
         <div class="context-menu-item" data-type="folder">📁 Folder</div>
         <div class="context-menu-item" data-type="steam">🎮 Steam Game</div>
       </div>
@@ -51,9 +68,14 @@
 
   <div id="tab-settings" style="display:none">
     <div class="settings-section">
+      <p class="section-label">Widget Appearance</p>
+      <button class="btn btn-cancel" id="widget-color-btn">🎨 Choose Widget Color</button>
+    </div>
+    <div class="settings-section">
       <p class="section-label">Global Hotkey</p>
       <div class="hotkey-row">
         <input type="text" class="hotkey-input" id="hotkey-input" placeholder="Ctrl+Alt+Space" autocomplete="off" />
+        <button class="btn btn-cancel" id="hotkey-record-btn">⌨ Record</button>
         <button class="btn btn-save" id="hotkey-save-btn">Save</button>
       </div>
       <div class="hotkey-save-status" id="hotkey-save-status"></div>

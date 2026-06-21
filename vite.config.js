@@ -20,6 +20,7 @@ export default defineConfig({
         config: resolve(__dirname, 'src/config.html'),
         layoutItem: resolve(__dirname, 'src/layout-item.html'),
         launchOverlay: resolve(__dirname, 'src/launch-overlay.html'),
+        groupColor: resolve(__dirname, 'src/group-color.html'),
       },
     },
   },

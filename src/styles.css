@@ -13,15 +13,92 @@ html, body {
 
 /* Widget — fills the window; Rust resize_widget keeps window width in sync with content */
 .widget {
+  position: relative;
   display: flex;
   width: 100%;
   height: 100%;
+  /* Back to center — stretch made every button fill the full widget height
+     edge-to-edge, which left no breathing room at the top for the X button
+     (absolutely positioned, top-right) and the rightmost button started
+     overlapping it. Buttons are sized to match each other via an explicit
+     height on .group-btn below instead, which keeps the natural top/bottom
+     margin stretch removed. */
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 8px 12px;
+  /* Left padding set to 12px to match the effective top/bottom gap: with
+     .group-btn's explicit 56px height centered in this 64px-tall content
+     box (80px widget - 8px top - 8px bottom), there's a 4px centering
+     offset on top of the 8px padding, giving a 12px visual gap top and
+     bottom. The window auto-resizes tightly to content, so left/right have
+     no equivalent centering offset — 12px padding here gives the same 12px
+     gap directly. If this total changes, PAD in widget.js's render() must
+     match or the auto-resize width calc drifts. */
+  padding: 8px 12px 8px 12px;
   background: rgba(22, 33, 62, 0.95);
   border: 1px solid rgba(15, 52, 96, 0.8);
+}
+
+/* TakeOff wordmark — pinned to the right of the widget bar via flex order */
+.app-wordmark {
+  order: 999;
+  /* Now that .widget stretches children instead of centering them, this
+     needs to be its own flex row to keep the text vertically centered
+     within its (now taller) box, instead of sticking to the top. */
+  display: flex;
+  align-items: center;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.35);
+  white-space: nowrap;
+  flex-shrink: 0;
+  padding: 0 2px 0 4px;
+  user-select: none;
+  pointer-events: none;
+  transition: opacity 0.2s;
+}
+.app-wordmark.hidden { display: none; }
+
+/* Reserves clear space for the close button at the far right of the bar —
+   always present so the rightmost group/add button never crowds the X,
+   regardless of whether the wordmark is showing (low profile mode). */
+.close-btn-spacer {
+  order: 1000;
+  /* Was 0 (relying solely on padding+gap to just barely clear the X button's
+     own footprint, with zero safety margin) — now that buttons render larger
+     and reach closer to the X's corner, that razor-thin clearance was
+     enough to actually overlap. This adds real breathing room back. */
+  width: 12px;
+  flex-shrink: 0;
+  pointer-events: none;
+}
+
+/* Close button — top-right corner of the widget, above the wordmark */
+.widget-close-btn {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.3);
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  padding: 0;
+  z-index: 10;
+  transition: color 0.15s, background 0.15s;
+}
+.widget-close-btn:hover {
+  color: #fff;
+  background: rgba(233, 69, 96, 0.9);
 }
 
 .group-btn {
@@ -31,31 +108,53 @@ html, body {
   justify-content: center;
   gap: 3px;
   padding: 8px 14px;
-  background: rgba(15, 52, 96, 0.6);
-  border: 1px solid rgba(15, 52, 96, 0.9);
+  /* Explicit height (rather than relying on stretch) so the Add button
+     (single line, just "+") matches real group buttons (icon + label, two
+     lines) without filling the widget's full height edge-to-edge — that
+     reached into the X button's corner. Centered within the 80px-tall
+     widget, this leaves a few px of clearance top and bottom. */
+  height: 56px;
+  box-sizing: border-box;
+  /* Custom per-group color (set via right-click "Change Color") is applied
+     as a CSS variable rather than a direct inline background — that way
+     :hover below still works. Inline `style.background` would always win
+     over any stylesheet rule, custom color or not. */
+  background: var(--group-color, rgba(15, 52, 96, 0.6));
+  /* Matches the background exactly when a custom color is set (same
+     mismatched-border issue the widget itself had — see applyWidgetColor
+     in widget.js), falling back to the original default shade otherwise. */
+  border: 1px solid var(--group-color, rgba(15, 52, 96, 0.9));
   border-radius: 8px;
   cursor: pointer;
   min-width: 70px;
-  transition: background 0.15s;
+  transition: filter 0.15s;
   flex-shrink: 0;
 }
 
-.group-btn:hover { background: rgba(15, 52, 96, 1); }
+.group-btn:hover { filter: brightness(1.3); }
 
 .group-btn .icon { font-size: 1.5rem; line-height: 1; }
 .group-btn .label { font-size: 0.7rem; color: #ccc; white-space: nowrap; }
 
 .add-btn {
+  /* Same solid fill as a default (uncustomized) group button — rgba(255,255,255,0.05)
+     used to be nearly invisible whenever the widget's own background was light
+     (e.g. White), since it relied on the dark default widget bg for contrast. */
   border: 1.5px dashed rgba(255, 255, 255, 0.4);
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(15, 52, 96, 0.6);
   color: #e0e0e0;
   font-size: 1.2rem;
-  min-width: 50px;
+  /* Match width to .group-btn's explicit height (56px) above, instead of a
+     hardcoded min-width — stays square even if that height ever changes.
+     min-width: 0 cancels out .group-btn's own min-width: 70px (this element
+     carries both classes), which would otherwise fight the aspect-ratio. */
+  min-width: 0;
+  aspect-ratio: 1 / 1;
   flex-shrink: 0;
 }
 .add-btn:hover {
   border-color: rgba(255, 255, 255, 0.75);
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(15, 52, 96, 0.85);
 }
 
 /* Config window */
@@ -112,6 +211,46 @@ html, body {
 .item-row .item-label { flex: 1; font-size: 0.85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .item-row .remove-btn { color: #e94560; cursor: pointer; font-size: 1rem; background: none; border: none; padding: 0; }
 
+.edit-url-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 5px;
+  color: #ccc;
+  cursor: pointer;
+  padding: 5px 8px;
+  margin-right: 4px;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.edit-url-btn:hover {
+  background: rgba(233, 69, 96, 0.15);
+  border-color: #e94560;
+  color: #e94560;
+}
+
+.duplicate-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 5px;
+  color: #ccc;
+  cursor: pointer;
+  padding: 5px 8px;
+  margin-right: 4px;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.duplicate-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.3);
+  color: #fff;
+}
+
 .add-item-btn {
   width: 100%;
   padding: 8px;
@@ -127,7 +266,7 @@ html, body {
 
 .add-item-btn:hover { border-color: #e94560; color: #e0e0e0; }
 
-.btn-row { display: flex; justify-content: flex-end; gap: 8px; }
+.btn-row { display: flex; justify-content: center; gap: 8px; }
 
 .btn {
   padding: 8px 20px;
@@ -140,10 +279,92 @@ html, body {
 
 .btn-cancel { background: #0f3460; color: #e0e0e0; }
 .btn-save { background: #e94560; color: #fff; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-cancel:hover { background: #1a4a8a; }
 .btn-save:hover { background: #c73652; }
 
 .section-label { font-size: 0.75rem; color: #888; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
+
+/* Suggested apps strip — full width, stacked above the items list */
+.suggested-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  width: 100%;
+  margin-bottom: 18px;
+}
+
+.suggested-label {
+  font-size: 0.55rem;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.suggested-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid #0f3460;
+  border-radius: 6px;
+  overflow-x: auto;
+  width: 100%;
+  min-width: 0;
+}
+.suggested-bar::-webkit-scrollbar { height: 3px; }
+.suggested-bar::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 2px; }
+
+.suggested-loading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.35);
+  padding: 4px 6px;
+}
+.suggested-spinner {
+  width: 11px;
+  height: 11px;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  border-top-color: rgba(255, 255, 255, 0.5);
+  border-radius: 50%;
+  animation: suggested-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes suggested-spin { to { transform: rotate(360deg); } }
+
+.suggested-chip {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border-radius: 5px;
+  object-fit: contain;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  transition: transform 0.1s, border-color 0.15s;
+}
+.suggested-chip:hover { transform: scale(1.1); border-color: #e94560; }
+.suggested-chip-fallback {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  transition: transform 0.1s, border-color 0.15s;
+}
+.suggested-chip-fallback:hover { transform: scale(1.1); border-color: #e94560; }
 
 /* Config window bottom bar — license (left) + feedback button (right) */
 .config-bottom {
@@ -296,7 +517,7 @@ html, body {
   border: 1px solid #0f3460;
   border-radius: 10px;
   width: 360px;
-  max-height: 460px;
+  max-height: calc(100vh - 40px);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -342,7 +563,7 @@ html, body {
 }
 
 .winapp-row {
-  padding: 8px 16px;
+  padding: 5px 16px;
   cursor: pointer;
   font-size: 0.85rem;
   color: #e0e0e0;
@@ -421,12 +642,15 @@ html, body {
 .url-entry input:focus { border-color: #e94560; }
 
 .url-footer {
+  display: flex;
+  gap: 8px;
   padding: 10px 12px;
   border-top: 1px solid #0f3460;
   flex-shrink: 0;
 }
 
-.url-footer .btn-save { width: 100%; }
+.url-footer .btn-save,
+.url-footer .btn-cancel { flex: 1; }
 .url-footer .btn-save:disabled {
   background: #333;
   color: #666;
@@ -535,6 +759,40 @@ html, body {
 .io-row { display: flex; gap: 8px; }
 .io-row .btn { flex: 1; }
 
+/* ── Color swatches (Appearance section) ─────────────────────────────────── */
+.color-swatches {
+  display: flex;
+  /* row-gap 26px, column-gap 10px — labels sit 18px below each swatch
+     (see .swatch-label below), so wrapped rows need extra vertical room
+     or the next row's swatches would overlap the previous row's labels. */
+  gap: 26px 10px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+.color-swatch {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.1s;
+  position: relative;
+}
+.color-swatch:hover { transform: scale(1.1); }
+.color-swatch.active {
+  border-color: #e0e0e0;
+}
+.color-swatch .swatch-label {
+  position: absolute;
+  bottom: -18px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 9px;
+  color: rgba(255,255,255,0.45);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 /* ── Per-item targeting expand ────────────────────────────────────────────── */
 
 .item-expand {
@@ -544,6 +802,12 @@ html, body {
   border-radius: 0 0 6px 6px;
   margin-bottom: 5px;
   padding: 8px 10px;
+  /* Stack rows (position/clear, run-as-admin, run-via-cmd) with a consistent
+     gap instead of relying on each row's own default browser margins, which
+     is what made the block look cluttered/inconsistently spaced. */
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
 }
 
 .item-expand-row {
@@ -575,6 +839,26 @@ html, body {
   padding: 2px 4px;
 }
 .coord-clear:hover { color: #e94560; }
+
+/* Run-toggle (Run as admin / Run via cmd) had no CSS of its own — it was
+   rendering as a raw default OS checkbox + plain inline text with no
+   alignment to the row above it, which is what looked cluttered. */
+.run-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #aaa;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.run-toggle:hover { color: #ccc; }
+.run-toggle input[type="checkbox"] {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: #e94560;
+  cursor: pointer;
+}
 
 .pick-btn {
   background: #16213e;

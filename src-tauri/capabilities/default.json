@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "windows": ["widget", "config", "picker", "layout-item-*", "launch-overlay"],
+  "windows": ["widget", "config", "picker", "layout-item-*", "launch-overlay", "group-color"],
   "permissions": [
     "core:default",
     "core:webview:allow-create-webview-window",

@@ -14,18 +14,22 @@
     .pill {
       width: 100%; height: 100%;
       display: flex;
+      flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: 12px;
+      gap: 6px;
       color: #fff;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-      font-size: 15px;
-      font-weight: 500;
-      letter-spacing: 0.01em;
+      padding: 0 16px;
+    }
+    .top-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
     }
     .spinner {
-      width: 18px;
-      height: 18px;
+      width: 16px;
+      height: 16px;
       border: 2px solid rgba(255, 255, 255, 0.25);
       border-top-color: rgba(255, 255, 255, 0.9);
       border-radius: 50%;
@@ -33,16 +37,67 @@
       flex-shrink: 0;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
+    #label {
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+    }
+    #status {
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.5);
+      letter-spacing: 0.01em;
+      min-height: 14px;
+      text-align: center;
+      transition: opacity 0.15s;
+    }
+    #abort-btn {
+      margin-top: 4px;
+      background: none;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 4px;
+      color: rgba(255, 255, 255, 0.45);
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 10px;
+      letter-spacing: 0.04em;
+      padding: 3px 10px;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    #abort-btn:hover {
+      border-color: #e94560;
+      color: #e94560;
+    }
   </style>
 </head>
 <body>
   <div class="pill">
-    <div class="spinner"></div>
-    <span id="label">Launching…</span>
+    <div class="top-row">
+      <div class="spinner"></div>
+      <span id="label">Launching…</span>
+    </div>
+    <span id="status"></span>
+    <button id="abort-btn">Abort</button>
   </div>
-  <script>
+  <script type="module">
+    import { invoke } from '@tauri-apps/api/core';
+    import { listen } from '@tauri-apps/api/event';
+
     const raw = new URLSearchParams(location.search).get('label');
     if (raw) document.getElementById('label').textContent = 'Launching ' + raw + '…';
+
+    // Match the widget's saved color
+    invoke('get_config').then(config => {
+      if (config.widget_color) document.body.style.background = config.widget_color;
+    }).catch(() => {});
+
+    const statusEl = document.getElementById('status');
+    listen('launch-progress', (e) => {
+      statusEl.textContent = e.payload;
+    });
+
+    document.getElementById('abort-btn').addEventListener('click', () => {
+      invoke('abort_launch').catch(() => {});
+    });
   </script>
 </body>
 </html>

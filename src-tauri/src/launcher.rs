@@ -1,8 +1,20 @@
 use crate::config::{AppConfig, Item, ItemType};
+use tauri::Emitter;
 use std::collections::HashMap;
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
+
+// Set to true by abort_launch command; checked between steps; cleared on exit.
+static ABORT_LAUNCH: AtomicBool = AtomicBool::new(false);
+
+pub fn request_abort() {
+    ABORT_LAUNCH.store(true, Ordering::SeqCst);
+}
+
+fn check_abort() -> bool {
+    ABORT_LAUNCH.load(Ordering::SeqCst)
+}
 
 // Tracks the most recent "placer generation" for each HWND (by usize address).
 // When apply_window_placement claims a window it stores a generation counter.
@@ -116,6 +128,19 @@ fn poll_for_new_window(
             if let Some(pid) = preferred_pid {
                 if let Some(&h) = new_hwnds.iter().find(|&&h| get_hwnd_pid(h) == pid) {
                     crate::debug_log::write_debug_log(&format!("LAUNCH HWND 0x{:X} found (PID match) poll={}", h, i));
+                    return Some(h);
+                }
+            }
+            // Tier 1.5: console-app proxy — cmd.exe and powershell.exe don't own their window;
+            // conhost.exe (or Windows Terminal) creates it on their behalf. Match that instead.
+            let is_console_app = preferred_exe.map_or(false, |e| {
+                matches!(e, "cmd.exe" | "powershell.exe" | "pwsh.exe")
+            });
+            if is_console_app {
+                if let Some(&h) = new_hwnds.iter().find(|&&h| {
+                    matches!(get_hwnd_exe(h).as_deref(), Some("conhost.exe") | Some("windowsterminal.exe"))
+                }) {
+                    crate::debug_log::write_debug_log(&format!("LAUNCH HWND 0x{:X} found (console-host proxy) poll={}", h, i));
                     return Some(h);
                 }
             }
@@ -257,6 +282,25 @@ fn position_window_by_snapshot(
 }
 
 #[cfg(target_os = "windows")]
+#[repr(C)]
+struct PointI32 { x: i32, y: i32 }
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct RectI32 { left: i32, top: i32, right: i32, bottom: i32 }
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct WindowPlacement {
+    length: u32,
+    flags: u32,
+    show_cmd: u32,
+    pt_min_position: PointI32,
+    pt_max_position: PointI32,
+    rc_normal_position: RectI32,
+}
+
+#[cfg(target_os = "windows")]
 fn place_window(hwnd: *mut std::ffi::c_void, x: i32, y: i32, w: Option<u32>, h: Option<u32>) {
     extern "system" {
         fn SetWindowPos(
@@ -265,7 +309,41 @@ fn place_window(hwnd: *mut std::ffi::c_void, x: i32, y: i32, w: Option<u32>, h: 
             x: i32, y: i32, cx: i32, cy: i32,
             flags: u32,
         ) -> i32;
+        fn IsZoomed(hwnd: *mut std::ffi::c_void) -> i32;
+        fn SetWindowPlacement(hwnd: *mut std::ffi::c_void, placement: *const WindowPlacement) -> i32;
     }
+
+    // Browsers (and some other apps) remember their last window state per profile —
+    // if the browser was last closed maximized, every new window opens maximized
+    // too, regardless of --new-window. A plain SetWindowPos below can't override
+    // this: while WS_MAXIMIZE is set, Windows keeps rendering the window full-screen
+    // no matter what rect you pass it. Clear the maximized state first via
+    // SetWindowPlacement, which can set both the show state and the restored rect
+    // in one atomic call. (Deliberately not ShowWindow(SW_RESTORE) + SetWindowPos as
+    // two separate calls — that sequence is what triggers the Windows 11 snap/restore
+    // tracking bug described below, where the window reverts to its pre-snap position
+    // on a later call.)
+    if let (Some(cw), Some(ch)) = (w, h) {
+        let is_maximized = unsafe { IsZoomed(hwnd) != 0 };
+        if is_maximized {
+            const SW_SHOWNORMAL: u32 = 1;
+            let placement = WindowPlacement {
+                length: std::mem::size_of::<WindowPlacement>() as u32,
+                flags: 0,
+                show_cmd: SW_SHOWNORMAL,
+                pt_min_position: PointI32 { x: 0, y: 0 },
+                pt_max_position: PointI32 { x: 0, y: 0 },
+                rc_normal_position: RectI32 { left: x, top: y, right: x + cw as i32, bottom: y + ch as i32 },
+            };
+            unsafe { SetWindowPlacement(hwnd, &placement); }
+            crate::debug_log::write_debug_log(&format!(
+                "LAUNCH window HWND 0x{:X} was maximized — restored via SetWindowPlacement to ({}, {}) {}x{}",
+                hwnd as usize, x, y, cw, ch
+            ));
+            return;
+        }
+    }
+
     // Do NOT call ShowWindow before SetWindowPos.
     // poll_for_new_window already verifies IsWindowVisible, so the window is visible.
     // Any ShowWindow call (SW_RESTORE or SW_SHOWNOACTIVATE) before SetWindowPos triggers
@@ -344,6 +422,41 @@ fn set_cursor_to_monitor_center(monitor_idx: u32) {
     }
 }
 
+/// Which shell a terminal item targets — drives both the generated script's
+/// extension and how it gets launched with an attached command file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalShell {
+    Cmd,
+    PowerShell,
+}
+
+impl TerminalShell {
+    pub fn script_extension(&self) -> &'static str {
+        match self {
+            TerminalShell::Cmd => "bat",
+            TerminalShell::PowerShell => "ps1",
+        }
+    }
+}
+
+/// Classifies a path as a known terminal shell (cmd.exe / powershell.exe /
+/// pwsh.exe), or None for anything else. Used both at launch time (to decide
+/// how to invoke an attached command file) and from the frontend's "Edit
+/// Command Line" flow (to decide the right script extension / detect whether
+/// a linked file already matches and can be used as-is).
+pub fn terminal_shell_kind(path: &str) -> Option<TerminalShell> {
+    let name = std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    match name.as_str() {
+        "cmd.exe" => Some(TerminalShell::Cmd),
+        "powershell.exe" | "pwsh.exe" => Some(TerminalShell::PowerShell),
+        _ => None,
+    }
+}
+
 fn is_chromium_based(path: &str) -> bool {
     let name = std::path::Path::new(path)
         .file_name()
@@ -386,7 +499,7 @@ fn collect_browser_urls(
 }
 
 #[cfg(target_os = "windows")]
-fn shell_execute_runas(path: &str) -> Result<(), String> {
+fn shell_execute_runas(path: &str, parameters: Option<&str>) -> Result<(), String> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
 
@@ -423,6 +536,8 @@ fn shell_execute_runas(path: &str) -> Result<(), String> {
 
     let verb = to_wide("runas");
     let file = to_wide(path);
+    // Kept alive through the ShellExecuteExW call below, same as verb/file.
+    let params_wide = parameters.map(to_wide);
 
     let mut info = ShellExecuteInfoW {
         cb_size: std::mem::size_of::<ShellExecuteInfoW>() as u32,
@@ -430,7 +545,7 @@ fn shell_execute_runas(path: &str) -> Result<(), String> {
         hwnd: std::ptr::null_mut(),
         lp_verb: verb.as_ptr(),
         lp_file: file.as_ptr(),
-        lp_parameters: std::ptr::null(),
+        lp_parameters: params_wide.as_ref().map_or(std::ptr::null(), |p| p.as_ptr()),
         lp_directory: std::ptr::null(),
         n_show: SW_SHOWNORMAL,
         h_inst_app: std::ptr::null_mut(),
@@ -454,7 +569,105 @@ fn shell_execute_runas(path: &str) -> Result<(), String> {
     }
 }
 
+/// Launches a path/URI via ShellExecuteExW with the plain "open" verb — used
+/// for packaged/MSIX apps via a shell:AppsFolder\<AUMID> URI, since
+/// Command::spawn() (CreateProcess) can't resolve shell namespace paths.
+#[cfg(target_os = "windows")]
+fn shell_execute_open(path: &str) -> Result<(), String> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    fn to_wide(s: &str) -> Vec<u16> {
+        OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    #[repr(C)]
+    struct ShellExecuteInfoW {
+        cb_size: u32,
+        f_mask: u32,
+        hwnd: *mut std::ffi::c_void,
+        lp_verb: *const u16,
+        lp_file: *const u16,
+        lp_parameters: *const u16,
+        lp_directory: *const u16,
+        n_show: i32,
+        h_inst_app: *mut std::ffi::c_void,
+        lp_id_list: *mut std::ffi::c_void,
+        lp_class: *const u16,
+        h_key_class: *mut std::ffi::c_void,
+        dw_hot_key: u32,
+        _union_padding: u32,
+        h_monitor: *mut std::ffi::c_void,
+        h_process: *mut std::ffi::c_void,
+    }
+
+    extern "system" {
+        fn ShellExecuteExW(info: *mut ShellExecuteInfoW) -> i32;
+    }
+
+    const SEE_MASK_NOCLOSEPROCESS: u32 = 0x0000_0040;
+    const SW_SHOWNORMAL: i32 = 1;
+
+    let verb = to_wide("open");
+    let file = to_wide(path);
+
+    let mut info = ShellExecuteInfoW {
+        cb_size: std::mem::size_of::<ShellExecuteInfoW>() as u32,
+        f_mask: SEE_MASK_NOCLOSEPROCESS,
+        hwnd: std::ptr::null_mut(),
+        lp_verb: verb.as_ptr(),
+        lp_file: file.as_ptr(),
+        lp_parameters: std::ptr::null(),
+        lp_directory: std::ptr::null(),
+        n_show: SW_SHOWNORMAL,
+        h_inst_app: std::ptr::null_mut(),
+        lp_id_list: std::ptr::null_mut(),
+        lp_class: std::ptr::null(),
+        h_key_class: std::ptr::null_mut(),
+        dw_hot_key: 0,
+        _union_padding: 0,
+        h_monitor: std::ptr::null_mut(),
+        h_process: std::ptr::null_mut(),
+    };
+
+    let ok = unsafe { ShellExecuteExW(&mut info) };
+    if ok == 0 {
+        Err(format!("Failed to launch packaged app '{}'", path))
+    } else {
+        Ok(())
+    }
+}
+
+fn emit_progress(app: &Option<tauri::AppHandle>, msg: &str) {
+    if let Some(h) = app {
+        let _ = h.emit("launch-progress", msg);
+    }
+}
+
+fn item_display_name(item: &Item) -> String {
+    match &item.item_type {
+        ItemType::Steam => item.path.clone().unwrap_or_else(|| "Steam Game".to_string()),
+        ItemType::Url => item.value.clone()
+            .or_else(|| item.urls.first().cloned())
+            .unwrap_or_else(|| "URL".to_string()),
+        _ => item.path.clone()
+            .and_then(|p| std::path::Path::new(&p).file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string()))
+            .or_else(|| item.value.clone())
+            .unwrap_or_else(|| "Item".to_string()),
+    }
+}
+
 pub fn launch_group(group_id: &str, config: &AppConfig) -> Result<(), String> {
+    launch_group_inner(group_id, config, None)
+}
+
+pub fn launch_group_with_handle(group_id: &str, config: &AppConfig, app: tauri::AppHandle) -> Result<(), String> {
+    launch_group_inner(group_id, config, Some(app))
+}
+
+fn launch_group_inner(group_id: &str, config: &AppConfig, app: Option<tauri::AppHandle>) -> Result<(), String> {
     let group = config
         .groups
         .iter()
@@ -504,24 +717,95 @@ pub fn launch_group(group_id: &str, config: &AppConfig) -> Result<(), String> {
                 None => batches.push((target, vec![item])),
             }
         }
+        // Track GUID remaps: old GUID → new GUID (for deleted desktops we recreate).
+        let mut guid_remaps: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+
         for (target_guid, items) in &batches {
-            if target_guid.as_slice() != current_desktop.as_slice() {
+            if check_abort() {
+                ABORT_LAUNCH.store(false, Ordering::SeqCst);
+                emit_progress(&app, "Launch aborted.");
+                return Ok(());
+            }
+            // Resolve the actual target: if this GUID was remapped earlier, use the new one.
+            let resolved_guid = guid_remaps.get(target_guid).cloned().unwrap_or_else(|| target_guid.clone());
+
+            // Check whether the target desktop still exists; create one if it doesn't.
+            let effective_guid = {
+                let desktops = crate::virtual_desktop::get_virtual_desktops();
+                let exists = desktops.iter().any(|d| d.guid.as_slice() == resolved_guid.as_slice());
+                if exists {
+                    resolved_guid.clone()
+                } else if let Some(target_desktop) = items.first()
+                    .and_then(|i| i.launch_desktop_index)
+                    .and_then(|idx| desktops.get(idx as usize))
+                {
+                    // GUID no longer matches anything — this does NOT necessarily mean
+                    // the desktop was deleted. Windows can regenerate virtual desktop
+                    // GUIDs across reboots / Explorer restarts even when the desktop
+                    // count and order haven't changed at all. Fall back to "whatever
+                    // desktop is currently at the saved position" before assuming
+                    // deletion and creating a brand new desktop (which used to happen
+                    // every single launch, piling up extra desktops each time).
+                    crate::debug_log::write_debug_log(&format!(
+                        "LAUNCH target GUID missing — falling back to desktop at saved position {}",
+                        target_desktop.index
+                    ));
+                    target_desktop.guid.clone()
+                } else {
+                    crate::debug_log::write_debug_log("LAUNCH target desktop missing — creating new desktop");
+                    emit_progress(&app, "Creating missing desktop…");
+                    match crate::virtual_desktop::create_virtual_desktop() {
+                        Some(new_guid) => {
+                            crate::debug_log::write_debug_log("LAUNCH new desktop created");
+                            // Record remap so subsequent items targeting the same missing GUID land here too
+                            guid_remaps.insert(target_guid.clone(), new_guid.clone());
+                            new_guid
+                        }
+                        None => {
+                            crate::debug_log::write_debug_log("LAUNCH failed to create desktop — launching on current");
+                            current_desktop.clone()
+                        }
+                    }
+                }
+            };
+
+            if effective_guid.as_slice() != current_desktop.as_slice() {
+                let desktop_name = {
+                    let desktops = crate::virtual_desktop::get_virtual_desktops();
+                    desktops.iter()
+                        .find(|d| d.guid.as_slice() == effective_guid.as_slice())
+                        .map(|d| if d.name.is_empty() { format!("Desktop {}", d.index + 1) } else { d.name.clone() })
+                        .unwrap_or_else(|| "desktop".to_string())
+                };
+                emit_progress(&app, &format!("Switching to {}…", desktop_name));
                 crate::debug_log::write_debug_log(&format!(
                     "LAUNCH batch switching desktop ({} item(s))", items.len()
                 ));
-                let switched = crate::virtual_desktop::switch_virtual_desktop(&current_desktop, target_guid);
+                let switched = crate::virtual_desktop::switch_virtual_desktop(&current_desktop, &effective_guid);
                 if !switched {
                     crate::debug_log::write_debug_log("LAUNCH batch desktop switch timed out or failed");
                 }
-                current_desktop = target_guid.clone();
+                current_desktop = effective_guid.clone();
             }
             for item in items {
+                if check_abort() {
+                    ABORT_LAUNCH.store(false, Ordering::SeqCst);
+                    emit_progress(&app, "Launch aborted.");
+                    return Ok(());
+                }
+                emit_progress(&app, &format!("Launching {}…", item_display_name(item)));
                 crate::debug_log::write_debug_log(&format!(
                     "LAUNCH item type={:?} path=\"{}\"",
                     item.item_type,
                     item.path.as_deref().or(item.value.as_deref()).unwrap_or("?")
                 ));
-                launch_item(item, &config.preferred_browser)?;
+                // One bad item (e.g. a url-type item that somehow ended up with no
+                // actual URL) used to silently abort every item after it via `?`.
+                // Log and move on instead — the rest of the group still launches.
+                if let Err(e) = launch_item(item, &config.preferred_browser) {
+                    crate::debug_log::write_debug_log(&format!("LAUNCH item failed: {}", e));
+                    emit_progress(&app, &format!("Skipped {} — {}", item_display_name(item), e));
+                }
             }
         }
     }
@@ -532,20 +816,39 @@ pub fn launch_group(group_id: &str, config: &AppConfig) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     if !needs_vd {
         for item in &group.items {
+            if check_abort() {
+                ABORT_LAUNCH.store(false, Ordering::SeqCst);
+                emit_progress(&app, "Launch aborted.");
+                return Ok(());
+            }
             if !matches!(item.item_type, ItemType::Url) {
+                emit_progress(&app, &format!("Launching {}…", item_display_name(item)));
                 crate::debug_log::write_debug_log(&format!(
                     "LAUNCH item type={:?} path=\"{}\"",
                     item.item_type,
                     item.path.as_deref().or(item.value.as_deref()).unwrap_or("?")
                 ));
-                launch_item(item, &config.preferred_browser)?;
+                // One bad item (e.g. a url-type item that somehow ended up with no
+                // actual URL) used to silently abort every item after it via `?`.
+                // Log and move on instead — the rest of the group still launches.
+                if let Err(e) = launch_item(item, &config.preferred_browser) {
+                    crate::debug_log::write_debug_log(&format!("LAUNCH item failed: {}", e));
+                    emit_progress(&app, &format!("Skipped {} — {}", item_display_name(item), e));
+                }
             }
         }
         for item in &group.items {
             if matches!(item.item_type, ItemType::Url)
                 && (item.launch_x.is_some() || item.launch_virtual_desktop.is_some())
             {
-                launch_item(item, &config.preferred_browser)?;
+                emit_progress(&app, &format!("Launching {}…", item_display_name(item)));
+                // One bad item (e.g. a url-type item that somehow ended up with no
+                // actual URL) used to silently abort every item after it via `?`.
+                // Log and move on instead — the rest of the group still launches.
+                if let Err(e) = launch_item(item, &config.preferred_browser) {
+                    crate::debug_log::write_debug_log(&format!("LAUNCH item failed: {}", e));
+                    emit_progress(&app, &format!("Skipped {} — {}", item_display_name(item), e));
+                }
             }
         }
     }
@@ -553,19 +856,33 @@ pub fn launch_group(group_id: &str, config: &AppConfig) -> Result<(), String> {
     {
         for item in &group.items {
             if !matches!(item.item_type, ItemType::Url) {
+                emit_progress(&app, &format!("Launching {}…", item_display_name(item)));
                 crate::debug_log::write_debug_log(&format!(
                     "LAUNCH item type={:?} path=\"{}\"",
                     item.item_type,
                     item.path.as_deref().or(item.value.as_deref()).unwrap_or("?")
                 ));
-                launch_item(item, &config.preferred_browser)?;
+                // One bad item (e.g. a url-type item that somehow ended up with no
+                // actual URL) used to silently abort every item after it via `?`.
+                // Log and move on instead — the rest of the group still launches.
+                if let Err(e) = launch_item(item, &config.preferred_browser) {
+                    crate::debug_log::write_debug_log(&format!("LAUNCH item failed: {}", e));
+                    emit_progress(&app, &format!("Skipped {} — {}", item_display_name(item), e));
+                }
             }
         }
         for item in &group.items {
             if matches!(item.item_type, ItemType::Url)
                 && (item.launch_x.is_some() || item.launch_virtual_desktop.is_some())
             {
-                launch_item(item, &config.preferred_browser)?;
+                emit_progress(&app, &format!("Launching {}…", item_display_name(item)));
+                // One bad item (e.g. a url-type item that somehow ended up with no
+                // actual URL) used to silently abort every item after it via `?`.
+                // Log and move on instead — the rest of the group still launches.
+                if let Err(e) = launch_item(item, &config.preferred_browser) {
+                    crate::debug_log::write_debug_log(&format!("LAUNCH item failed: {}", e));
+                    emit_progress(&app, &format!("Skipped {} — {}", item_display_name(item), e));
+                }
             }
         }
     }
@@ -581,6 +898,11 @@ pub fn launch_group(group_id: &str, config: &AppConfig) -> Result<(), String> {
     // Batch remaining URL items (no position, no target desktop) for multi-tab launch.
     let (browser_urls, fallback_urls) =
         collect_browser_urls(&group.items, config.preferred_browser.as_deref());
+
+    if !browser_urls.is_empty() || !fallback_urls.is_empty() {
+        let url_count = browser_urls.values().map(|v| v.len()).sum::<usize>() + fallback_urls.len();
+        emit_progress(&app, &format!("Opening {} URL{}…", url_count, if url_count == 1 { "" } else { "s" }));
+    }
 
     for (browser, urls) in &browser_urls {
         Command::new(browser)
@@ -602,17 +924,58 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
             let path = item.path.as_ref().ok_or("App item is missing a path")?;
 
             // If run_as_admin is requested, use ShellExecuteExW with "runas" verb
-            // to trigger UAC elevation. This bypasses Command::spawn() entirely.
+            // to trigger UAC elevation. This bypasses Command::spawn() entirely —
+            // including the attached-command-file handling below, so it needs its
+            // own copy of that logic to avoid silently dropping the script when
+            // both run_as_admin and an attached command file are set together.
             #[cfg(target_os = "windows")]
             if item.run_as_admin {
-                return shell_execute_runas(path);
+                let params = match (terminal_shell_kind(path), item.command_file_path.as_deref()) {
+                    (Some(shell), Some(script)) if std::path::Path::new(script).is_file() => {
+                        Some(match shell {
+                            TerminalShell::Cmd => format!("/k \"{}\"", script),
+                            TerminalShell::PowerShell => format!("-NoExit -File \"{}\"", script),
+                        })
+                    }
+                    _ => None,
+                };
+                return shell_execute_runas(path, params.as_deref());
             }
 
             let mut cmd = Command::new(path);
-            if let Some(args) = &item.value {
-                if !args.is_empty() {
-                    cmd.args(args.split_whitespace());
+            // Terminal items (cmd.exe/powershell.exe/pwsh.exe) with an attached command
+            // file via "Edit Command Line" launch the script directly instead of treating
+            // item.value as plain args — /k and -NoExit both drop into an interactive
+            // prompt once the script finishes, so the window stays open and usable exactly
+            // like launching the bare shell normally would. Falls back to the normal
+            // args-from-value behavior if no script is attached, or the file's gone missing
+            // since it was set (e.g. deleted externally) — never aborts the launch over it.
+            let used_command_file = match (terminal_shell_kind(path), item.command_file_path.as_deref()) {
+                (Some(shell), Some(script)) if std::path::Path::new(script).is_file() => {
+                    match shell {
+                        TerminalShell::Cmd => { cmd.args(["/k", script]); }
+                        TerminalShell::PowerShell => { cmd.args(["-NoExit", "-File", script]); }
+                    }
+                    true
                 }
+                _ => false,
+            };
+            if !used_command_file {
+                if let Some(args) = &item.value {
+                    if !args.is_empty() {
+                        cmd.args(args.split_whitespace());
+                    }
+                }
+            }
+            // CREATE_NEW_CONSOLE ensures console apps (cmd.exe, powershell.exe, etc.) always
+            // get their own visible window. Without this, they inherit the parent console in
+            // dev mode (npm run tauri dev has a terminal) and open silently there instead.
+            // GUI subsystem apps ignore this flag, so it's safe to set unconditionally.
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+                cmd.creation_flags(CREATE_NEW_CONSOLE);
             }
             #[cfg(target_os = "windows")]
             let before = if item.launch_x.is_some() { Some(collect_visible_hwnds()) } else { None };
@@ -623,6 +986,21 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
                     .file_name().and_then(|n| n.to_str())
                     .map(|s| s.to_ascii_lowercase());
                 position_window_by_snapshot(before, Some(child.id()), exe, 0, x, y, item.launch_width, item.launch_height, item.launch_virtual_desktop.clone());
+            }
+        }
+        ItemType::Uwp => {
+            // Packaged/MSIX apps (Claude, ChatGPT, Windows Copilot, etc.) don't
+            // have a real exe path Command::spawn() can launch — `path` holds
+            // the AUMID instead, activated via the shell:AppsFolder namespace.
+            let aumid = item.path.as_ref().ok_or("Packaged app item is missing an AUMID")?;
+            #[cfg(target_os = "windows")]
+            {
+                let uri = format!("shell:AppsFolder\\{}", aumid);
+                shell_execute_open(&uri)?;
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                return Err("Packaged apps are only supported on Windows".to_string());
             }
         }
         ItemType::File | ItemType::Folder => {
@@ -792,6 +1170,7 @@ mod tests {
             name: "Test".to_string(),
             icon: "🧪".to_string(),
             items,
+            color: None,
         };
         let id = group.id.clone();
         config.groups.push(group);
@@ -808,7 +1187,7 @@ mod tests {
 
     #[test]
     fn test_launch_item_app_missing_path_returns_error() {
-        let item = Item { item_type: ItemType::App, path: None, value: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None };
+        let item = Item { item_type: ItemType::App, path: None, value: None, display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None };
         let result = launch_item(&item, &None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("missing a path"));
@@ -816,7 +1195,7 @@ mod tests {
 
     #[test]
     fn test_launch_item_url_missing_value_returns_error() {
-        let item = Item { item_type: ItemType::Url, path: None, value: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None };
+        let item = Item { item_type: ItemType::Url, path: None, value: None, display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None };
         let result = launch_item(&item, &None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("missing a value"));
@@ -824,7 +1203,7 @@ mod tests {
 
     #[test]
     fn test_launch_item_script_missing_path_returns_error() {
-        let item = Item { item_type: ItemType::Script, path: None, value: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None };
+        let item = Item { item_type: ItemType::Script, path: None, value: None, display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None };
         let result = launch_item(&item, &None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("missing a path"));
@@ -840,9 +1219,9 @@ mod tests {
     #[test]
     fn test_url_items_with_same_browser_are_batched() {
         let items = vec![
-            Item { item_type: ItemType::Url, path: Some("chrome.exe".to_string()), value: Some("https://a.com".to_string()), urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
-            Item { item_type: ItemType::Url, path: Some("chrome.exe".to_string()), value: Some("https://b.com".to_string()), urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
-            Item { item_type: ItemType::Url, path: Some("firefox.exe".to_string()), value: Some("https://c.com".to_string()), urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
+            Item { item_type: ItemType::Url, path: Some("chrome.exe".to_string()), value: Some("https://a.com".to_string()), display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None },
+            Item { item_type: ItemType::Url, path: Some("chrome.exe".to_string()), value: Some("https://b.com".to_string()), display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None },
+            Item { item_type: ItemType::Url, path: Some("firefox.exe".to_string()), value: Some("https://c.com".to_string()), display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None },
         ];
         let (map, fallback) = collect_browser_urls(&items, None);
         assert_eq!(map["chrome.exe"].len(), 2);
@@ -853,7 +1232,7 @@ mod tests {
     #[test]
     fn test_url_items_fall_back_to_preferred_browser() {
         let items = vec![
-            Item { item_type: ItemType::Url, path: None, value: Some("https://x.com".to_string()), urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
+            Item { item_type: ItemType::Url, path: None, value: Some("https://x.com".to_string()), display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None },
         ];
         let (map, fallback) = collect_browser_urls(&items, Some("edge.exe"));
         assert_eq!(map["edge.exe"].len(), 1);
@@ -863,7 +1242,7 @@ mod tests {
     #[test]
     fn test_url_items_with_no_browser_go_to_fallback() {
         let items = vec![
-            Item { item_type: ItemType::Url, path: None, value: Some("https://y.com".to_string()), urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None },
+            Item { item_type: ItemType::Url, path: None, value: Some("https://y.com".to_string()), display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None },
         ];
         let (map, fallback) = collect_browser_urls(&items, None);
         assert!(map.is_empty());
@@ -877,12 +1256,14 @@ mod tests {
                 item_type: ItemType::Url,
                 path: Some("chrome.exe".into()),
                 value: Some("https://old.com".into()),
+                display_name: None,
                 urls: vec!["https://a.com".into(), "https://b.com".into()],
                 icon_data: None, browser_name: None, run_in_terminal: true,
                 run_as_admin: false,
                 launch_virtual_desktop: None,
-                launch_desktop: None, launch_x: None, launch_y: None,
-                launch_width: None, launch_height: None,
+                launch_desktop_index: None,
+            launch_desktop: None, launch_x: None, launch_y: None,
+                launch_width: None, launch_height: None, command_file_path: None,
             },
         ];
         let (map, fallback) = collect_browser_urls(&items, None);
@@ -897,12 +1278,14 @@ mod tests {
                 item_type: ItemType::Url,
                 path: Some("firefox.exe".into()),
                 value: Some("https://fallback.com".into()),
+                display_name: None,
                 urls: vec![],
                 icon_data: None, browser_name: None, run_in_terminal: true,
                 run_as_admin: false,
                 launch_virtual_desktop: None,
-                launch_desktop: None, launch_x: None, launch_y: None,
-                launch_width: None, launch_height: None,
+                launch_desktop_index: None,
+            launch_desktop: None, launch_x: None, launch_y: None,
+                launch_width: None, launch_height: None, command_file_path: None,
             },
         ];
         let (map, fallback) = collect_browser_urls(&items, None);
@@ -916,11 +1299,13 @@ mod tests {
             item_type: ItemType::Steam,
             path: Some("Counter-Strike 2".into()),
             value: None, // missing appid
+            display_name: None,
             urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true,
             run_as_admin: false,
             launch_virtual_desktop: None,
+            launch_desktop_index: None,
             launch_desktop: None, launch_x: None, launch_y: None,
-            launch_width: None, launch_height: None,
+            launch_width: None, launch_height: None, command_file_path: None,
         };
         let result = launch_item(&item, &None);
         assert!(result.is_err());
@@ -932,11 +1317,13 @@ mod tests {
         let item = Item {
             item_type: ItemType::App,
             path: None, value: None,
+            display_name: None,
             urls: vec![], icon_data: None, browser_name: None,
             run_in_terminal: true, run_as_admin: true,
             launch_virtual_desktop: None,
+            launch_desktop_index: None,
             launch_desktop: None, launch_x: None, launch_y: None,
-            launch_width: None, launch_height: None,
+            launch_width: None, launch_height: None, command_file_path: None,
         };
         let result = launch_item(&item, &None);
         assert!(result.is_err());
@@ -948,12 +1335,14 @@ mod tests {
         let item = Item {
             item_type: ItemType::Script,
             path: None, value: None,
+            display_name: None,
             urls: vec![], icon_data: None, browser_name: None,
             run_in_terminal: false,
             run_as_admin: false,
             launch_virtual_desktop: None,
+            launch_desktop_index: None,
             launch_desktop: None, launch_x: None, launch_y: None,
-            launch_width: None, launch_height: None,
+            launch_width: None, launch_height: None, command_file_path: None,
         };
         let result = launch_item(&item, &None);
         assert!(result.is_err());
@@ -966,11 +1355,13 @@ mod tests {
             item_type: ItemType::App,
             path: Some("C:\\nonexistent.exe".into()),
             value: None,
+            display_name: None,
             urls: vec![], icon_data: None, browser_name: None,
             run_in_terminal: true, run_as_admin: false,
             launch_virtual_desktop: Some(vec![0u8; 16]),
+            launch_desktop_index: None,
             launch_desktop: None, launch_x: None, launch_y: None,
-            launch_width: None, launch_height: None,
+            launch_width: None, launch_height: None, command_file_path: None,
         };
         let result = launch_item(&item, &None);
         assert!(result.is_err()); // nonexistent exe → error, not crash

@@ -60,6 +60,19 @@ fn save_group(group: Group, state: State<AppState>, app: tauri::AppHandle) -> Re
     let mut config = state.0.lock().unwrap();
     let limit = license::group_limit(&config.license_key, &config.license_instance_id);
     if let Some(pos) = config.groups.iter().position(|g| g.id == group.id) {
+        // Items can disappear from a group on save (removed via the ✕ button,
+        // or replaced) — any app-managed command file they owned would
+        // otherwise be orphaned in the scripts dir forever. Diffing against
+        // the incoming group (rather than deleting immediately when an item
+        // is removed in the UI) means a Remove-then-Cancel never deletes a
+        // file that's still referenced by the unchanged saved config.
+        let old_paths: Vec<Option<String>> = config.groups[pos].items.iter()
+            .map(|i| i.command_file_path.clone())
+            .collect();
+        let new_paths: std::collections::HashSet<String> = group.items.iter()
+            .filter_map(|i| i.command_file_path.clone())
+            .collect();
+        cleanup_orphaned_command_files(&old_paths, &new_paths);
         config.groups[pos] = group;
     } else {
         if config.groups.len() >= limit {
@@ -78,10 +91,34 @@ fn save_group(group: Group, state: State<AppState>, app: tauri::AppHandle) -> Re
 #[tauri::command]
 fn delete_group(group_id: String, state: State<AppState>, app: tauri::AppHandle) -> Result<(), String> {
     let mut config = state.0.lock().unwrap();
+    if let Some(group) = config.groups.iter().find(|g| g.id == group_id) {
+        let paths: Vec<Option<String>> = group.items.iter()
+            .map(|i| i.command_file_path.clone())
+            .collect();
+        cleanup_orphaned_command_files(&paths, &std::collections::HashSet::new());
+    }
     config.groups.retain(|g| g.id != group_id);
     config::save_config(&config)?;
     let _ = app.emit("groups-updated", ());
     Ok(())
+}
+
+/// Deletes any app-managed (under scripts_dir) command file in `paths` that
+/// isn't also present in `keep`. Used when saving a group (some items may
+/// have been removed) or deleting one outright (keep is empty). Never
+/// touches a file outside the app's own scripts dir — those are files the
+/// user linked directly and this app doesn't own.
+fn cleanup_orphaned_command_files(paths: &[Option<String>], keep: &std::collections::HashSet<String>) {
+    let scripts_dir = config::scripts_dir();
+    for path in paths.iter().flatten() {
+        if keep.contains(path) {
+            continue;
+        }
+        let target = std::path::Path::new(path);
+        if target.starts_with(&scripts_dir) {
+            let _ = std::fs::remove_file(target);
+        }
+    }
 }
 
 pub(crate) fn percent_encode(s: &str) -> String {
@@ -118,7 +155,7 @@ async fn launch_group(group_id: String, app: tauri::AppHandle) -> Result<(), Str
             tauri::WebviewUrl::App(url.into()),
         )
         .title("")
-        .inner_size(320.0, 72.0)
+        .inner_size(320.0, 112.0)
         .center()
         .decorations(false)
         .resizable(false)
@@ -129,8 +166,9 @@ async fn launch_group(group_id: String, app: tauri::AppHandle) -> Result<(), Str
 
     // Run the blocking launch on a thread-pool thread so the main thread
     // stays free to paint the overlay and process the message pump.
+    let app_for_launch = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        launcher::launch_group(&group_id, &config)
+        launcher::launch_group_with_handle(&group_id, &config, app_for_launch)
     }).await.map_err(|e| e.to_string())?;
 
     // Dismiss overlay.
@@ -142,6 +180,11 @@ async fn launch_group(group_id: String, app: tauri::AppHandle) -> Result<(), Str
     });
 
     result
+}
+
+#[tauri::command]
+fn abort_launch() {
+    launcher::request_abort();
 }
 
 #[tauri::command]
@@ -287,10 +330,27 @@ fn save_widget_position(x: i32, y: i32, state: State<AppState>) -> Result<(), St
 
 
 #[tauri::command]
-fn save_widget_color(color: String, state: State<AppState>) -> Result<(), String> {
+fn save_widget_color(color: String, state: State<AppState>, app: tauri::AppHandle) -> Result<(), String> {
     let mut config = state.0.lock().unwrap();
-    config.widget_color = Some(color);
-    config::save_config(&config)
+    config.widget_color = Some(color.clone());
+    config::save_config(&config)?;
+    let _ = app.emit("widget-color-changed", &color);
+    Ok(())
+}
+
+/// Sets (or clears, if `color` is empty) a single group's custom button
+/// color. Emits the same "groups-updated" event save_group/delete_group use
+/// so the widget re-renders immediately.
+#[tauri::command]
+fn save_group_color(group_id: String, color: String, state: State<AppState>, app: tauri::AppHandle) -> Result<(), String> {
+    let mut config = state.0.lock().unwrap();
+    let Some(group) = config.groups.iter_mut().find(|g| g.id == group_id) else {
+        return Err("Group not found".to_string());
+    };
+    group.color = if color.is_empty() { None } else { Some(color) };
+    config::save_config(&config)?;
+    let _ = app.emit("groups-updated", ());
+    Ok(())
 }
 
 #[derive(serde::Serialize)]
@@ -380,6 +440,181 @@ fn import_config(state: State<AppState>, app: tauri::AppHandle) -> Result<(), St
 }
 
 
+// ── "Edit Command Line" (terminal items: cmd.exe / powershell.exe / pwsh.exe) ──
+//
+// Item::command_file_path always ends up pointing at a directly-launchable
+// .bat/.ps1 once these are done — "Create" generates one and hands it to the
+// user's own editor; "Link" either points straight at an existing matching
+// script (live — edits to it are picked up at the next launch automatically)
+// or, for any other file type, imports its content into a new app-managed
+// copy once. Nothing here re-reads or rewrites anything at launch time.
+
+// Windows' default "open" action for a .bat/.cmd/.ps1 file is to RUN it (in
+// a console window), not edit it — open::that() follows that association,
+// which is why Create/Edit were launching a console instead of a text
+// editor. Opening notepad.exe directly, with the path as an argument,
+// sidesteps the file association entirely and always edits.
+fn open_in_notepad(path: &str) -> Result<(), String> {
+    std::process::Command::new("notepad.exe")
+        .arg(path)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// Filenames must be valid on Windows and not collide with another item's
+// generated script in the shared scripts dir (e.g. two items both named
+// "Command Prompt") — strips characters Windows forbids in filenames, then
+// appends " (2)", " (3)", etc. only if the plain name is already taken.
+fn sanitized_unique_script_path(dir: &std::path::Path, label: &str, ext: &str) -> std::path::PathBuf {
+    let cleaned: String = label
+        .chars()
+        .map(|c| if r#"<>:"/\|?*"#.contains(c) || c.is_control() { '_' } else { c })
+        .collect();
+    let base = cleaned.trim().trim_end_matches('.').to_string();
+    let base = if base.is_empty() { "Command".to_string() } else { base };
+    // Windows reserves these names outright (any extension) — e.g. an item
+    // literally named "con" would otherwise silently fail to create its
+    // script file. Vanishingly unlikely in practice, but cheap to guard.
+    const RESERVED: &[&str] = &[
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    let base = if RESERVED.contains(&base.to_uppercase().as_str()) {
+        format!("{}_", base)
+    } else {
+        base
+    };
+
+    let mut path = dir.join(format!("{}.{}", base, ext));
+    let mut n = 2;
+    while path.exists() {
+        path = dir.join(format!("{} ({}).{}", base, n, ext));
+        n += 1;
+    }
+    path
+}
+
+#[tauri::command]
+fn create_command_file(shell_path: String, label: String) -> Result<String, String> {
+    let shell = launcher::terminal_shell_kind(&shell_path)
+        .ok_or_else(|| "Not a recognized terminal shell".to_string())?;
+    let dir = config::scripts_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = sanitized_unique_script_path(&dir, &label, shell.script_extension());
+    let header = match shell {
+        launcher::TerminalShell::Cmd =>
+            // @echo off must be the very first line. Without it, cmd echoes
+            // every line (including these rem comments) prefixed with the
+            // current prompt before running it — this suppresses that
+            // entirely, for comments and real commands alike, leaving just
+            // their actual output. PowerShell has no equivalent issue (it
+            // never echoes the lines it executes), so this is cmd-only.
+            "@echo off\r\n\
+             rem ================================================================\r\n\
+             rem  COMMENT BLOCK -- lines starting with \"rem\" are ignored. They\r\n\
+             rem  are notes, not commands, and will not run.\r\n\
+             rem\r\n\
+             rem  Write the commands you want to run BELOW this block, with ONE\r\n\
+             rem  COMMAND PER LINE.\r\n\
+             rem\r\n\
+             rem  IMPORTANT: Save this file (Ctrl+S) before closing Notepad, or\r\n\
+             rem  your changes will NOT be used the next time this item launches.\r\n\
+             rem ================================================================\r\n\r\n",
+        launcher::TerminalShell::PowerShell =>
+            "# ================================================================\r\n\
+             #  COMMENT BLOCK -- lines starting with \"#\" are ignored. They are\r\n\
+             #  notes, not commands, and will not run.\r\n\
+             #\r\n\
+             #  Write the commands you want to run BELOW this block, with ONE\r\n\
+             #  COMMAND PER LINE.\r\n\
+             #\r\n\
+             #  IMPORTANT: Save this file (Ctrl+S) before closing Notepad, or\r\n\
+             #  your changes will NOT be used the next time this item launches.\r\n\
+             # ================================================================\r\n\r\n",
+    };
+    std::fs::write(&path, header).map_err(|e| e.to_string())?;
+    let path_str = path.to_string_lossy().into_owned();
+    open_in_notepad(&path_str)?;
+    Ok(path_str)
+}
+
+#[tauri::command]
+fn duplicate_command_file(path: String) -> Result<String, String> {
+    let target = std::path::Path::new(&path);
+    let scripts_dir = config::scripts_dir();
+    if !target.starts_with(&scripts_dir) {
+        // An externally-linked file the user picked directly, used live —
+        // safe for both items to share the same reference, since this app's
+        // cleanup logic never deletes anything outside its own scripts dir.
+        return Ok(path);
+    }
+    // App-managed file — give the duplicate its own independent copy rather
+    // than the same path, so clearing or deleting either item's command
+    // later never affects the other.
+    let content = std::fs::read_to_string(target).map_err(|e| e.to_string())?;
+    let stem = target.file_stem().and_then(|s| s.to_str()).unwrap_or("Command");
+    let ext = target.extension().and_then(|e| e.to_str()).unwrap_or("bat");
+    let new_path = sanitized_unique_script_path(&scripts_dir, &format!("{} (copy)", stem), ext);
+    std::fs::write(&new_path, content).map_err(|e| e.to_string())?;
+    Ok(new_path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn pick_command_file(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    match app.dialog().file().blocking_pick_file() {
+        Some(picked) => {
+            let path_buf = picked.into_path().map_err(|e| e.to_string())?;
+            Ok(Some(path_buf.to_string_lossy().into_owned()))
+        }
+        None => Ok(None),
+    }
+}
+
+#[tauri::command]
+fn import_linked_command_file(picked_path: String, shell_path: String, label: String) -> Result<String, String> {
+    let shell = launcher::terminal_shell_kind(&shell_path)
+        .ok_or_else(|| "Not a recognized terminal shell".to_string())?;
+    let already_matches = std::path::Path::new(&picked_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| {
+            e.eq_ignore_ascii_case(shell.script_extension())
+                || (shell == launcher::TerminalShell::Cmd && e.eq_ignore_ascii_case("cmd"))
+        })
+        .unwrap_or(false);
+    if already_matches {
+        // Already a launchable script for this shell — use it directly, live.
+        return Ok(picked_path);
+    }
+    // Anything else (.txt, no extension, etc.) gets imported once into a new
+    // app-managed copy, since cmd/PowerShell can't execute it by path otherwise.
+    let content = std::fs::read_to_string(&picked_path).map_err(|e| e.to_string())?;
+    let dir = config::scripts_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = sanitized_unique_script_path(&dir, &label, shell.script_extension());
+    std::fs::write(&path, content).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn open_command_file(path: String) -> Result<(), String> {
+    open_in_notepad(&path)
+}
+
+#[tauri::command]
+fn clear_command_file(path: String) -> Result<(), String> {
+    // Only delete files this app generated itself (under its own scripts
+    // dir) — never touch a file the user linked directly from elsewhere.
+    let target = std::path::Path::new(&path);
+    if target.starts_with(config::scripts_dir()) {
+        let _ = std::fs::remove_file(target); // best-effort, fine if already gone
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn set_hotkey(hotkey: String, state: State<AppState>, app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
@@ -425,48 +660,87 @@ fn set_launch_on_startup(enabled: bool, state: State<AppState>) -> Result<(), St
 }
 
 #[tauri::command]
-fn get_installed_apps() -> Vec<InstalledApp> {
-    apps::get_installed_apps()
+fn set_low_profile(enabled: bool, state: State<AppState>, app: tauri::AppHandle) -> Result<(), String> {
+    let mut config = state.0.lock().unwrap();
+    config.low_profile = enabled;
+    config::save_config(&config)?;
+    let _ = app.emit("low-profile-changed", enabled);
+    Ok(())
+}
+
+// async — get_suggested_apps shells out to PowerShell (twice, for Get-StartApps
+// and Get-AppxPackage) and blocks waiting on those processes. A plain `fn`
+// command runs on Tauri's main thread, which also handles all window input —
+// so a slow synchronous command here froze the whole window's clicks/dragging
+// until it returned. spawn_blocking moves the actual wait off the main thread.
+#[tauri::command]
+async fn get_suggested_apps() -> Vec<InstalledApp> {
+    tauri::async_runtime::spawn_blocking(apps::get_suggested_apps)
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]
-fn get_installed_browsers() -> Vec<browsers::BrowserInfo> {
-    browsers::get_installed_browsers()
+async fn get_installed_apps() -> Vec<InstalledApp> {
+    tauri::async_runtime::spawn_blocking(apps::get_installed_apps)
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]
-fn get_browser_bookmarks(browser_path: String) -> Vec<browsers::BookmarkItem> {
-    browsers::get_browser_bookmarks(&browser_path)
+async fn get_installed_browsers() -> Vec<browsers::BrowserInfo> {
+    tauri::async_runtime::spawn_blocking(browsers::get_installed_browsers)
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]
-fn get_file_icon(path: String) -> Option<String> {
-    icons::get_file_icon(path)
+async fn get_browser_bookmarks(browser_path: String) -> Vec<browsers::BookmarkItem> {
+    tauri::async_runtime::spawn_blocking(move || browsers::get_browser_bookmarks(&browser_path))
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]
-fn get_installed_steam_games() -> Vec<steam::SteamGame> {
-    steam::get_installed_steam_games()
+async fn get_file_icon(path: String, args: Option<String>) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let resolved = apps::resolve_icon_source_path(&path, args.as_deref().unwrap_or(""));
+        icons::get_file_icon(resolved)
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 #[tauri::command]
-fn send_feedback(message: String) -> Result<(), String> {
+async fn get_installed_steam_games() -> Vec<steam::SteamGame> {
+    tauri::async_runtime::spawn_blocking(steam::get_installed_steam_games)
+        .await
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+async fn send_feedback(message: String) -> Result<(), String> {
     if message.trim().is_empty() {
         return Err("Message is empty.".to_string());
     }
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .map_err(|e| e.to_string())?;
 
-    client
-        .post(format!("{}/feedback", WORKER_URL))
-        .json(&serde_json::json!({ "message": message }))
-        .send()
-        .map_err(|e| e.to_string())?;
+        client
+            .post(format!("{}/feedback", WORKER_URL))
+            .json(&serde_json::json!({ "message": message }))
+            .send()
+            .map_err(|e| e.to_string())?;
 
-    Ok(())
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // Returns [x, y, width, height] of the calling window's outer frame in physical pixels.
@@ -536,12 +810,19 @@ fn close_layout_windows(app: tauri::AppHandle, labels: Vec<String>) {
 struct LayoutSavePayload {
     positions: Vec<[i32; 4]>,
     virtual_desktops: Vec<Option<Vec<u8>>>,
+    // Position (0-based) each saved GUID was at when this was saved. Virtual
+    // desktop GUIDs aren't permanently stable across reboots/Explorer
+    // restarts even when desktop count/order doesn't change — this lets
+    // launch fall back to "whatever desktop is at this position" instead of
+    // assuming a desktop was deleted just because its GUID no longer matches.
+    virtual_desktop_indices: Vec<Option<u32>>,
 }
 
 // Collects positions + stored VD selections, emits layout-save, closes layout windows.
 #[tauri::command]
 fn complete_layout_save(app: tauri::AppHandle, labels: Vec<String>, ld: State<LayoutDesktops>) {
     let desktops = ld.0.lock().unwrap().clone();
+    let all_desktops = crate::virtual_desktop::get_virtual_desktops();
     #[cfg(target_os = "windows")]
     let (positions, virtual_desktops): (Vec<[i32; 4]>, Vec<Option<Vec<u8>>>) = {
         extern "system" {
@@ -573,8 +854,14 @@ fn complete_layout_save(app: tauri::AppHandle, labels: Vec<String>, ld: State<La
         (pos, guid)
     }).unzip();
 
+    let virtual_desktop_indices: Vec<Option<u32>> = virtual_desktops.iter().map(|guid| {
+        guid.as_ref().and_then(|g| {
+            all_desktops.iter().position(|d| d.guid.as_slice() == g.as_slice()).map(|i| i as u32)
+        })
+    }).collect();
+
     ld.0.lock().unwrap().clear();
-    let _ = app.emit("layout-save", LayoutSavePayload { positions, virtual_desktops });
+    let _ = app.emit("layout-save", LayoutSavePayload { positions, virtual_desktops, virtual_desktop_indices });
     for label in &labels {
         if let Some(window) = app.get_webview_window(label) {
             let _ = window.close();
@@ -596,6 +883,11 @@ fn complete_layout_cancel(app: tauri::AppHandle, labels: Vec<String>, ld: State<
 #[tauri::command]
 fn get_virtual_desktops() -> Vec<virtual_desktop::VirtualDesktop> {
     virtual_desktop::get_virtual_desktops()
+}
+
+#[tauri::command]
+fn get_current_virtual_desktop_guid() -> Option<Vec<u8>> {
+    virtual_desktop::get_current_virtual_desktop_guid()
 }
 
 // Stores the user's virtual desktop choice for a layout-item window.
@@ -641,10 +933,11 @@ pub(crate) fn open_config_window_inner(app: tauri::AppHandle, group_id: Option<S
             tauri::WebviewUrl::App(url.into()),
         )
         .title(title)
-        .inner_size(420.0, 460.0)
+        .inner_size(420.0, 580.0)
+        .min_inner_size(360.0, 460.0)
         .center()
         .decorations(true)
-        .resizable(false)
+        .resizable(true)
         .always_on_top(true)
         .build();
     });
@@ -668,10 +961,13 @@ fn show_group_context_menu(group_id: String, app: tauri::AppHandle) -> Result<()
         let _ = (|| -> Result<(), String> {
             let edit = MenuItem::with_id(&handle, format!("ctx-edit:{}", group_id), "Edit Group", true, None::<&str>)
                 .map_err(|e| e.to_string())?;
+            let color = MenuItem::with_id(&handle, format!("ctx-color:{}", group_id), "🎨  Change Color", true, None::<&str>)
+                .map_err(|e| e.to_string())?;
             let delete = MenuItem::with_id(&handle, format!("ctx-delete:{}", group_id), "Delete Group", true, None::<&str>)
                 .map_err(|e| e.to_string())?;
-            let menu = Menu::with_items(&handle, &[&edit, &delete]).map_err(|e| e.to_string())?;
+            let menu = Menu::with_items(&handle, &[&edit, &color, &delete]).map_err(|e| e.to_string())?;
             if let Some(window) = handle.get_webview_window("widget") {
+                force_foreground(&window);
                 window.popup_menu(&menu).map_err(|e| e.to_string())?;
             }
             Ok(())
@@ -679,42 +975,106 @@ fn show_group_context_menu(group_id: String, app: tauri::AppHandle) -> Result<()
     }).map_err(|e| e.to_string())
 }
 
+/// Opens (or replaces, if one's already open) the Group Color window for the
+/// given group. Shared by the widget's right-click "Change Color" menu item
+/// and the explicit "🎨 Color" button in the Edit Group window — the button
+/// exists so color can be set during creation/editing too, not only after a
+/// group has already been saved and is showing as a button on the widget.
+async fn open_group_color_window_inner(app: &tauri::AppHandle, group_id: String) {
+    if let Some(existing) = app.get_webview_window("group-color") {
+        let _ = existing.close();
+    }
+    let _ = tauri::WebviewWindowBuilder::new(
+        app,
+        "group-color",
+        tauri::WebviewUrl::App(format!("group-color.html?mode=group&id={}", group_id).into()),
+    )
+    .title("Group Color")
+    .inner_size(280.0, 330.0)
+    .center()
+    .decorations(true)
+    .resizable(false)
+    .always_on_top(true)
+    .build();
+}
+
+/// Callable directly from the Edit Group window's "🎨 Color" button.
+#[tauri::command]
+async fn open_group_color_window(app: tauri::AppHandle, group_id: String) -> Result<(), String> {
+    open_group_color_window_inner(&app, group_id).await;
+    Ok(())
+}
+
+/// Same tabbed color-picker window as the group's, reused in "widget" mode
+/// (no group id, saves via save_widget_color instead) — avoids maintaining
+/// two near-identical tabbed pickers for what's otherwise the same UI.
+/// Callable from the "🎨 Choose Widget Color" button in App Settings.
+#[tauri::command]
+async fn open_widget_color_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(existing) = app.get_webview_window("widget-color") {
+        let _ = existing.close();
+    }
+    let _ = tauri::WebviewWindowBuilder::new(
+        &app,
+        "widget-color",
+        tauri::WebviewUrl::App("group-color.html?mode=widget".into()),
+    )
+    .title("Widget Color")
+    .inner_size(280.0, 330.0)
+    .center()
+    .decorations(true)
+    .resizable(false)
+    .always_on_top(true)
+    .build();
+    Ok(())
+}
+
 #[tauri::command]
 fn show_widget_context_menu(app: tauri::AppHandle, state: State<AppState>) -> Result<(), String> {
-    let launch_on_startup = state.0.lock().unwrap().launch_on_startup;
+    let (launch_on_startup, low_profile) = {
+        let config = state.0.lock().unwrap();
+        (config.launch_on_startup, config.low_profile)
+    };
     let handle = app.clone();
     app.run_on_main_thread(move || {
         use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
         let _ = (|| -> Result<(), String> {
-            let colors: &[(&str, &str)] = &[
-                ("🎨  Default",  "rgba(22,33,62,0.95)"),
-                ("⬛  Charcoal", "rgba(30,30,30,0.95)"),
-                ("🌲  Forest",   "rgba(15,40,25,0.95)"),
-                ("🌙  Midnight", "rgba(20,10,40,0.95)"),
-                ("🔴  Rust",     "rgba(60,25,10,0.95)"),
-                ("🩶  Steel",    "rgba(20,30,45,0.95)"),
-            ];
-            let color_items: Vec<MenuItem<_>> = colors.iter()
-                .map(|(label, value)| MenuItem::with_id(&handle, format!("widget-color:{}", value), *label, true, None::<&str>)
-                    .map_err(|e| e.to_string()))
-                .collect::<Result<Vec<_>, _>>()?;
-
-            let sep1 = PredefinedMenuItem::separator(&handle).map_err(|e| e.to_string())?;
             let startup_label = if launch_on_startup { "✓  Launch on Startup" } else { "   Launch on Startup" };
             let startup = MenuItem::with_id(&handle, "widget-startup", startup_label, true, None::<&str>)
                 .map_err(|e| e.to_string())?;
-            let sep2 = PredefinedMenuItem::separator(&handle).map_err(|e| e.to_string())?;
+            let low_profile_label = if low_profile { "✓  Low Profile" } else { "   Low Profile" };
+            let low_profile_item = MenuItem::with_id(&handle, "widget-low-profile", low_profile_label, true, None::<&str>)
+                .map_err(|e| e.to_string())?;
+            // Moved here from the system tray — nobody was finding it there.
+            // Reuses the "bring_send" id so the existing on_menu_event handler
+            // (which already handles both tray and popup-menu events) just works.
+            // Label reflects the widget's *actual current* z-order position
+            // (checked live, right now) rather than a persisted sticky flag —
+            // the widget can end up visually in front of other windows just
+            // through normal use, with no "always on top" mode ever toggled.
+            let currently_in_front = handle
+                .get_webview_window("widget")
+                .map(|w| is_widget_in_front(&w))
+                .unwrap_or(false);
+            // Same leading padding as the unchecked toggle items above, so the
+            // text lines up regardless of whether a row has a checkmark or not.
+            let bring_send_label = if currently_in_front { "   Send to Back" } else { "   Bring to Front" };
+            let bring_send = MenuItem::with_id(&handle, "bring_send", bring_send_label, true, None::<&str>)
+                .map_err(|e| e.to_string())?;
+            let sep1 = PredefinedMenuItem::separator(&handle).map_err(|e| e.to_string())?;
             let settings = MenuItem::with_id(&handle, "widget-settings", "⚙️  App Settings\u{2026}", true, None::<&str>)
                 .map_err(|e| e.to_string())?;
-            let sep3 = PredefinedMenuItem::separator(&handle).map_err(|e| e.to_string())?;
-            let close = MenuItem::with_id(&handle, "widget-close", "Close", true, None::<&str>)
+            let sep2 = PredefinedMenuItem::separator(&handle).map_err(|e| e.to_string())?;
+            let close = MenuItem::with_id(&handle, "widget-close", "   Close", true, None::<&str>)
                 .map_err(|e| e.to_string())?;
 
-            let mut items: Vec<&dyn tauri::menu::IsMenuItem<_>> = color_items.iter().map(|i| i as _).collect();
-            items.extend_from_slice(&[&sep1, &startup, &sep2, &settings, &sep3, &close]);
+            let items: Vec<&dyn tauri::menu::IsMenuItem<_>> = vec![
+                &startup, &low_profile_item, &bring_send, &sep1, &settings, &sep2, &close
+            ];
 
             let menu = Menu::with_items(&handle, &items).map_err(|e| e.to_string())?;
             if let Some(window) = handle.get_webview_window("widget") {
+                force_foreground(&window);
                 window.popup_menu(&menu).map_err(|e| e.to_string())?;
             }
             Ok(())
@@ -727,7 +1087,7 @@ fn deregister_autostart() {
     use windows::core::HSTRING;
     use windows::Win32::System::Registry::{RegOpenKeyExW, RegDeleteValueW, HKEY, HKEY_CURRENT_USER, KEY_WRITE};
     let key_path = HSTRING::from("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-    let value_name = HSTRING::from("AppLauncher");
+    let value_name = HSTRING::from("TakeOff");
     unsafe {
         let mut hkey = HKEY::default();
         if RegOpenKeyExW(HKEY_CURRENT_USER, &key_path, 0, KEY_WRITE, &mut hkey).is_ok() {
@@ -756,7 +1116,7 @@ fn register_autostart(exe_path: &str) {
     use windows::Win32::System::Registry::{RegOpenKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_WRITE, REG_SZ};
 
     let key_path = HSTRING::from("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-    let value_name = HSTRING::from("AppLauncher");
+    let value_name = HSTRING::from("TakeOff");
     let value_data: Vec<u16> = exe_path.encode_utf16().chain(std::iter::once(0)).collect();
 
     unsafe {
@@ -782,7 +1142,7 @@ fn register_autostart(exe_path: &str) {
     let autostart_dir = config_dir.join("autostart");
     let _ = std::fs::create_dir_all(&autostart_dir);
     let desktop = format!(
-        "[Desktop Entry]\nType=Application\nName=App Launcher\nExec={}\nHidden=false\nNoDisplay=false\nX-GNOME-Autostart-enabled=true\n",
+        "[Desktop Entry]\nType=Application\nName=TakeOff\nExec={}\nHidden=false\nNoDisplay=false\nX-GNOME-Autostart-enabled=true\n",
         exe_path
     );
     let _ = std::fs::write(autostart_dir.join("app-launcher.desktop"), desktop);
@@ -829,22 +1189,118 @@ fn send_widget_to_back(window: &tauri::WebviewWindow) {
     }
 }
 
-fn build_tray_menu(app: &tauri::AppHandle, on_top: bool) -> Result<tauri::menu::Menu<tauri::Wry>, String> {
-    use tauri::menu::{Menu, MenuItem};
-    let label = if on_top { "Send to Back" } else { "Bring to Front" };
-    let bring_send = MenuItem::with_id(app, "bring_send", label, true, None::<&str>)
-        .map_err(|e| e.to_string())?;
-    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)
-        .map_err(|e| e.to_string())?;
-    Menu::with_items(app, &[&bring_send, &quit]).map_err(|e| e.to_string())
+/// One-time raise to the top of the z-order — NOT a sticky "always on top"
+/// (HWND_TOP, not HWND_TOPMOST). The widget behaves like a normal window
+/// again immediately afterward; it just starts out in front.
+#[cfg(target_os = "windows")]
+fn bring_widget_to_front(window: &tauri::WebviewWindow) {
+    extern "system" {
+        fn SetWindowPos(
+            hwnd: *mut std::ffi::c_void,
+            hwnd_insert_after: *mut std::ffi::c_void,
+            x: i32, y: i32, cx: i32, cy: i32,
+            flags: u32,
+        ) -> i32;
+    }
+    const HWND_TOP: *mut std::ffi::c_void = 0usize as *mut _;
+    const SWP_NOMOVE: u32 = 0x0002;
+    const SWP_NOSIZE: u32 = 0x0001;
+    const SWP_NOACTIVATE: u32 = 0x0010;
+    if let Ok(hwnd) = window.hwnd() {
+        unsafe {
+            SetWindowPos(hwnd.0, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+    }
 }
 
-fn rebuild_tray_menu(app: &tauri::AppHandle, on_top: bool) -> Result<(), String> {
-    let menu = build_tray_menu(app, on_top)?;
-    if let Some(tray) = app.tray_by_id("main-tray") {
-        tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
+/// Checks the widget's actual current z-order position: is any other visible,
+/// non-minimized window currently overlapping it and rendered above it? Used
+/// to dynamically label the menu item "Bring to Front" / "Send to Back"
+/// based on real on-screen state, instead of a persisted sticky setting that
+/// drifts out of sync with reality (e.g. widget happens to be on top of VS
+/// Code right now, but the old "always on top" flag was never toggled).
+#[cfg(target_os = "windows")]
+fn is_widget_in_front(window: &tauri::WebviewWindow) -> bool {
+    extern "system" {
+        fn EnumWindows(callback: unsafe extern "system" fn(*mut std::ffi::c_void, isize) -> i32, data: isize) -> i32;
+        fn IsWindowVisible(hwnd: *mut std::ffi::c_void) -> i32;
+        fn IsIconic(hwnd: *mut std::ffi::c_void) -> i32;
+        fn GetWindowRect(hwnd: *mut std::ffi::c_void, rect: *mut [i32; 4]) -> i32;
     }
-    Ok(())
+
+    struct CheckData {
+        target: usize,
+        target_rect: [i32; 4],
+        covered: bool,
+    }
+
+    unsafe extern "system" fn cb(hwnd: *mut std::ffi::c_void, data: isize) -> i32 {
+        let d = &mut *(data as *mut CheckData);
+        if hwnd as usize == d.target {
+            return 0; // reached our own window with nothing covering it first — stop
+        }
+        if IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 {
+            return 1; // continue
+        }
+        let mut rect = [0i32; 4];
+        if GetWindowRect(hwnd, &mut rect) == 0 {
+            return 1;
+        }
+        let [l1, t1, r1, b1] = rect;
+        let [l2, t2, r2, b2] = d.target_rect;
+        if l1 < r2 && r1 > l2 && t1 < b2 && b1 > t2 {
+            d.covered = true;
+            return 0; // something visible overlaps us before we were reached — stop
+        }
+        1
+    }
+
+    let Ok(hwnd) = window.hwnd() else { return true };
+    unsafe {
+        let mut target_rect = [0i32; 4];
+        if GetWindowRect(hwnd.0, &mut target_rect) == 0 {
+            return true;
+        }
+        let mut data = CheckData { target: hwnd.0 as usize, target_rect, covered: false };
+        EnumWindows(cb, &mut data as *mut _ as isize);
+        !data.covered
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_widget_in_front(_window: &tauri::WebviewWindow) -> bool {
+    true
+}
+
+/// TrackPopupMenu (what Tauri's popup_menu() wraps on Windows) needs the
+/// owning window to actually be the foreground window when it's called —
+/// otherwise Windows can still draw the menu, but mouse input doesn't route
+/// to it, making it look "frozen" (visible, nothing highlights, nothing is
+/// clickable). The widget is an always-on-top floating bar that deliberately
+/// avoids stealing focus during normal use, so it's often NOT the foreground
+/// window at the moment of a right-click — hence this being intermittent.
+/// Calling this from within the same right-click's event handling is one of
+/// the documented exceptions to Windows' foreground-lock restrictions.
+#[cfg(target_os = "windows")]
+fn force_foreground(window: &tauri::WebviewWindow) {
+    extern "system" {
+        fn SetForegroundWindow(hwnd: *mut std::ffi::c_void) -> i32;
+    }
+    if let Ok(hwnd) = window.hwnd() {
+        unsafe { SetForegroundWindow(hwnd.0 as *mut _); }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn force_foreground(_window: &tauri::WebviewWindow) {}
+
+// "Send to Back" / "Bring to Front" moved to the widget's right-click menu
+// (see show_widget_context_menu) — nobody was finding it in the tray.
+fn build_tray_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::Wry>, String> {
+    use tauri::menu::{Menu, MenuItem};
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    Menu::with_items(app, &[&quit]).map_err(|e| e.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -866,48 +1322,33 @@ pub fn run() {
                 if id == "quit" {
                     app.exit(0);
                 } else if id == "bring_send" {
-                    let app2 = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        let state = app2.state::<AppState>();
-                        let new_on_top = {
-                            let mut config = state.0.lock().unwrap();
-                            config.widget_on_top = !config.widget_on_top;
-                            let _ = config::save_config(&config);
-                            config.widget_on_top
-                        };
-                        if let Some(window) = app2.get_webview_window("widget") {
-                            let _ = window.set_always_on_top(new_on_top);
-                            #[cfg(target_os = "windows")]
-                            if !new_on_top {
+                    // One-time z-order push, not a sticky "always on top" toggle.
+                    // Re-checks live state at click time (cheap, and avoids any
+                    // staleness between when the menu opened and now).
+                    if let Some(window) = app.get_webview_window("widget") {
+                        #[cfg(target_os = "windows")]
+                        {
+                            if is_widget_in_front(&window) {
                                 send_widget_to_back(&window);
+                            } else {
+                                bring_widget_to_front(&window);
                             }
                         }
-                        let _ = rebuild_tray_menu(&app2, new_on_top);
-                    });
+                    }
                 } else if let Some(group_id) = id.strip_prefix("ctx-edit:") {
                     if let Some(window) = app.get_webview_window("widget") {
                         let _ = window.emit("context-menu:edit", group_id);
                     }
+                } else if let Some(group_id) = id.strip_prefix("ctx-color:") {
+                    let app2 = app.clone();
+                    let group_id = group_id.to_string();
+                    tauri::async_runtime::spawn(async move {
+                        open_group_color_window_inner(&app2, group_id).await;
+                    });
                 } else if let Some(group_id) = id.strip_prefix("ctx-delete:") {
                     if let Some(window) = app.get_webview_window("widget") {
                         let _ = window.emit("context-menu:delete", group_id);
                     }
-                } else if let Some(color) = id.strip_prefix("widget-color:") {
-                    // Defer all post-menu work to async so we're clear of the
-                    // popup_menu nested Windows message loop before touching WebView2
-                    let color_str = color.to_string();
-                    let app2 = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        let state = app2.state::<AppState>();
-                        {
-                            let mut config = state.0.lock().unwrap();
-                            config.widget_color = Some(color_str.clone());
-                            let _ = config::save_config(&config);
-                        }
-                        if let Some(window) = app2.get_webview_window("widget") {
-                            let _ = window.emit("widget-color-changed", &color_str);
-                        }
-                    });
                 } else if id == "widget-startup" {
                     let app2 = app.clone();
                     tauri::async_runtime::spawn(async move {
@@ -926,6 +1367,18 @@ pub fn run() {
                         } else {
                             deregister_autostart();
                         }
+                    });
+                } else if id == "widget-low-profile" {
+                    let app2 = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let state = app2.state::<AppState>();
+                        let new_val = {
+                            let mut config = state.0.lock().unwrap();
+                            config.low_profile = !config.low_profile;
+                            let _ = config::save_config(&config);
+                            config.low_profile
+                        };
+                        let _ = app2.emit("low-profile-changed", new_val);
                     });
                 } else if id == "widget-settings" {
                     let app2 = app.clone();
@@ -957,10 +1410,8 @@ pub fn run() {
                 }
             });
 
-            // Build tray menu with initial label based on config
-            let on_top = app.state::<AppState>().0.lock().unwrap().widget_on_top;
             let handle = app.handle().clone();
-            let tray_menu = build_tray_menu(&handle, on_top)?;
+            let tray_menu = build_tray_menu(&handle)?;
 
             // Create tray icon with stable ID so we can update its menu later
             TrayIconBuilder::with_id("main-tray")
@@ -977,9 +1428,9 @@ pub fn run() {
                     if let (Some(x), Some(y)) = (cfg.widget_x, cfg.widget_y) {
                         let _ = widget.set_position(tauri::PhysicalPosition::new(x, y));
                     }
-                    if cfg.widget_on_top {
-                        let _ = widget.set_always_on_top(true);
-                    }
+                    // No more sticky "always on top" on startup — Bring to
+                    // Front / Send to Back is now a one-time z-order push,
+                    // re-evaluated live each time the widget menu is opened.
                 }
             }
 
@@ -1041,6 +1492,7 @@ pub fn run() {
             save_group,
             delete_group,
             launch_group,
+            abort_launch,
             set_preferred_browser,
             activate_license,
             deactivate_license,
@@ -1048,7 +1500,11 @@ pub fn run() {
             reorder_items,
             save_widget_position,
             save_widget_color,
+            save_group_color,
+            open_group_color_window,
+            open_widget_color_window,
             set_launch_on_startup,
+            set_low_profile,
             show_widget_context_menu,
             export_config,
             import_config,
@@ -1060,10 +1516,12 @@ pub fn run() {
             complete_layout_save,
             complete_layout_cancel,
             get_virtual_desktops,
+            get_current_virtual_desktop_guid,
             set_layout_item_desktop,
             open_config_window,
             resize_widget,
             get_installed_apps,
+            get_suggested_apps,
             show_group_context_menu,
             get_installed_browsers,
             get_browser_bookmarks,
@@ -1072,6 +1530,12 @@ pub fn run() {
             send_feedback,
             open_url,
             download_and_install_update,
+            create_command_file,
+            pick_command_file,
+            import_linked_command_file,
+            open_command_file,
+            clear_command_file,
+            duplicate_command_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

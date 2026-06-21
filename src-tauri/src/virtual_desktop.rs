@@ -273,6 +273,68 @@ fn send_vd_key(vk: u16) {
     }
 }
 
+/// Creates a new virtual desktop using Win+Ctrl+D, waits for it to appear,
+/// and returns its GUID. Returns None if it times out or fails.
+pub fn create_virtual_desktop() -> Option<Vec<u8>> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::thread;
+        use std::time::{Duration, Instant};
+
+        let before_count = get_virtual_desktops().len();
+
+        // Win+Ctrl+D creates a new virtual desktop
+        let new_key: u16 = 0x44; // VK 'D'
+        extern "system" {
+            fn SendInput(n_inputs: u32, p_inputs: *const u8, cb_size: i32) -> u32;
+        }
+        const KEYEVENTF_KEYUP: u32 = 0x0002;
+        const VK_LWIN: u16 = 0x5B;
+        const VK_CTRL: u16 = 0x11;
+
+        fn key(vk: u16, flags: u32) -> [u8; 40] {
+            let mut b = [0u8; 40];
+            b[0..4].copy_from_slice(&1u32.to_le_bytes());
+            b[8..10].copy_from_slice(&vk.to_le_bytes());
+            b[12..16].copy_from_slice(&flags.to_le_bytes());
+            b
+        }
+
+        let events = [
+            key(VK_LWIN, 0),
+            key(VK_CTRL, 0),
+            key(new_key, 0),
+            key(new_key, KEYEVENTF_KEYUP),
+            key(VK_CTRL, KEYEVENTF_KEYUP),
+            key(VK_LWIN, KEYEVENTF_KEYUP),
+        ];
+
+        for event in &events {
+            unsafe { SendInput(1, event.as_ptr(), 40); }
+            thread::sleep(Duration::from_millis(15));
+        }
+
+        // Poll until a new desktop appears (up to 1 second)
+        let deadline = Instant::now() + Duration::from_millis(1000);
+        loop {
+            thread::sleep(Duration::from_millis(50));
+            let desktops = get_virtual_desktops();
+            if desktops.len() > before_count {
+                // The new desktop is the last one; also switch to it now
+                if let Some(new_desktop) = desktops.last() {
+                    return Some(new_desktop.guid.clone());
+                }
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+        }
+        None
+    }
+    #[cfg(not(target_os = "windows"))]
+    None
+}
+
 #[cfg(target_os = "windows")]
 fn get_virtual_desktops_windows() -> Vec<VirtualDesktop> {
     use std::ffi::OsStr;
