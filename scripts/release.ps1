@@ -15,7 +15,7 @@
 #>
 
 param(
-    [string]$Version = "0.5.0",
+    [string]$Version = "0.5.1",
     [string]$KeyPath = "$HOME\.tauri\applauncher.key",
     [string]$WebsiteRepo = "C:\Users\dougb\Desktop\tonic-tech-site",
     [string]$GitHubRepo = "Doogals/AppLauncher"
@@ -65,15 +65,10 @@ if ($pending) {
     $commitMsg = @"
 Release v$Version
 
-- Add "Edit Command Line" feature: attach a .bat/.ps1 script to Command
-  Prompt/PowerShell items (create one in Notepad or link an existing file),
-  runs automatically when the item launches
-- Add duplicate button for items, including command-line attachments
-- Fix: Microsoft Edge missing from suggested apps; "cmd" search now finds
-  Command Prompt
-- Fix: maximized browser windows now respect saved position/size
-- Fix: assorted UI polish (button sizing/padding, color contrast, right-click
-  menu alignment, orphaned command-file cleanup)
+- Fix: group color picker showed white background in installed build
+- Fix: widget repositions to primary monitor when saved monitor is disconnected
+- Fix: layout editor windows now open on correct monitor in multi-monitor setups
+- Fix: Abort button now responds immediately during app launch polling
 "@
     # Writing to a temp file and using -F instead of -m $commitMsg directly --
     # passing a string with embedded "quotes" as a native-command argument
