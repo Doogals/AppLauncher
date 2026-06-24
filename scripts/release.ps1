@@ -167,23 +167,34 @@ $latestJsonObj = [ordered]@{
 $latestJsonObj | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $RepoRoot "latest.json") -NoNewline
 Write-Host "Download URL: $downloadUrl"
 
-# --- 7. Sync the website's download link to match ---------------------------
-Step "Syncing website download link"
+# --- 7. Sync the website's download link and version text to match --------
+Step "Syncing website download link and version"
 $websiteFile = Join-Path $WebsiteRepo "takeoff.html"
 if (Test-Path $websiteFile) {
-    $pattern = 'https://github\.com/[^/]+/[^/]+/releases/download/v[\d.]+/[^"]+\.msi'
-    (Get-Content $websiteFile -Raw) -replace $pattern, $downloadUrl | Set-Content $websiteFile -NoNewline
+    $urlPattern = 'https://github\.com/[^/]+/[^/]+/releases/download/v[\d.]+/[^"]+\.msi'
+    $versionPattern = 'Current version: v[\d.]+'
+    (Get-Content $websiteFile -Raw) -replace $urlPattern, $downloadUrl -replace $versionPattern, "Current version: $tag" |
+        Set-Content $websiteFile -NoNewline
     Write-Host "Updated $websiteFile"
 } else {
-    Write-Warning "Website repo not found at $WebsiteRepo - update its download link manually."
+    Write-Warning "Website repo not found at $WebsiteRepo - update its download link and version text manually."
 }
 
 # --- 8. Commit + push the app repo ------------------------------------------
 Step "Committing and pushing latest.json"
 git add latest.json
 git commit -m "Update latest.json to $tag"
-git push origin HEAD
-git push origin $tag
+# Pushing HEAD:master explicitly, NOT just HEAD -- the auto-updater feed
+# (tauri.conf.json's updater endpoint) reads latest.json from the master
+# branch specifically. Pushing bare "HEAD" pushes to a remote branch with
+# the SAME NAME as whatever is currently checked out locally, which silently
+# missed master entirely the first time this ran from a feature branch --
+# the push "succeeded" against the wrong branch with no error at all.
+git push origin HEAD:master
+if ($LASTEXITCODE -ne 0) { throw "git push to master failed -- latest.json was committed locally but NOT pushed, so the in-app updater will NOT see this release. Run 'git push origin HEAD:master' yourself in $RepoRoot, then re-run from here." }
+# No separate tag push here: `gh release create` above already created the
+# tag directly on GitHub. There is no matching local tag (this script never
+# runs `git tag`), so `git push origin $tag` would just fail/no-op every time.
 
 # --- 9. Commit + push the website repo --------------------------------------
 if (Test-Path $websiteFile) {
@@ -192,6 +203,10 @@ if (Test-Path $websiteFile) {
     git add -A
     git commit -m "Update TakeOff download link to $tag"
     git push
+    if ($LASTEXITCODE -ne 0) {
+        Pop-Location
+        throw "git push (website) failed -- the download-link update was committed locally but NOT pushed, so the live site still shows the old link. Run 'git push' yourself in $WebsiteRepo."
+    }
     Pop-Location
 }
 

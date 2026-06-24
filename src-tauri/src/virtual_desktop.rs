@@ -273,6 +273,154 @@ fn send_vd_key(vk: u16) {
     }
 }
 
+// Same chord as send_vd_key but with Shift added — Win+Ctrl+Shift+Arrow is the OS
+// shortcut for "move the focused window to the adjacent desktop, and follow it
+// there" (as opposed to Win+Ctrl+Arrow, which just switches desktops in place).
+#[cfg(target_os = "windows")]
+fn send_vd_key_move_window(vk: u16) {
+    extern "system" {
+        fn SendInput(n_inputs: u32, p_inputs: *const u8, cb_size: i32) -> u32;
+    }
+    const KEYEVENTF_KEYUP: u32 = 0x0002;
+    const VK_LWIN: u16 = 0x5B;
+    const VK_CTRL: u16 = 0x11;
+    const VK_SHIFT: u16 = 0x10;
+
+    fn key(vk: u16, flags: u32) -> [u8; 40] {
+        let mut b = [0u8; 40];
+        b[0..4].copy_from_slice(&1u32.to_le_bytes());
+        b[8..10].copy_from_slice(&vk.to_le_bytes());
+        b[12..16].copy_from_slice(&flags.to_le_bytes());
+        b
+    }
+
+    let events = [
+        key(VK_LWIN, 0),
+        key(VK_CTRL, 0),
+        key(VK_SHIFT, 0),
+        key(vk, 0),
+        key(vk, KEYEVENTF_KEYUP),
+        key(VK_SHIFT, KEYEVENTF_KEYUP),
+        key(VK_CTRL, KEYEVENTF_KEYUP),
+        key(VK_LWIN, KEYEVENTF_KEYUP),
+    ];
+
+    for event in &events {
+        unsafe { SendInput(1, event.as_ptr(), 40); }
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+}
+
+/// Last-resort fix for an app (observed with Brave) that places its own window
+/// directly on whatever desktop it personally remembers, bypassing the normal
+/// "new windows appear on the active desktop" behavior — and bypassing
+/// IVirtualDesktopManager::MoveWindowToDesktop too, since that silently fails
+/// cross-process for a window we don't own. This instead drives the actual OS
+/// shortcut for "move this window to the next desktop over, and follow it
+/// there", repeated step by step toward the target. SetForegroundWindow first
+/// is required (and itself switches the active desktop to match the window's
+/// CURRENT, wrong desktop) — Windows only moves whichever window currently has
+/// focus, so without this the key presses would just switch our own view around
+/// without taking the window along. Ending up back on the intended desktop
+/// alongside the window is a natural side effect of moving it there, not an
+/// extra step: by the last keypress, both view and window have arrived together.
+// Plain SetForegroundWindow from a background process is blocked by Windows
+// most of the time -- it only succeeds for the process that's currently
+// receiving real user input (which is why the existing force_foreground() in
+// lib.rs works fine for context menus: it's called right after the widget
+// itself just received a click). Mid-launch, with no fresh input event to
+// piggyback on, the plain call silently does nothing -- confirmed via debug
+// log: the desktop-switch keypresses afterward still went through (since
+// those don't need foreground), but the window never actually came along,
+// because nothing was genuinely focused for Windows to "carry" anywhere.
+// AttachThreadInput is the standard, documented workaround: temporarily
+// share input-queue state with whatever thread currently holds foreground
+// rights, which Windows does treat as a valid basis for allowing the steal.
+#[cfg(target_os = "windows")]
+fn force_foreground_for_move(hwnd: *mut std::ffi::c_void) {
+    extern "system" {
+        fn SetForegroundWindow(hwnd: *mut std::ffi::c_void) -> i32;
+        fn GetForegroundWindow() -> *mut std::ffi::c_void;
+        fn GetWindowThreadProcessId(hwnd: *mut std::ffi::c_void, pid: *mut u32) -> u32;
+        fn GetCurrentThreadId() -> u32;
+        fn AttachThreadInput(id_attach: u32, id_attach_to: u32, attach: i32) -> i32;
+    }
+    unsafe {
+        let fg = GetForegroundWindow();
+        let fg_tid = if !fg.is_null() { GetWindowThreadProcessId(fg, std::ptr::null_mut()) } else { 0 };
+        let cur_tid = GetCurrentThreadId();
+        let attached = fg_tid != 0 && fg_tid != cur_tid && AttachThreadInput(cur_tid, fg_tid, 1) != 0;
+        SetForegroundWindow(hwnd);
+        if attached {
+            AttachThreadInput(cur_tid, fg_tid, 0);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub fn move_window_with_keyboard(hwnd: *mut std::ffi::c_void, current_guid: &[u8], target_guid: &[u8]) -> bool {
+    use std::thread;
+    use std::time::Duration;
+
+    let desktops = get_virtual_desktops();
+    let current_idx = match desktops.iter().position(|d| d.guid.as_slice() == current_guid) {
+        Some(i) => i,
+        None => return false,
+    };
+    let target_idx = match desktops.iter().position(|d| d.guid.as_slice() == target_guid) {
+        Some(i) => i,
+        None => return false,
+    };
+    if current_idx == target_idx { return true; }
+
+    force_foreground_for_move(hwnd);
+    thread::sleep(Duration::from_millis(150)); // let the foreground/desktop-follow settle before sending keys
+
+    crate::debug_log::write_debug_log(&format!(
+        "LAUNCH move-window-with-keyboard Desktop{}→Desktop{} ({} step(s))",
+        current_idx + 1, target_idx + 1,
+        if target_idx > current_idx { target_idx - current_idx } else { current_idx - target_idx }
+    ));
+
+    let (vk, steps) = if target_idx > current_idx {
+        (0x27u16, target_idx - current_idx) // VK_RIGHT
+    } else {
+        (0x25u16, current_idx - target_idx) // VK_LEFT
+    };
+
+    for step in 0..steps {
+        let expected_idx = if target_idx > current_idx {
+            current_idx + step + 1
+        } else {
+            current_idx - step - 1
+        };
+        let expected_guid = &desktops[expected_idx].guid;
+
+        send_vd_key_move_window(vk);
+
+        let deadline = std::time::Instant::now() + Duration::from_millis(600);
+        let poll_start = std::time::Instant::now();
+        loop {
+            thread::sleep(Duration::from_millis(50));
+            if let Some(cur) = get_current_vd_windows() {
+                if cur.as_slice() == expected_guid.as_slice() {
+                    crate::debug_log::write_debug_log(&format!(
+                        "LAUNCH move-window-with-keyboard step confirmed after {}ms",
+                        poll_start.elapsed().as_millis()
+                    ));
+                    break;
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                crate::debug_log::write_debug_log("LAUNCH move-window-with-keyboard step timed out after 600ms — proceeding");
+                break;
+            }
+        }
+    }
+
+    get_window_virtual_desktop(hwnd).as_deref() == Some(target_guid)
+}
+
 /// Creates a new virtual desktop using Win+Ctrl+D, waits for it to appear,
 /// and returns its GUID. Returns None if it times out or fails.
 pub fn create_virtual_desktop() -> Option<Vec<u8>> {

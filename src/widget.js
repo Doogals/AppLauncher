@@ -191,3 +191,10 @@ render().then(async () => {
     t = setTimeout(() => invoke('save_widget_position', { x, y }), 400);
   });
 }).catch(e => console.error('Widget init error:', e));
+
+// If a monitor is disconnected while the app is running the widget can end
+// up off-screen. Re-check whenever the window gains focus — cheap call that
+// only moves the widget if it's actually off all monitors.
+window.addEventListener('focus', () => {
+  invoke('ensure_widget_on_screen').catch(() => {});
+});

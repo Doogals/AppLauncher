@@ -328,6 +328,39 @@ fn save_widget_position(x: i32, y: i32, state: State<AppState>) -> Result<(), St
     config::save_config(&config)
 }
 
+/// Checks whether the widget is currently visible on any connected monitor.
+/// If it's off-screen (e.g. a display was disconnected while the app was
+/// running), it moves the widget to a safe position on the primary monitor
+/// and saves the new position to config.
+#[tauri::command]
+fn ensure_widget_on_screen(app: tauri::AppHandle, state: State<AppState>) {
+    let Some(widget) = app.get_webview_window("widget") else { return };
+    let Ok(pos) = widget.outer_position() else { return };
+    let monitors = app.available_monitors().unwrap_or_default();
+    if monitors.is_empty() { return; }
+    let on_screen = monitors.iter().any(|m| {
+        let p = m.position();
+        let s = m.size();
+        pos.x >= p.x && pos.x < p.x + s.width as i32
+            && pos.y >= p.y && pos.y < p.y + s.height as i32
+    });
+    if on_screen { return; }
+    // Off-screen — move to primary monitor (0,0) or first available monitor
+    let safe = monitors
+        .iter()
+        .find(|m| m.position().x == 0 && m.position().y == 0)
+        .or_else(|| monitors.first())
+        .map(|m| tauri::PhysicalPosition::new(m.position().x + 100, m.position().y + 50));
+    let Some(safe_pos) = safe else { return };
+    let _ = widget.set_position(safe_pos);
+    // Persist so next launch also starts on-screen
+    let mut config = state.0.lock().unwrap().clone();
+    config.widget_x = Some(safe_pos.x);
+    config.widget_y = Some(safe_pos.y);
+    let _ = config::save_config(&config);
+    *state.0.lock().unwrap() = config;
+}
+
 
 #[tauri::command]
 fn save_widget_color(color: String, state: State<AppState>, app: tauri::AppHandle) -> Result<(), String> {
@@ -976,6 +1009,31 @@ fn show_group_context_menu(group_id: String, app: tauri::AppHandle) -> Result<()
 }
 
 /// Opens (or replaces, if one's already open) the Group Color window for the
+/// Moves an already-created layout-editor window to the saved **physical** pixel
+/// position and resizes it to the saved physical dimensions. Called from JS right
+/// after `new WebviewWindow(...)` fires its `tauri://created` event, so the window
+/// is guaranteed to exist by the time this runs.
+///
+/// Using physical pixels (matching GetWindowRect's saved values) sidesteps the
+/// per-monitor DPR ambiguity of the old approach, where logical coordinates derived
+/// from `window.devicePixelRatio` on the config window's monitor were wrong when
+/// items were positioned on a different monitor.
+#[tauri::command]
+async fn set_layout_window_physics(
+    app: tauri::AppHandle,
+    label: String,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) {
+    let Some(win) = app.get_webview_window(&label) else { return };
+    // set_size on Windows maps to SetWindowPos with the outer rect dimensions,
+    // which matches GetWindowRect — so the saved physical size restores correctly.
+    let _ = win.set_size(tauri::PhysicalSize::new(width, height));
+    let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+}
+
 /// given group. Shared by the widget's right-click "Change Color" menu item
 /// and the explicit "🎨 Color" button in the Edit Group window — the button
 /// exists so color can be set during creation/editing too, not only after a
@@ -990,7 +1048,16 @@ async fn open_group_color_window_inner(app: &tauri::AppHandle, group_id: String)
         tauri::WebviewUrl::App(format!("group-color.html?mode=group&id={}", group_id).into()),
     )
     .title("Group Color")
-    .inner_size(280.0, 330.0)
+    // Explicit dark background at the window level (not just in the page's
+    // own CSS) — WebView2 can show its own default white background before/
+    // around the page content if the window's actual rendered size doesn't
+    // exactly match what the CSS expects, and the 20-color, 4-row grid this
+    // window now shows is taller than the original 6-color version this size
+    // was set for. Setting this removes any chance of white showing through
+    // regardless of that timing/sizing, and the taller inner_size below
+    // gives the 4-row grid proper room instead of being right at the edge.
+    .background_color(tauri::webview::Color(0x1a, 0x1a, 0x2e, 255))
+    .inner_size(280.0, 420.0)
     .center()
     .decorations(true)
     .resizable(false)
@@ -1020,7 +1087,8 @@ async fn open_widget_color_window(app: tauri::AppHandle) -> Result<(), String> {
         tauri::WebviewUrl::App("group-color.html?mode=widget".into()),
     )
     .title("Widget Color")
-    .inner_size(280.0, 330.0)
+    .background_color(tauri::webview::Color(0x1a, 0x1a, 0x2e, 255))
+    .inner_size(280.0, 420.0)
     .center()
     .decorations(true)
     .resizable(false)
@@ -1426,7 +1494,21 @@ pub fn run() {
                 let cfg = state.0.lock().unwrap();
                 if let Some(widget) = app.get_webview_window("widget") {
                     if let (Some(x), Some(y)) = (cfg.widget_x, cfg.widget_y) {
-                        let _ = widget.set_position(tauri::PhysicalPosition::new(x, y));
+                        // Only restore the saved position if it falls within a
+                        // currently-connected monitor. If the monitor it was on
+                        // has since been disconnected the coordinates are off-
+                        // screen, so skip the restore and let the OS place the
+                        // widget on the primary display instead.
+                        let monitors = app.available_monitors().unwrap_or_default();
+                        let visible = monitors.is_empty() || monitors.iter().any(|m| {
+                            let p = m.position();
+                            let s = m.size();
+                            x >= p.x && x < p.x + s.width as i32
+                                && y >= p.y && y < p.y + s.height as i32
+                        });
+                        if visible {
+                            let _ = widget.set_position(tauri::PhysicalPosition::new(x, y));
+                        }
                     }
                     // No more sticky "always on top" on startup — Bring to
                     // Front / Send to Back is now a one-time z-order push,
@@ -1499,6 +1581,7 @@ pub fn run() {
             check_license_status,
             reorder_items,
             save_widget_position,
+            ensure_widget_on_screen,
             save_widget_color,
             save_group_color,
             open_group_color_window,
@@ -1518,6 +1601,7 @@ pub fn run() {
             get_virtual_desktops,
             get_current_virtual_desktop_guid,
             set_layout_item_desktop,
+            set_layout_window_physics,
             open_config_window,
             resize_widget,
             get_installed_apps,

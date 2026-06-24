@@ -118,12 +118,36 @@ fn poll_for_new_window(
     use std::thread;
     use std::time::Duration;
     for i in 0..polls {
+        // Honour an abort request immediately — don't wait for the full poll budget.
+        if check_abort() { return None; }
         thread::sleep(Duration::from_millis(300));
         let new_hwnds: Vec<usize> = collect_visible_hwnds()
             .into_iter()
             .filter(|h| !before.contains(h))
             .collect();
         if !new_hwnds.is_empty() {
+            // Diagnostic: log every new top-level window seen this poll, not just
+            // whichever one we end up selecting below — to check whether an app
+            // (e.g. Brave) creates more than one new window during startup, and
+            // which virtual desktop each one actually lands on. Temporary, for
+            // tracking down the Brave-lands-on-wrong-desktop issue.
+            #[cfg(target_os = "windows")]
+            for &h in &new_hwnds {
+                let exe = get_hwnd_exe(h).unwrap_or_else(|| "?".to_string());
+                let vd = crate::virtual_desktop::get_window_virtual_desktop(h as *mut _)
+                    .map(|g| {
+                        crate::virtual_desktop::get_virtual_desktops()
+                            .iter()
+                            .position(|d| d.guid == g)
+                            .map(|i| format!("Desktop{}", i + 1))
+                            .unwrap_or_else(|| "unknown-desktop".to_string())
+                    })
+                    .unwrap_or_else(|| "?".to_string());
+                crate::debug_log::write_debug_log(&format!(
+                    "LAUNCH poll={} new HWND 0x{:X} exe={} pid={} on {}",
+                    i, h, exe, get_hwnd_pid(h), vd
+                ));
+            }
             // Tier 1: PID
             if let Some(pid) = preferred_pid {
                 if let Some(&h) = new_hwnds.iter().find(|&&h| get_hwnd_pid(h) == pid) {
@@ -185,10 +209,13 @@ fn poll_for_new_window(
 }
 
 // Positions the window immediately and re-applies after short delays to handle apps
-// that reset their own position after initialization.
-// Desktop targeting is handled upstream (switch-before-launch in launch_group).
+// that reset their own position after initialization. Desktop targeting is mostly
+// handled upstream (switch-before-launch in launch_group), but some apps (Brave,
+// confirmed via debug log) place their window on whatever desktop they personally
+// remember regardless of which one is actually active -- ensure_correct_desktop
+// below corrects that explicitly rather than relying solely on switch-before-launch.
 #[cfg(target_os = "windows")]
-fn apply_window_placement(found: usize, x: i32, y: i32, w: Option<u32>, h: Option<u32>) {
+fn apply_window_placement(found: usize, x: i32, y: i32, w: Option<u32>, h: Option<u32>, virtual_desktop: Option<Vec<u8>>) {
     use std::thread;
     use std::time::Duration;
 
@@ -219,21 +246,65 @@ fn apply_window_placement(found: usize, x: i32, y: i32, w: Option<u32>, h: Optio
     claims().lock().unwrap().insert(target, gen);
 
     place_window(target as *mut _, x, y, w, h);
+    ensure_correct_desktop(target, virtual_desktop.as_deref());
     crate::debug_log::write_debug_log(&format!(
         "LAUNCH window HWND 0x{:X} positioned at ({}, {}) {}x{}",
         target, x, y,
         w.unwrap_or(0), h.unwrap_or(0)
     ));
+    let vd_for_thread = virtual_desktop.clone();
     thread::spawn(move || {
         thread::sleep(Duration::from_millis(1000));
-        if claims().lock().unwrap().get(&target) == Some(&gen) {
+        if !check_abort() && claims().lock().unwrap().get(&target) == Some(&gen) {
             place_window(target as *mut _, x, y, w, h);
+            ensure_correct_desktop(target, vd_for_thread.as_deref());
         }
         thread::sleep(Duration::from_millis(2000));
-        if claims().lock().unwrap().get(&target) == Some(&gen) {
+        if !check_abort() && claims().lock().unwrap().get(&target) == Some(&gen) {
             place_window(target as *mut _, x, y, w, h);
+            ensure_correct_desktop(target, vd_for_thread.as_deref());
         }
     });
+}
+
+// Some apps (observed with Brave specifically — not Chrome or Edge) restore their
+// window directly onto whatever virtual desktop they last remember being on,
+// overriding the one that's actually active at the moment their window is created
+// -- even though switch-before-launch already confirmed the target desktop was
+// active before the process was ever spawned. Debug logging confirmed the window
+// already reports the WRONG desktop the instant it's first detected, before any
+// of our own positioning code has touched it. SetWindowPos can't fix that (it's
+// not a screen-position problem).
+//
+// Two-tier fix: try IVirtualDesktopManager::MoveWindowToDesktop first (cheap,
+// no visible side effects if it works) — but confirmed via debug log that it
+// silently fails here (returns false), matching this project's own documented
+// "fails cross-process" gotcha for that API. Falls back to actually driving
+// the OS shortcut for "move the focused window to the adjacent desktop",
+// which works regardless of which process owns the window since it's a
+// keyboard-level OS feature, not a COM call into that process.
+// Re-checked on every re-apply pass too, in case the app re-asserts its own
+// placement later.
+#[cfg(target_os = "windows")]
+fn ensure_correct_desktop(hwnd: usize, target_guid: Option<&[u8]>) {
+    let Some(target_guid) = target_guid else { return };
+    let Some(current) = crate::virtual_desktop::get_window_virtual_desktop(hwnd as *mut _) else { return };
+    if current.as_slice() == target_guid {
+        return;
+    }
+    let moved = crate::virtual_desktop::move_window_to_virtual_desktop(hwnd as *mut _, target_guid);
+    crate::debug_log::write_debug_log(&format!(
+        "LAUNCH window HWND 0x{:X} was on wrong desktop — move_window_to_virtual_desktop returned {}",
+        hwnd, moved
+    ));
+    if moved {
+        return;
+    }
+    let moved_via_keyboard = crate::virtual_desktop::move_window_with_keyboard(hwnd as *mut _, &current, target_guid);
+    crate::debug_log::write_debug_log(&format!(
+        "LAUNCH window HWND 0x{:X} move_window_with_keyboard returned {}",
+        hwnd, moved_via_keyboard
+    ));
 }
 
 // Phase 1 runs synchronously on the caller's thread, blocking until the window appears.
@@ -253,8 +324,6 @@ fn position_window_by_snapshot(
 ) {
     use std::thread;
 
-    let _ = virtual_desktop; // desktop targeting now handled by switch-before-launch in launch_group
-
     // --- Phase 1: synchronous — wait for launch confirmation ---
     // Items with no PID/exe hint (File/Folder/Script-open) rely on tier-3 any-new,
     // which fires at poll ≥ 2 (600ms). If nothing appears by poll 10 (3s) the file
@@ -262,7 +331,7 @@ fn position_window_by_snapshot(
     // Items with a hint (App/Script-run) keep 50 polls (15s) for slow cold-start apps.
     let phase1_polls = if preferred_pid.is_none() && preferred_exe.is_none() { 10 } else { 50 };
     if let Some(found) = poll_for_new_window(&before, preferred_pid, preferred_exe.as_deref(), fg_before, phase1_polls) {
-        apply_window_placement(found, x, y, w, h);
+        apply_window_placement(found, x, y, w, h, virtual_desktop);
         return;
     }
 
@@ -276,7 +345,7 @@ fn position_window_by_snapshot(
     }
     thread::spawn(move || {
         if let Some(found) = poll_for_new_window(&before, preferred_pid, preferred_exe.as_deref(), fg_before, 15) {
-            apply_window_placement(found, x, y, w, h);
+            apply_window_placement(found, x, y, w, h, virtual_desktop);
         }
     });
 }
@@ -887,17 +956,28 @@ fn launch_group_inner(group_id: &str, config: &AppConfig, app: Option<tauri::App
         }
     }
 
-    // Restore original desktop before batching remaining URLs.
-    #[cfg(target_os = "windows")]
-    if let Some(ref orig) = original_desktop {
-        if orig.as_slice() != current_desktop.as_slice() {
-            crate::virtual_desktop::switch_virtual_desktop(&current_desktop, orig);
-        }
-    }
-
     // Batch remaining URL items (no position, no target desktop) for multi-tab launch.
     let (browser_urls, fallback_urls) =
         collect_browser_urls(&group.items, config.preferred_browser.as_deref());
+
+    // Restore original desktop -- but only if something is actually about to
+    // launch there (the untargeted URL batch below). Previously this ran
+    // unconditionally after every batch, including when it was the LAST step
+    // with nothing left to launch anywhere. That needless switch-away raced
+    // against Windows still finishing the prior item's own desktop
+    // assignment -- harmless for a fast-starting browser whose window
+    // commits to its desktop before the switch fires, but a slower-starting
+    // one (extensions/Shields init, etc.) could lose that race and end up
+    // pulled back to the original desktop along with the switch. Skipping
+    // this entirely when there's nothing left removes the race altogether.
+    #[cfg(target_os = "windows")]
+    if !browser_urls.is_empty() || !fallback_urls.is_empty() {
+        if let Some(ref orig) = original_desktop {
+            if orig.as_slice() != current_desktop.as_slice() {
+                crate::virtual_desktop::switch_virtual_desktop(&current_desktop, orig);
+            }
+        }
+    }
 
     if !browser_urls.is_empty() || !fallback_urls.is_empty() {
         let url_count = browser_urls.values().map(|v| v.len()).sum::<usize>() + fallback_urls.len();

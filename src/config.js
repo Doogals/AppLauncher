@@ -702,19 +702,13 @@ async function showLayoutEditor() {
   const layoutLabels = Array.from({ length: total }, (_, i) => `layout-item-${i}`);
   const closeAll = () => invoke('close_layout_windows', { labels: layoutLabels });
 
-  // Use window.screen for logical pixel coordinates (DPI-safe)
+  // Use window.screen for the default (no saved position) fallback
   const centerX = Math.floor(window.screen.width / 2) - 400;
   const centerY = Math.floor(window.screen.height / 2) - 300;
 
   for (let idx = 0; idx < total; idx++) {
     const item = currentItems[idx];
-    const dpr = window.devicePixelRatio || 1;
     const hasPos = item.launch_x != null && item.launch_y != null;
-    // Saved positions are physical pixels (from GetWindowRect); WebviewWindow needs logical pixels
-    const x = hasPos ? Math.round(item.launch_x / dpr) : centerX + idx * 30;
-    const y = hasPos ? Math.round(item.launch_y / dpr) : centerY + idx * 30;
-    const w = Math.max(hasPos && item.launch_width ? Math.round(item.launch_width / dpr) : 800, 300);
-    const h = Math.max(hasPos && item.launch_height ? Math.round(item.launch_height / dpr) : 600, 200);
 
     const rawName = item.item_type === 'steam'
       ? (item.path || 'Steam Game')
@@ -727,17 +721,41 @@ async function showLayoutEditor() {
       ? '&vd=' + encodeURIComponent(JSON.stringify(item.launch_virtual_desktop))
       : '';
     const label = `layout-item-${idx}`;
-    new WebviewWindow(label, {
+
+    // Create the window via JS (WebviewWindow initialises WebView2 correctly).
+    // For items with a saved position we apply physical pixel coords via a Rust
+    // command once the window signals it's ready — this avoids the per-monitor
+    // DPR ambiguity of dividing by window.devicePixelRatio (which is the DPR
+    // of the config window's monitor, not the item's monitor).
+    const dpr = window.devicePixelRatio || 1;
+    const fallbackX = centerX + idx * 30;
+    const fallbackY = centerY + idx * 30;
+    const win = new WebviewWindow(label, {
       url: `layout-item.html?idx=${idx}&name=${safeName}&total=${total}${vdParam}`,
       title: rawName,
-      x, y,
-      width: w,
-      height: h,
+      x: hasPos ? Math.round(item.launch_x / dpr) : fallbackX,
+      y: hasPos ? Math.round(item.launch_y / dpr) : fallbackY,
+      width: hasPos && item.launch_width ? Math.round(item.launch_width / dpr) : 800,
+      height: hasPos && item.launch_height ? Math.round(item.launch_height / dpr) : 600,
       resizable: true,
       decorations: true,
       alwaysOnTop: true,
     });
 
+    if (hasPos) {
+      // Override with exact physical position once the window is created.
+      // 'tauri://created' fires after WebView2 is fully initialised so
+      // set_position / set_size are guaranteed to succeed.
+      win.once('tauri://created', () => {
+        invoke('set_layout_window_physics', {
+          label,
+          x: item.launch_x,
+          y: item.launch_y,
+          width: item.launch_width || 800,
+          height: item.launch_height || 600,
+        }).catch(() => {});
+      });
+    }
   }
 
   activeLayoutLabels = layoutLabels;
