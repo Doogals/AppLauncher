@@ -1365,11 +1365,84 @@ fn force_foreground(_window: &tauri::WebviewWindow) {}
 // "Send to Back" / "Bring to Front" moved to the widget's right-click menu
 // (see show_widget_context_menu) — nobody was finding it in the tray.
 fn build_tray_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::Wry>, String> {
-    use tauri::menu::{Menu, MenuItem};
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+    let bring_to_view = MenuItem::with_id(app, "bring_to_view", "Bring to View", true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    let sep = PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)
         .map_err(|e| e.to_string())?;
-    Menu::with_items(app, &[&quit]).map_err(|e| e.to_string())
+    Menu::with_items(app, &[&bring_to_view, &sep, &quit]).map_err(|e| e.to_string())
 }
+
+/// Moves the widget to the center of whichever monitor the cursor is currently on,
+/// pulls it onto the active virtual desktop, and brings it to the foreground.
+/// Safe to call from any thread.
+#[cfg(target_os = "windows")]
+fn bring_widget_to_view(app: &tauri::AppHandle) {
+    let Some(widget) = app.get_webview_window("widget") else { return };
+
+    #[repr(C)] struct POINT { x: i32, y: i32 }
+    #[repr(C)] struct RECT  { left: i32, top: i32, right: i32, bottom: i32 }
+    #[repr(C)] struct MONITORINFO {
+        cb_size:    u32,
+        rc_monitor: RECT,
+        rc_work:    RECT,
+        dw_flags:   u32,
+    }
+    extern "system" {
+        fn GetCursorPos(point: *mut POINT) -> i32;
+        fn MonitorFromPoint(pt: POINT, dw_flags: u32) -> *mut std::ffi::c_void;
+        fn GetMonitorInfoW(hmonitor: *mut std::ffi::c_void, lpmi: *mut MONITORINFO) -> i32;
+        fn SetForegroundWindow(hwnd: *mut std::ffi::c_void) -> i32;
+    }
+    const MONITOR_DEFAULTTONEAREST: u32 = 2;
+
+    let (work_left, work_top, work_right, work_bottom) = unsafe {
+        let mut cursor = POINT { x: 0, y: 0 };
+        GetCursorPos(&mut cursor);
+        let hmonitor = MonitorFromPoint(POINT { x: cursor.x, y: cursor.y }, MONITOR_DEFAULTTONEAREST);
+        let mut info = MONITORINFO {
+            cb_size:    std::mem::size_of::<MONITORINFO>() as u32,
+            rc_monitor: RECT { left: 0, top: 0, right: 1920, bottom: 1080 },
+            rc_work:    RECT { left: 0, top: 0, right: 1920, bottom: 1040 },
+            dw_flags:   0,
+        };
+        GetMonitorInfoW(hmonitor, &mut info);
+        (info.rc_work.left, info.rc_work.top, info.rc_work.right, info.rc_work.bottom)
+    };
+
+    // Center the widget in the monitor's work area (excludes taskbar).
+    let widget_size = widget.outer_size().unwrap_or(tauri::PhysicalSize::new(400, 80));
+    let new_x = work_left + (work_right  - work_left - widget_size.width  as i32) / 2;
+    let new_y = work_top  + (work_bottom - work_top  - widget_size.height as i32) / 2;
+    let _ = widget.set_position(tauri::PhysicalPosition::new(new_x, new_y));
+
+    // Pull the widget onto the currently active virtual desktop.
+    // MoveWindowToDesktop works for in-process windows (unlike cross-process).
+    if let Some(current_vd) = crate::virtual_desktop::get_current_virtual_desktop_guid() {
+        if let Ok(hwnd) = widget.hwnd() {
+            crate::virtual_desktop::move_window_to_virtual_desktop(hwnd.0 as *mut _, &current_vd);
+        }
+    }
+
+    // Make it visible and pull it to the foreground.
+    let _ = widget.show();
+    let _ = widget.set_focus();
+    if let Ok(hwnd) = widget.hwnd() {
+        unsafe { SetForegroundWindow(hwnd.0 as *mut _); }
+    }
+
+    // Persist the new position so next launch also starts here.
+    let state = app.state::<AppState>();
+    let mut config = state.0.lock().unwrap().clone();
+    config.widget_x = Some(new_x);
+    config.widget_y = Some(new_y);
+    let _ = config::save_config(&config);
+    *state.0.lock().unwrap() = config;
+}
+
+#[cfg(not(target_os = "windows"))]
+fn bring_widget_to_view(_app: &tauri::AppHandle) {}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -1403,6 +1476,11 @@ pub fn run() {
                             }
                         }
                     }
+                } else if id == "bring_to_view" {
+                    let app2 = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        bring_widget_to_view(&app2);
+                    });
                 } else if let Some(group_id) = id.strip_prefix("ctx-edit:") {
                     if let Some(window) = app.get_webview_window("widget") {
                         let _ = window.emit("context-menu:edit", group_id);

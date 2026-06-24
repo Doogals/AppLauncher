@@ -156,6 +156,21 @@ const groupId = params.get('id');
 let currentItems = [];
 let existingGroup = null;
 let activeLayoutLabels = null; // set while layout editor is open
+
+// Removes item at idx from currentItems, closes its layout editor window if
+// the layout editor is open, and keeps activeLayoutLabels in sync so the
+// remaining label→item mapping stays correct for save/cancel.
+function removeItemAt(idx) {
+  if (activeLayoutLabels) {
+    const label = activeLayoutLabels[idx];
+    if (label) {
+      invoke('close_layout_windows', { labels: [label] }).catch(() => {});
+      activeLayoutLabels.splice(idx, 1);
+    }
+  }
+  currentItems.splice(idx, 1);
+  renderItems();
+}
 // Paths created/imported via "Edit Command Line" during this editing
 // session. If the window closes without saving, these are the only command
 // files cleaned up — anything that already existed before this session
@@ -1175,7 +1190,7 @@ function renderItems() {
         currentItems.splice(idx + 1, 0, clone);
         renderItems();
       };
-      row.querySelector('.remove-btn').onclick = () => { currentItems.splice(idx, 1); renderItems(); };
+      row.querySelector('.remove-btn').onclick = () => removeItemAt(idx);
 
     } else if (item.item_type === 'steam') {
       const gameName = item.path || 'Unknown Game';
@@ -1194,7 +1209,7 @@ function renderItems() {
         currentItems.splice(idx + 1, 0, clone);
         renderItems();
       };
-      row.querySelector('.remove-btn').onclick = () => { currentItems.splice(idx, 1); renderItems(); };
+      row.querySelector('.remove-btn').onclick = () => removeItemAt(idx);
 
     } else {
       // Prefer a curated display_name (set when adding via Windows Apps,
@@ -1228,7 +1243,7 @@ function renderItems() {
         currentItems.splice(idx + 1, 0, clone);
         renderItems();
       };
-      row.querySelector('.remove-btn').onclick = () => { currentItems.splice(idx, 1); renderItems(); };
+      row.querySelector('.remove-btn').onclick = () => removeItemAt(idx);
     }
 
     row.setAttribute('draggable', 'true');
@@ -1391,7 +1406,7 @@ document.getElementById('save-btn').onclick = async () => {
   const icon = document.getElementById('icon-input').value.trim() || '📁';
   if (!name) { alert('Please enter a group name.'); return; }
 
-  if (activeLayoutLabels) {
+  if (activeLayoutLabels && activeLayoutLabels.length > 0) {
     const shouldSave = await confirmLayoutPrompt();
     await resolveLayoutSession(shouldSave);
   }

@@ -15,7 +15,7 @@
 #>
 
 param(
-    [string]$Version = "0.5.1",
+    [string]$Version = "0.5.2",
     [string]$KeyPath = "$HOME\.tauri\applauncher.key",
     [string]$WebsiteRepo = "C:\Users\dougb\Desktop\tonic-tech-site",
     [string]$GitHubRepo = "Doogals/AppLauncher"
@@ -126,11 +126,9 @@ $releaseAsset = Join-Path $RepoRoot $finalMsiName
 Copy-Item $signTarget $releaseAsset -Force
 
 $notes = @"
-- New: attach a command line to Command Prompt/PowerShell items via "Edit Command Line" - create one in Notepad or link an existing script, runs automatically on launch
-- New: duplicate button for items
-- Fix: Microsoft Edge missing from suggested apps; "cmd" search now finds Command Prompt
-- Fix: maximized browser windows now respect saved position/size
-- Fix: assorted UI polish and orphaned-file cleanup
+- New: "Bring to View" in system tray right-click menu — instantly moves the widget to the center of your active monitor, regardless of which virtual desktop or screen it was on
+- Fix: deleting all items in a group no longer prompts to save layout positions (nothing left to save)
+- Fix: layout editor window now closes automatically when its item is deleted
 "@
 
 # --notes-file instead of --notes $notes -- same reasoning as the commit
