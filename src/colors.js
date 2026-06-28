@@ -6,20 +6,19 @@
 // adds the SAME 14 new hues to both, each rendered at that context's own
 // existing opacity. The original 6 in each file are left untouched.
 export const EXTRA_COLOR_HUES = [
-  { label: 'Crimson',  rgb: [55, 10, 18] },
-  { label: 'Teal',     rgb: [10, 45, 45] },
-  { label: 'Plum',     rgb: [45, 12, 40] },
-  { label: 'Olive',    rgb: [42, 42, 12] },
-  { label: 'Indigo',   rgb: [25, 15, 55] },
-  { label: 'Maroon',   rgb: [40, 12, 18] },
-  { label: 'Emerald',  rgb: [8, 48, 35] },
-  { label: 'Amber',    rgb: [55, 35, 5] },
-  { label: 'Sapphire', rgb: [10, 22, 55] },
-  { label: 'Mauve',    rgb: [42, 24, 34] },
-  { label: 'Bronze',   rgb: [45, 30, 12] },
-  { label: 'Ocean',    rgb: [8, 35, 42] },
-  { label: 'Wine',     rgb: [35, 8, 20] },
-  { label: 'Sage',     rgb: [28, 35, 26] },
+  { label: 'Crimson',  rgb: [155, 25, 40]  },
+  { label: 'Teal',     rgb: [15, 120, 118] },
+  { label: 'Plum',     rgb: [112, 28, 102] },
+  { label: 'Olive',    rgb: [98, 102, 18]  },
+  { label: 'Indigo',   rgb: [58, 35, 148]  },
+  { label: 'Maroon',   rgb: [118, 18, 35]  },
+  { label: 'Emerald',  rgb: [12, 135, 75]  },
+  { label: 'Amber',    rgb: [190, 100, 8]  },
+  { label: 'Sapphire', rgb: [18, 58, 158]  },
+  { label: 'Mauve',    rgb: [138, 68, 112] },
+  { label: 'Bronze',   rgb: [148, 92, 28]  },
+  { label: 'Ocean',    rgb: [12, 90, 128]  },
+  { label: 'Wine',     rgb: [108, 18, 48]  },
 ];
 
 export function withAlpha(hues, alpha) {

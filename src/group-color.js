@@ -13,21 +13,23 @@ const groupId = params.get('id');
 // smaller accents at lower opacity) — only the 14 extra hues are shared.
 const THEME_COLORS = mode === 'widget'
   ? [
-      { label: 'Default',  value: 'rgba(22,33,62,0.95)' },
-      { label: 'Charcoal', value: 'rgba(30,30,30,0.95)' },
-      { label: 'Forest',   value: 'rgba(15,40,25,0.95)' },
-      { label: 'Midnight', value: 'rgba(20,10,40,0.95)' },
-      { label: 'Rust',     value: 'rgba(60,25,10,0.95)' },
-      { label: 'Steel',    value: 'rgba(20,30,45,0.95)' },
+      { label: 'Translucent', value: 'rgba(15,20,40,0.25)'   },
+      { label: 'Default',     value: 'rgba(22,33,62,0.95)'   },
+      { label: 'Charcoal',    value: 'rgba(52,52,58,0.95)'   },
+      { label: 'Forest',      value: 'rgba(18,82,45,0.95)'   },
+      { label: 'Midnight',    value: 'rgba(30,15,80,0.95)'   },
+      { label: 'Rust',        value: 'rgba(138,45,15,0.95)'  },
+      { label: 'Steel',       value: 'rgba(28,60,98,0.95)'   },
       ...withAlpha(EXTRA_COLOR_HUES, 0.95),
     ]
   : [
-      { label: 'Default',  value: 'rgba(15,52,96,0.6)' },
-      { label: 'Charcoal', value: 'rgba(30,30,30,0.85)' },
-      { label: 'Forest',   value: 'rgba(15,40,25,0.85)' },
-      { label: 'Midnight', value: 'rgba(20,10,40,0.85)' },
-      { label: 'Rust',     value: 'rgba(60,25,10,0.85)' },
-      { label: 'Steel',    value: 'rgba(20,30,45,0.85)' },
+      { label: 'Translucent', value: 'rgba(15,20,40,0.25)'   },
+      { label: 'Default',     value: 'rgba(15,52,96,0.6)'    },
+      { label: 'Charcoal',    value: 'rgba(52,52,58,0.85)'   },
+      { label: 'Forest',      value: 'rgba(18,82,45,0.85)'   },
+      { label: 'Midnight',    value: 'rgba(30,15,80,0.85)'   },
+      { label: 'Rust',        value: 'rgba(138,45,15,0.85)'  },
+      { label: 'Steel',       value: 'rgba(28,60,98,0.85)'   },
       ...withAlpha(EXTRA_COLOR_HUES, 0.85),
     ];
 

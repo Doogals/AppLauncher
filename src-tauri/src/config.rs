@@ -81,6 +81,16 @@ pub struct Group {
     /// group's right-click "Change Color" menu. None = default styling.
     #[serde(default)]
     pub color: Option<String>,
+    /// Whether this group is currently floating as its own detached window
+    /// instead of appearing inside the widget bar.
+    #[serde(default)]
+    pub detached: bool,
+    /// Last known physical-pixel X position of the detached window.
+    #[serde(default)]
+    pub detached_x: Option<i32>,
+    /// Last known physical-pixel Y position of the detached window.
+    #[serde(default)]
+    pub detached_y: Option<i32>,
 }
 
 impl Group {
@@ -92,6 +102,9 @@ impl Group {
             icon: icon.to_string(),
             items: vec![],
             color: None,
+            detached: false,
+            detached_x: None,
+            detached_y: None,
         }
     }
 }

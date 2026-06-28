@@ -77,7 +77,7 @@ fn save_group(group: Group, state: State<AppState>, app: tauri::AppHandle) -> Re
     } else {
         if config.groups.len() >= limit {
             return Err(format!(
-                "Free tier limited to {} groups. Upgrade to add more.",
+                "Free tier limited to {} group. Upgrade to add more.",
                 limit
             ));
         }
@@ -90,15 +90,21 @@ fn save_group(group: Group, state: State<AppState>, app: tauri::AppHandle) -> Re
 
 #[tauri::command]
 fn delete_group(group_id: String, state: State<AppState>, app: tauri::AppHandle) -> Result<(), String> {
-    let mut config = state.0.lock().unwrap();
-    if let Some(group) = config.groups.iter().find(|g| g.id == group_id) {
-        let paths: Vec<Option<String>> = group.items.iter()
-            .map(|i| i.command_file_path.clone())
-            .collect();
-        cleanup_orphaned_command_files(&paths, &std::collections::HashSet::new());
+    {
+        let mut config = state.0.lock().unwrap();
+        if let Some(group) = config.groups.iter().find(|g| g.id == group_id) {
+            let paths: Vec<Option<String>> = group.items.iter()
+                .map(|i| i.command_file_path.clone())
+                .collect();
+            cleanup_orphaned_command_files(&paths, &std::collections::HashSet::new());
+        }
+        config.groups.retain(|g| g.id != group_id);
+        config::save_config(&config)?;
     }
-    config.groups.retain(|g| g.id != group_id);
-    config::save_config(&config)?;
+    // Close the detached window for this group if one is open.
+    if let Some(win) = app.get_webview_window(&detached_group_label(&group_id)) {
+        let _ = win.destroy();
+    }
     let _ = app.emit("groups-updated", ());
     Ok(())
 }
@@ -986,19 +992,164 @@ fn resize_widget(width: u32, height: u32, app: tauri::AppHandle) -> Result<(), S
     Ok(())
 }
 
+/// Returns the stable window label for a detached group.
+fn detached_group_label(group_id: &str) -> String {
+    format!("detached-{}", group_id)
+}
+
+/// Opens the floating pill window for a detached group. No-op if already open.
+async fn open_detached_group_window(app: &tauri::AppHandle, group: &config::Group) {
+    let label = detached_group_label(&group.id);
+    if app.get_webview_window(&label).is_some() { return; }
+    let url = format!("detached-group.html?id={}", group.id);
+    let result = tauri::WebviewWindowBuilder::new(
+        app,
+        &label,
+        tauri::WebviewUrl::App(url.into()),
+    )
+    .title(&group.name)
+    .inner_size(120.0, 80.0)
+    .decorations(false)
+    .transparent(true)
+    .resizable(false)
+    .always_on_top(false)
+    .skip_taskbar(true)
+    .visible(false)
+    .build();
+    if let Ok(win) = result {
+        if let (Some(px), Some(py)) = (group.detached_x, group.detached_y) {
+            let _ = win.set_position(tauri::PhysicalPosition::new(px, py));
+        } else {
+            let _ = win.center();
+        }
+        let _ = win.show();
+    }
+}
+
+/// Shared logic for detaching a group (used by command + menu event handler).
+async fn detach_group_impl(app: &tauri::AppHandle, group_id: &str) -> Result<(), String> {
+    let group = {
+        let state = app.state::<AppState>();
+        let mut config = state.0.lock().unwrap().clone();
+        let mut found = None;
+        for g in config.groups.iter_mut() {
+            if g.id == group_id {
+                g.detached = true;
+                found = Some(g.clone());
+                break;
+            }
+        }
+        config::save_config(&config)?;
+        *state.0.lock().unwrap() = config;
+        found
+    };
+    if let Some(group) = group {
+        open_detached_group_window(app, &group).await;
+    }
+    let _ = app.emit("groups-updated", ());
+    Ok(())
+}
+
+/// Shared logic for attaching a group back into the widget.
+async fn attach_group_impl(app: &tauri::AppHandle, group_id: &str) -> Result<(), String> {
+    {
+        let state = app.state::<AppState>();
+        let mut config = state.0.lock().unwrap().clone();
+        for g in config.groups.iter_mut() {
+            if g.id == group_id { g.detached = false; break; }
+        }
+        config::save_config(&config)?;
+        *state.0.lock().unwrap() = config;
+    }
+    if let Some(win) = app.get_webview_window(&detached_group_label(group_id)) {
+        let _ = win.destroy();
+    }
+    let _ = app.emit("groups-updated", ());
+    Ok(())
+}
+
 #[tauri::command]
-fn show_group_context_menu(group_id: String, app: tauri::AppHandle) -> Result<(), String> {
+async fn detach_group(group_id: String, app: tauri::AppHandle) -> Result<(), String> {
+    detach_group_impl(&app, &group_id).await
+}
+
+#[tauri::command]
+async fn attach_group(group_id: String, app: tauri::AppHandle) -> Result<(), String> {
+    attach_group_impl(&app, &group_id).await
+}
+
+#[tauri::command]
+fn save_detached_position(group_id: String, x: i32, y: i32, app: tauri::AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let mut config = state.0.lock().unwrap().clone();
+    for g in config.groups.iter_mut() {
+        if g.id == group_id {
+            g.detached_x = Some(x);
+            g.detached_y = Some(y);
+            break;
+        }
+    }
+    config::save_config(&config)?;
+    *state.0.lock().unwrap() = config;
+    Ok(())
+}
+
+#[tauri::command]
+fn resize_detached_group(group_id: String, width: u32, height: u32, app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window(&detached_group_label(&group_id)) {
+        win.set_size(tauri::LogicalSize::new(width as f64, height as f64))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Right-click context menu popped from the detached group's own window.
+#[tauri::command]
+fn show_detached_group_context_menu(group_id: String, app: tauri::AppHandle) -> Result<(), String> {
+    let label = detached_group_label(&group_id);
     let handle = app.clone();
     app.run_on_main_thread(move || {
-        use tauri::menu::{Menu, MenuItem};
+        use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
         let _ = (|| -> Result<(), String> {
+            let attach = MenuItem::with_id(&handle, format!("ctx-attach:{}", group_id), "Attach to Widget", true, None::<&str>)
+                .map_err(|e| e.to_string())?;
+            let sep = PredefinedMenuItem::separator(&handle).map_err(|e| e.to_string())?;
             let edit = MenuItem::with_id(&handle, format!("ctx-edit:{}", group_id), "Edit Group", true, None::<&str>)
                 .map_err(|e| e.to_string())?;
             let color = MenuItem::with_id(&handle, format!("ctx-color:{}", group_id), "🎨  Change Color", true, None::<&str>)
                 .map_err(|e| e.to_string())?;
             let delete = MenuItem::with_id(&handle, format!("ctx-delete:{}", group_id), "Delete Group", true, None::<&str>)
                 .map_err(|e| e.to_string())?;
-            let menu = Menu::with_items(&handle, &[&edit, &color, &delete]).map_err(|e| e.to_string())?;
+            let menu = Menu::with_items(&handle, &[&attach, &sep, &edit, &color, &delete])
+                .map_err(|e| e.to_string())?;
+            if let Some(win) = handle.get_webview_window(&label) {
+                win.popup_menu(&menu).map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        })();
+    }).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn show_group_context_menu(group_id: String, app: tauri::AppHandle) -> Result<(), String> {
+    let is_detached = {
+        let state = app.state::<AppState>();
+        let config = state.0.lock().unwrap();
+        config.groups.iter().find(|g| g.id == group_id).map(|g| g.detached).unwrap_or(false)
+    };
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+        let _ = (|| -> Result<(), String> {
+            let detach_label = if is_detached { "📌  Attach to Widget" } else { "📌  Detach from Widget" };
+            let detach_id   = if is_detached { format!("ctx-attach:{}", group_id) } else { format!("ctx-detach:{}", group_id) };
+            let edit   = MenuItem::with_id(&handle, format!("ctx-edit:{}", group_id),   "✏️  Edit Group",    true, None::<&str>).map_err(|e| e.to_string())?;
+            let color  = MenuItem::with_id(&handle, format!("ctx-color:{}", group_id),  "🎨  Change Color",  true, None::<&str>).map_err(|e| e.to_string())?;
+            let detach = MenuItem::with_id(&handle, detach_id,                           detach_label,        true, None::<&str>).map_err(|e| e.to_string())?;
+            let sep    = PredefinedMenuItem::separator(&handle).map_err(|e| e.to_string())?;
+            let delete = MenuItem::with_id(&handle, format!("ctx-delete:{}", group_id), "🗑️  Delete Group",  true, None::<&str>).map_err(|e| e.to_string())?;
+            let menu = Menu::with_items(&handle, &[&edit, &color, &detach, &sep, &delete])
+                .map_err(|e| e.to_string())?;
             if let Some(window) = handle.get_webview_window("widget") {
                 force_foreground(&window);
                 window.popup_menu(&menu).map_err(|e| e.to_string())?;
@@ -1481,10 +1632,27 @@ pub fn run() {
                     tauri::async_runtime::spawn(async move {
                         bring_widget_to_view(&app2);
                     });
+                } else if let Some(group_id) = id.strip_prefix("ctx-detach:") {
+                    let app2 = app.clone();
+                    let group_id = group_id.to_string();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = detach_group_impl(&app2, &group_id).await;
+                    });
+                } else if let Some(group_id) = id.strip_prefix("ctx-attach:") {
+                    let app2 = app.clone();
+                    let group_id = group_id.to_string();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = attach_group_impl(&app2, &group_id).await;
+                    });
                 } else if let Some(group_id) = id.strip_prefix("ctx-edit:") {
-                    if let Some(window) = app.get_webview_window("widget") {
-                        let _ = window.emit("context-menu:edit", group_id);
-                    }
+                    // Edit can be triggered from the widget OR a detached window.
+                    // Route through open_config_window_inner directly so it works
+                    // even if the widget itself is hidden.
+                    let app2 = app.clone();
+                    let group_id = group_id.to_string();
+                    tauri::async_runtime::spawn(async move {
+                        open_config_window_inner(app2, Some(group_id));
+                    });
                 } else if let Some(group_id) = id.strip_prefix("ctx-color:") {
                     let app2 = app.clone();
                     let group_id = group_id.to_string();
@@ -1594,6 +1762,21 @@ pub fn run() {
                 }
             }
 
+            // Reopen any groups that were detached when the app last closed.
+            {
+                let detached_groups: Vec<config::Group> = {
+                    let state = app.state::<AppState>();
+                    let cfg = state.0.lock().unwrap();
+                    cfg.groups.iter().filter(|g| g.detached).cloned().collect()
+                };
+                for group in detached_groups {
+                    let app2 = app.handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        open_detached_group_window(&app2, &group).await;
+                    });
+                }
+            }
+
             // Register auto-start only in release builds, only if user has it enabled
             #[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), not(debug_assertions)))]
             {
@@ -1685,6 +1868,11 @@ pub fn run() {
             get_installed_apps,
             get_suggested_apps,
             show_group_context_menu,
+            show_detached_group_context_menu,
+            detach_group,
+            attach_group,
+            save_detached_position,
+            resize_detached_group,
             get_installed_browsers,
             get_browser_bookmarks,
             get_file_icon,

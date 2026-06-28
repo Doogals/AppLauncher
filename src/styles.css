@@ -61,18 +61,19 @@ html, body {
 }
 .app-wordmark.hidden { display: none; }
 
-/* Reserves clear space for the close button at the far right of the bar —
-   always present so the rightmost group/add button never crowds the X,
-   regardless of whether the wordmark is showing (low profile mode). */
+/* Reserves clear space for the close button at the far right of the bar.
+   In low-profile mode (wordmark hidden) the spacer ensures the rightmost
+   group/add button doesn't crowd the X. In normal mode the wordmark already
+   fills that area and the X sits above it (position:absolute), so the spacer
+   collapses to 0 to avoid adding extra width past the wordmark. */
 .close-btn-spacer {
   order: 1000;
-  /* Was 0 (relying solely on padding+gap to just barely clear the X button's
-     own footprint, with zero safety margin) — now that buttons render larger
-     and reach closer to the X's corner, that razor-thin clearance was
-     enough to actually overlap. This adds real breathing room back. */
   width: 12px;
   flex-shrink: 0;
   pointer-events: none;
+}
+.app-wordmark:not(.hidden) ~ .close-btn-spacer {
+  width: 0;
 }
 
 /* Close button — top-right corner of the widget, above the wordmark */

@@ -1423,7 +1423,7 @@ document.getElementById('save-btn').onclick = async () => {
     existingGroup = group; // prevent new UUID on double-click
     await closeConfigWindow(true);
   } catch (e) {
-    alert(e);
+    showErrorModal(String(e));
   }
 };
 
@@ -1433,6 +1433,24 @@ document.getElementById('layout-btn').onclick = () => showLayoutEditor();
 
 // Store URL — update after creating your LemonSqueezy product
 const STORE_URL = 'https://tonictechapps.lemonsqueezy.com/checkout/buy/692bf539-a89a-4ff8-9da7-5c93507c21af';
+
+function showErrorModal(msg) {
+  const backdrop = document.getElementById('error-modal-backdrop');
+  const msgEl    = document.getElementById('error-modal-msg');
+  const buyBtn   = document.getElementById('error-modal-buy');
+  const okBtn    = document.getElementById('error-modal-ok');
+
+  msgEl.textContent = msg;
+  const isFreeTier = msg.includes('Free tier');
+  buyBtn.style.display = isFreeTier ? '' : 'none';
+
+  backdrop.classList.add('visible');
+
+  const close = () => backdrop.classList.remove('visible');
+  okBtn.onclick  = close;
+  buyBtn.onclick = () => { invoke('open_url', { url: STORE_URL }).catch(() => {}); close(); };
+  backdrop.onclick = (e) => { if (e.target === backdrop) close(); };
+}
 
 async function renderLicenseSection() {
   const config = await invoke('get_config');

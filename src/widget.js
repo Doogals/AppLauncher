@@ -107,6 +107,7 @@ async function render() {
   });
 
   for (const group of config.groups) {
+    if (group.detached) continue; // floating in its own window — skip here
     const btn = document.createElement('div');
     btn.className = 'group-btn';
     if (group.color) btn.style.setProperty('--group-color', group.color);

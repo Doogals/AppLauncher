@@ -21,6 +21,7 @@ export default defineConfig({
         layoutItem: resolve(__dirname, 'src/layout-item.html'),
         launchOverlay: resolve(__dirname, 'src/launch-overlay.html'),
         groupColor: resolve(__dirname, 'src/group-color.html'),
+        detachedGroup: resolve(__dirname, 'src/detached-group.html'),
       },
     },
   },

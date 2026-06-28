@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="styles.css" />
+  <title>TakeOff</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: transparent;
+      overflow: hidden;
+      width: 100%;
+      height: 100%;
+    }
+    /* The floating pill is just the group button — no widget background or
+       border should show. Tiny padding so hover/shadow isn't clipped. */
+    #widget {
+      background: transparent !important;
+      border: none !important;
+      padding: 0 !important;
+    }
+  </style>
+</head>
+<body>
+  <div class="widget" id="widget"></div>
+  <script type="module" src="detached-group.js"></script>
+</body>
+</html>

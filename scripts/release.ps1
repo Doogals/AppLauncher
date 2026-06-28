@@ -15,7 +15,7 @@
 #>
 
 param(
-    [string]$Version = "0.5.2",
+    [string]$Version = "0.5.3",
     [string]$KeyPath = "$HOME\.tauri\applauncher.key",
     [string]$WebsiteRepo = "C:\Users\dougb\Desktop\tonic-tech-site",
     [string]$GitHubRepo = "Doogals/AppLauncher"
@@ -126,9 +126,11 @@ $releaseAsset = Join-Path $RepoRoot $finalMsiName
 Copy-Item $signTarget $releaseAsset -Force
 
 $notes = @"
-- New: "Bring to View" in system tray right-click menu — instantly moves the widget to the center of your active monitor, regardless of which virtual desktop or screen it was on
-- Fix: deleting all items in a group no longer prompts to save layout positions (nothing left to save)
-- Fix: layout editor window now closes automatically when its item is deleted
+- New: Detach groups from the widget — right-click any group and choose Detach to float it as a standalone pill anywhere on your desktop. Reattach the same way.
+- New: Free tier upgrade prompt now includes a direct Buy License button
+- Fix: Detached group window now fits tightly around the pill (no transparent border)
+- Fix: Group right-click menu reordered (Edit first) and all items now have icons
+- Fix: Free tier limit message corrected from 1 groups to 1 group
 "@
 
 # --notes-file instead of --notes $notes -- same reasoning as the commit
