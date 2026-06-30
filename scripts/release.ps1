@@ -15,7 +15,7 @@
 #>
 
 param(
-    [string]$Version = "0.5.3",
+    [string]$Version = "0.5.4",
     [string]$KeyPath = "$HOME\.tauri\applauncher.key",
     [string]$WebsiteRepo = "C:\Users\dougb\Desktop\tonic-tech-site",
     [string]$GitHubRepo = "Doogals/AppLauncher"
@@ -126,11 +126,14 @@ $releaseAsset = Join-Path $RepoRoot $finalMsiName
 Copy-Item $signTarget $releaseAsset -Force
 
 $notes = @"
-- New: Detach groups from the widget — right-click any group and choose Detach to float it as a standalone pill anywhere on your desktop. Reattach the same way.
-- New: Free tier upgrade prompt now includes a direct Buy License button
-- Fix: Detached group window now fits tightly around the pill (no transparent border)
-- Fix: Group right-click menu reordered (Edit first) and all items now have icons
-- Fix: Free tier limit message corrected from 1 groups to 1 group
+- New: Terminal items support multiple tabs — set a tab count and link a separate command to each tab, launched together in Windows Terminal
+- New: Command Prompt, PowerShell, and NoMachine now appear in the suggested apps list
+- New: Suggested apps list loads instantly from cache; background refresh adds new apps and removes uninstalled ones
+- New: Update banner now appears automatically (hourly check) without requiring a restart
+- Fix: Multi-monitor — Edit Group, layout editor, and color picker windows now open on the same monitor as the widget instead of always defaulting to the primary display
+- Fix: Layout editor windows no longer flash on the wrong monitor before snapping to their saved position
+- Fix: Both group context menus (widget and detached) are now identical and always in sync
+- Fix: Scrollbars on the items list and suggested bar are wider and easier to grab
 "@
 
 # --notes-file instead of --notes $notes -- same reasoning as the commit

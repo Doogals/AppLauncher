@@ -1,6 +1,6 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InstalledApp {
     pub name: String,
     pub path: String,
@@ -148,8 +148,11 @@ const CURATED_EXE_NAMES: &[&str] = &[
     "spotify.exe", "vlc.exe", "itunes.exe",
     // Productivity
     "winword.exe", "excel.exe", "powerpnt.exe", "outlook.exe", "onenote.exe", "notion.exe", "evernote.exe",
-    // Dev tools
+    // Dev tools / terminals
     "code.exe", "sublime_text.exe", "notepad++.exe", "githubdesktop.exe", "postman.exe", "docker desktop.exe",
+    "cmd.exe", "powershell.exe",
+    // Remote desktop
+    "nxplayer.exe",
     // Creative
     "photoshop.exe", "illustrator.exe", "premiere pro.exe", "obs64.exe", "figma.exe", "blender.exe",
     // Cloud storage

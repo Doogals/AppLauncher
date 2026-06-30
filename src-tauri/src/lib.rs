@@ -67,10 +67,19 @@ fn save_group(group: Group, state: State<AppState>, app: tauri::AppHandle) -> Re
         // is removed in the UI) means a Remove-then-Cancel never deletes a
         // file that's still referenced by the unchanged saved config.
         let old_paths: Vec<Option<String>> = config.groups[pos].items.iter()
-            .map(|i| i.command_file_path.clone())
+            .flat_map(|i| {
+                let mut v = vec![i.command_file_path.clone()];
+                v.extend(i.extra_tab_scripts.iter().cloned());
+                v
+            })
             .collect();
         let new_paths: std::collections::HashSet<String> = group.items.iter()
-            .filter_map(|i| i.command_file_path.clone())
+            .flat_map(|i| {
+                let mut v: Vec<String> = vec![];
+                if let Some(p) = &i.command_file_path { v.push(p.clone()); }
+                for s in &i.extra_tab_scripts { if let Some(p) = s { v.push(p.clone()); } }
+                v
+            })
             .collect();
         cleanup_orphaned_command_files(&old_paths, &new_paths);
         config.groups[pos] = group;
@@ -94,7 +103,11 @@ fn delete_group(group_id: String, state: State<AppState>, app: tauri::AppHandle)
         let mut config = state.0.lock().unwrap();
         if let Some(group) = config.groups.iter().find(|g| g.id == group_id) {
             let paths: Vec<Option<String>> = group.items.iter()
-                .map(|i| i.command_file_path.clone())
+                .flat_map(|i| {
+                    let mut v = vec![i.command_file_path.clone()];
+                    v.extend(i.extra_tab_scripts.iter().cloned());
+                    v
+                })
                 .collect();
             cleanup_orphaned_command_files(&paths, &std::collections::HashSet::new());
         }
@@ -720,6 +733,13 @@ async fn get_suggested_apps() -> Vec<InstalledApp> {
 }
 
 #[tauri::command]
+fn save_cached_suggestions(suggestions: Vec<InstalledApp>, state: State<AppState>) -> Result<(), String> {
+    let mut config = state.0.lock().unwrap();
+    config.cached_suggestions = suggestions;
+    config::save_config(&config)
+}
+
+#[tauri::command]
 async fn get_installed_apps() -> Vec<InstalledApp> {
     tauri::async_runtime::spawn_blocking(apps::get_installed_apps)
         .await
@@ -966,7 +986,9 @@ pub(crate) fn open_config_window_inner(app: tauri::AppHandle, group_id: Option<S
             None => "config.html".to_string(),
         };
         let title = if group_id.is_some() { "Edit Group" } else { "New Group" };
-        let _ = tauri::WebviewWindowBuilder::new(
+        // Build without .center() so we can position on the widget's monitor
+        // rather than always defaulting to the primary display.
+        if let Ok(win) = tauri::WebviewWindowBuilder::new(
             &app2,
             "config",
             tauri::WebviewUrl::App(url.into()),
@@ -974,11 +996,13 @@ pub(crate) fn open_config_window_inner(app: tauri::AppHandle, group_id: Option<S
         .title(title)
         .inner_size(420.0, 580.0)
         .min_inner_size(360.0, 460.0)
-        .center()
         .decorations(true)
         .resizable(true)
         .always_on_top(true)
-        .build();
+        .build()
+        {
+            center_on_widget_monitor(&app2, &win, 420.0, 580.0);
+        }
     });
 }
 
@@ -1106,28 +1130,8 @@ fn resize_detached_group(group_id: String, width: u32, height: u32, app: tauri::
 /// Right-click context menu popped from the detached group's own window.
 #[tauri::command]
 fn show_detached_group_context_menu(group_id: String, app: tauri::AppHandle) -> Result<(), String> {
-    let label = detached_group_label(&group_id);
-    let handle = app.clone();
-    app.run_on_main_thread(move || {
-        use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
-        let _ = (|| -> Result<(), String> {
-            let attach = MenuItem::with_id(&handle, format!("ctx-attach:{}", group_id), "Attach to Widget", true, None::<&str>)
-                .map_err(|e| e.to_string())?;
-            let sep = PredefinedMenuItem::separator(&handle).map_err(|e| e.to_string())?;
-            let edit = MenuItem::with_id(&handle, format!("ctx-edit:{}", group_id), "Edit Group", true, None::<&str>)
-                .map_err(|e| e.to_string())?;
-            let color = MenuItem::with_id(&handle, format!("ctx-color:{}", group_id), "🎨  Change Color", true, None::<&str>)
-                .map_err(|e| e.to_string())?;
-            let delete = MenuItem::with_id(&handle, format!("ctx-delete:{}", group_id), "Delete Group", true, None::<&str>)
-                .map_err(|e| e.to_string())?;
-            let menu = Menu::with_items(&handle, &[&attach, &sep, &edit, &color, &delete])
-                .map_err(|e| e.to_string())?;
-            if let Some(win) = handle.get_webview_window(&label) {
-                win.popup_menu(&menu).map_err(|e| e.to_string())?;
-            }
-            Ok(())
-        })();
-    }).map_err(|e| e.to_string())
+    let window_label = detached_group_label(&group_id);
+    popup_group_menu(app, group_id, true, window_label, false)
 }
 
 #[tauri::command]
@@ -1137,22 +1141,35 @@ fn show_group_context_menu(group_id: String, app: tauri::AppHandle) -> Result<()
         let config = state.0.lock().unwrap();
         config.groups.iter().find(|g| g.id == group_id).map(|g| g.detached).unwrap_or(false)
     };
+    popup_group_menu(app, group_id, is_detached, "widget".to_string(), true)
+}
+
+/// Shared implementation for both group context menus (widget bar and detached pill).
+/// `is_detached` drives the Detach/Attach label. `is_widget` causes a
+/// `force_foreground` call before popping — needed for the widget window but
+/// not for a detached window that already has focus from the right-click.
+fn popup_group_menu(
+    app: tauri::AppHandle,
+    group_id: String,
+    is_detached: bool,
+    window_label: String,
+    is_widget: bool,
+) -> Result<(), String> {
     let handle = app.clone();
     app.run_on_main_thread(move || {
         use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
         let _ = (|| -> Result<(), String> {
             let detach_label = if is_detached { "📌  Attach to Widget" } else { "📌  Detach from Widget" };
-            let detach_id   = if is_detached { format!("ctx-attach:{}", group_id) } else { format!("ctx-detach:{}", group_id) };
+            let detach_id    = if is_detached { format!("ctx-attach:{}", group_id) } else { format!("ctx-detach:{}", group_id) };
             let edit   = MenuItem::with_id(&handle, format!("ctx-edit:{}", group_id),   "✏️  Edit Group",    true, None::<&str>).map_err(|e| e.to_string())?;
             let color  = MenuItem::with_id(&handle, format!("ctx-color:{}", group_id),  "🎨  Change Color",  true, None::<&str>).map_err(|e| e.to_string())?;
-            let detach = MenuItem::with_id(&handle, detach_id,                           detach_label,        true, None::<&str>).map_err(|e| e.to_string())?;
+            let detach = MenuItem::with_id(&handle, detach_id,                            detach_label,       true, None::<&str>).map_err(|e| e.to_string())?;
             let sep    = PredefinedMenuItem::separator(&handle).map_err(|e| e.to_string())?;
             let delete = MenuItem::with_id(&handle, format!("ctx-delete:{}", group_id), "🗑️  Delete Group",  true, None::<&str>).map_err(|e| e.to_string())?;
-            let menu = Menu::with_items(&handle, &[&edit, &color, &detach, &sep, &delete])
-                .map_err(|e| e.to_string())?;
-            if let Some(window) = handle.get_webview_window("widget") {
-                force_foreground(&window);
-                window.popup_menu(&menu).map_err(|e| e.to_string())?;
+            let menu   = Menu::with_items(&handle, &[&edit, &color, &detach, &sep, &delete]).map_err(|e| e.to_string())?;
+            if let Some(win) = handle.get_webview_window(&window_label) {
+                if is_widget { force_foreground(&win); }
+                win.popup_menu(&menu).map_err(|e| e.to_string())?;
             }
             Ok(())
         })();
@@ -1185,6 +1202,85 @@ async fn set_layout_window_physics(
     let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
 }
 
+/// Shows a layout-editor window that was created hidden.
+/// Called from JS after set_layout_window_physics has positioned it correctly,
+/// so the window never flashes at a wrong position.
+#[tauri::command]
+fn show_layout_window(app: tauri::AppHandle, label: String) -> Result<(), String> {
+    let win = app.get_webview_window(&label).ok_or("window not found")?;
+    win.show().map_err(|e| e.to_string())
+}
+
+/// Returns the physical-pixel rect [x, y, w, h] of any window by label.
+/// Used by the JS layout editor to compute fallback positions on the correct
+/// monitor without relying on window.screen (which WebView2 always maps to
+/// the primary display, regardless of which monitor the window is on).
+#[tauri::command]
+fn get_window_physical_rect(app: tauri::AppHandle, label: String) -> Result<[i32; 4], String> {
+    let win = app.get_webview_window(&label).ok_or("window not found")?;
+    get_window_frame_rect(win)
+}
+
+/// Returns the Monitor that contains the widget window's top-left corner,
+/// or None if the widget is not found or no matching monitor is available.
+fn find_widget_monitor(app: &tauri::AppHandle) -> Option<tauri::Monitor> {
+    let widget = app.get_webview_window("widget")?;
+    let pos = widget.outer_position().ok()?;
+    let monitors = app.available_monitors().ok()?;
+    monitors.into_iter().find(|m| {
+        let p = m.position();
+        let s = m.size();
+        pos.x >= p.x && pos.x < p.x + s.width as i32
+            && pos.y >= p.y && pos.y < p.y + s.height as i32
+    })
+}
+
+/// Centers `win` on the monitor containing the widget window.
+/// Falls back to the OS default (.center()) if the widget or its monitor
+/// can't be determined. `logical_w/h` are the window's intended logical size
+/// so we can compute the correct physical offset.
+fn center_on_widget_monitor(app: &tauri::AppHandle, win: &tauri::WebviewWindow, logical_w: f64, logical_h: f64) {
+    if let Some(monitor) = find_widget_monitor(app) {
+        let sf = monitor.scale_factor();
+        let mp = monitor.position();
+        let ms = monitor.size();
+        let phys_w = (logical_w * sf) as i32;
+        let phys_h = (logical_h * sf) as i32;
+        let x = mp.x + (ms.width as i32 - phys_w) / 2;
+        let y = mp.y + (ms.height as i32 - phys_h) / 2;
+        let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+    } else {
+        let _ = win.center();
+    }
+}
+
+/// Centers `win` on the monitor containing `parent_win`.
+fn center_on_parent_monitor(app: &tauri::AppHandle, parent_label: &str, win: &tauri::WebviewWindow, logical_w: f64, logical_h: f64) {
+    let positioned = (|| -> Option<()> {
+        let parent = app.get_webview_window(parent_label)?;
+        let pos = parent.outer_position().ok()?;
+        let monitors = app.available_monitors().ok()?;
+        let monitor = monitors.into_iter().find(|m| {
+            let p = m.position();
+            let s = m.size();
+            pos.x >= p.x && pos.x < p.x + s.width as i32
+                && pos.y >= p.y && pos.y < p.y + s.height as i32
+        })?;
+        let sf = monitor.scale_factor();
+        let mp = monitor.position();
+        let ms = monitor.size();
+        let phys_w = (logical_w * sf) as i32;
+        let phys_h = (logical_h * sf) as i32;
+        let x = mp.x + (ms.width as i32 - phys_w) / 2;
+        let y = mp.y + (ms.height as i32 - phys_h) / 2;
+        let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+        Some(())
+    })();
+    if positioned.is_none() {
+        let _ = win.center();
+    }
+}
+
 /// given group. Shared by the widget's right-click "Change Color" menu item
 /// and the explicit "🎨 Color" button in the Edit Group window — the button
 /// exists so color can be set during creation/editing too, not only after a
@@ -1193,7 +1289,7 @@ async fn open_group_color_window_inner(app: &tauri::AppHandle, group_id: String)
     if let Some(existing) = app.get_webview_window("group-color") {
         let _ = existing.close();
     }
-    let _ = tauri::WebviewWindowBuilder::new(
+    let result = tauri::WebviewWindowBuilder::new(
         app,
         "group-color",
         tauri::WebviewUrl::App(format!("group-color.html?mode=group&id={}", group_id).into()),
@@ -1209,11 +1305,19 @@ async fn open_group_color_window_inner(app: &tauri::AppHandle, group_id: String)
     // gives the 4-row grid proper room instead of being right at the edge.
     .background_color(tauri::webview::Color(0x1a, 0x1a, 0x2e, 255))
     .inner_size(280.0, 420.0)
-    .center()
     .decorations(true)
     .resizable(false)
     .always_on_top(true)
     .build();
+    // Position on the same monitor as the config window (fallback: widget monitor)
+    if let Ok(win) = result {
+        // Prefer config window's monitor; if not open, fall back to widget's monitor
+        if app.get_webview_window("config").is_some() {
+            center_on_parent_monitor(app, "config", &win, 280.0, 420.0);
+        } else {
+            center_on_widget_monitor(app, &win, 280.0, 420.0);
+        }
+    }
 }
 
 /// Callable directly from the Edit Group window's "🎨 Color" button.
@@ -1232,7 +1336,7 @@ async fn open_widget_color_window(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(existing) = app.get_webview_window("widget-color") {
         let _ = existing.close();
     }
-    let _ = tauri::WebviewWindowBuilder::new(
+    if let Ok(win) = tauri::WebviewWindowBuilder::new(
         &app,
         "widget-color",
         tauri::WebviewUrl::App("group-color.html?mode=widget".into()),
@@ -1240,11 +1344,13 @@ async fn open_widget_color_window(app: tauri::AppHandle) -> Result<(), String> {
     .title("Widget Color")
     .background_color(tauri::webview::Color(0x1a, 0x1a, 0x2e, 255))
     .inner_size(280.0, 420.0)
-    .center()
     .decorations(true)
     .resizable(false)
     .always_on_top(true)
-    .build();
+    .build()
+    {
+        center_on_widget_monitor(&app, &win, 280.0, 420.0);
+    }
     Ok(())
 }
 
@@ -1809,15 +1915,20 @@ pub fn run() {
                 }
             }
 
-            // Check for updates in the background (release builds only)
+            // Check for updates in the background (release builds only).
+            // Runs once at startup, then re-checks every hour so users see
+            // the update banner without needing to restart the app.
             #[cfg(not(debug_assertions))]
             {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    if let Ok(updater) = handle.updater() {
-                        if let Ok(Some(update)) = updater.check().await {
-                            let _ = handle.emit("update-available", &update.version);
+                    loop {
+                        if let Ok(updater) = handle.updater() {
+                            if let Ok(Some(update)) = updater.check().await {
+                                let _ = handle.emit("update-available", &update.version);
+                            }
                         }
+                        tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
                     }
                 });
             }
@@ -1863,10 +1974,13 @@ pub fn run() {
             get_current_virtual_desktop_guid,
             set_layout_item_desktop,
             set_layout_window_physics,
+            show_layout_window,
+            get_window_physical_rect,
             open_config_window,
             resize_widget,
             get_installed_apps,
             get_suggested_apps,
+            save_cached_suggestions,
             show_group_context_menu,
             show_detached_group_context_menu,
             detach_group,

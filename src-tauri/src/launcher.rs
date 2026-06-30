@@ -1022,6 +1022,55 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
                 return shell_execute_runas(path, params.as_deref());
             }
 
+            // Multi-tab: if tab_count > 1, launch via Windows Terminal (wt.exe).
+            // Each tab gets its own profile and optional command script. Falls back
+            // to single-window launch below if wt.exe isn't installed.
+            #[cfg(target_os = "windows")]
+            if item.tab_count > 1 {
+                if let Some(shell) = terminal_shell_kind(path) {
+                    let profile = match shell {
+                        TerminalShell::Cmd => "Command Prompt",
+                        TerminalShell::PowerShell => "Windows PowerShell",
+                    };
+                    // Build the flat argument list for wt.exe.
+                    // wt syntax: wt -p "Profile" [cmd] [; new-tab -p "Profile" [cmd]] ...
+                    let mut wt_args: Vec<String> = Vec::new();
+                    // Collect script paths: tab 1 = command_file_path, tabs 2+ = extra_tab_scripts.
+                    let mut scripts: Vec<Option<&str>> = vec![item.command_file_path.as_deref()];
+                    for s in &item.extra_tab_scripts {
+                        scripts.push(s.as_deref());
+                    }
+                    let tab_count = item.tab_count as usize;
+                    for i in 0..tab_count {
+                        if i > 0 {
+                            wt_args.push(";".to_string());
+                            wt_args.push("new-tab".to_string());
+                        }
+                        wt_args.push("-p".to_string());
+                        wt_args.push(profile.to_string());
+                        let script_opt = scripts.get(i).copied().flatten();
+                        match (shell, script_opt) {
+                            (TerminalShell::Cmd, Some(s)) if std::path::Path::new(s).is_file() => {
+                                wt_args.push("cmd".to_string());
+                                wt_args.push("/k".to_string());
+                                wt_args.push(s.to_string());
+                            }
+                            (TerminalShell::PowerShell, Some(s)) if std::path::Path::new(s).is_file() => {
+                                wt_args.push("powershell".to_string());
+                                wt_args.push("-NoExit".to_string());
+                                wt_args.push("-File".to_string());
+                                wt_args.push(s.to_string());
+                            }
+                            _ => {} // no script — opens the profile's default shell
+                        }
+                    }
+                    if Command::new("wt").args(&wt_args).spawn().is_ok() {
+                        return Ok(());
+                    }
+                    // wt.exe not found or spawn failed — fall through to single-window launch.
+                }
+            }
+
             let mut cmd = Command::new(path);
             // Terminal items (cmd.exe/powershell.exe/pwsh.exe) with an attached command
             // file via "Edit Command Line" launch the script directly instead of treating
@@ -1267,7 +1316,7 @@ mod tests {
 
     #[test]
     fn test_launch_item_app_missing_path_returns_error() {
-        let item = Item { item_type: ItemType::App, path: None, value: None, display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None };
+        let item = Item { item_type: ItemType::App, path: None, value: None, display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None, tab_count: 1, extra_tab_scripts: vec![] };
         let result = launch_item(&item, &None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("missing a path"));
@@ -1275,7 +1324,7 @@ mod tests {
 
     #[test]
     fn test_launch_item_url_missing_value_returns_error() {
-        let item = Item { item_type: ItemType::Url, path: None, value: None, display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None };
+        let item = Item { item_type: ItemType::Url, path: None, value: None, display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None, tab_count: 1, extra_tab_scripts: vec![] };
         let result = launch_item(&item, &None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("missing a value"));
@@ -1283,7 +1332,7 @@ mod tests {
 
     #[test]
     fn test_launch_item_script_missing_path_returns_error() {
-        let item = Item { item_type: ItemType::Script, path: None, value: None, display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None };
+        let item = Item { item_type: ItemType::Script, path: None, value: None, display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None, tab_count: 1, extra_tab_scripts: vec![] };
         let result = launch_item(&item, &None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("missing a path"));
@@ -1299,9 +1348,9 @@ mod tests {
     #[test]
     fn test_url_items_with_same_browser_are_batched() {
         let items = vec![
-            Item { item_type: ItemType::Url, path: Some("chrome.exe".to_string()), value: Some("https://a.com".to_string()), display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None },
-            Item { item_type: ItemType::Url, path: Some("chrome.exe".to_string()), value: Some("https://b.com".to_string()), display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None },
-            Item { item_type: ItemType::Url, path: Some("firefox.exe".to_string()), value: Some("https://c.com".to_string()), display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None },
+            Item { item_type: ItemType::Url, path: Some("chrome.exe".to_string()), value: Some("https://a.com".to_string()), display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None, tab_count: 1, extra_tab_scripts: vec![] },
+            Item { item_type: ItemType::Url, path: Some("chrome.exe".to_string()), value: Some("https://b.com".to_string()), display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None, tab_count: 1, extra_tab_scripts: vec![] },
+            Item { item_type: ItemType::Url, path: Some("firefox.exe".to_string()), value: Some("https://c.com".to_string()), display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None, tab_count: 1, extra_tab_scripts: vec![] },
         ];
         let (map, fallback) = collect_browser_urls(&items, None);
         assert_eq!(map["chrome.exe"].len(), 2);
@@ -1312,7 +1361,7 @@ mod tests {
     #[test]
     fn test_url_items_fall_back_to_preferred_browser() {
         let items = vec![
-            Item { item_type: ItemType::Url, path: None, value: Some("https://x.com".to_string()), display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None },
+            Item { item_type: ItemType::Url, path: None, value: Some("https://x.com".to_string()), display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None, tab_count: 1, extra_tab_scripts: vec![] },
         ];
         let (map, fallback) = collect_browser_urls(&items, Some("edge.exe"));
         assert_eq!(map["edge.exe"].len(), 1);
@@ -1322,7 +1371,7 @@ mod tests {
     #[test]
     fn test_url_items_with_no_browser_go_to_fallback() {
         let items = vec![
-            Item { item_type: ItemType::Url, path: None, value: Some("https://y.com".to_string()), display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None },
+            Item { item_type: ItemType::Url, path: None, value: Some("https://y.com".to_string()), display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None, tab_count: 1, extra_tab_scripts: vec![] },
         ];
         let (map, fallback) = collect_browser_urls(&items, None);
         assert!(map.is_empty());
@@ -1343,7 +1392,7 @@ mod tests {
                 launch_virtual_desktop: None,
                 launch_desktop_index: None,
             launch_desktop: None, launch_x: None, launch_y: None,
-                launch_width: None, launch_height: None, command_file_path: None,
+                launch_width: None, launch_height: None, command_file_path: None, tab_count: 1, extra_tab_scripts: vec![],
             },
         ];
         let (map, fallback) = collect_browser_urls(&items, None);
@@ -1365,7 +1414,7 @@ mod tests {
                 launch_virtual_desktop: None,
                 launch_desktop_index: None,
             launch_desktop: None, launch_x: None, launch_y: None,
-                launch_width: None, launch_height: None, command_file_path: None,
+                launch_width: None, launch_height: None, command_file_path: None, tab_count: 1, extra_tab_scripts: vec![],
             },
         ];
         let (map, fallback) = collect_browser_urls(&items, None);
@@ -1385,7 +1434,7 @@ mod tests {
             launch_virtual_desktop: None,
             launch_desktop_index: None,
             launch_desktop: None, launch_x: None, launch_y: None,
-            launch_width: None, launch_height: None, command_file_path: None,
+            launch_width: None, launch_height: None, command_file_path: None, tab_count: 1, extra_tab_scripts: vec![],
         };
         let result = launch_item(&item, &None);
         assert!(result.is_err());
@@ -1403,7 +1452,7 @@ mod tests {
             launch_virtual_desktop: None,
             launch_desktop_index: None,
             launch_desktop: None, launch_x: None, launch_y: None,
-            launch_width: None, launch_height: None, command_file_path: None,
+            launch_width: None, launch_height: None, command_file_path: None, tab_count: 1, extra_tab_scripts: vec![],
         };
         let result = launch_item(&item, &None);
         assert!(result.is_err());
@@ -1422,7 +1471,7 @@ mod tests {
             launch_virtual_desktop: None,
             launch_desktop_index: None,
             launch_desktop: None, launch_x: None, launch_y: None,
-            launch_width: None, launch_height: None, command_file_path: None,
+            launch_width: None, launch_height: None, command_file_path: None, tab_count: 1, extra_tab_scripts: vec![],
         };
         let result = launch_item(&item, &None);
         assert!(result.is_err());
@@ -1441,7 +1490,7 @@ mod tests {
             launch_virtual_desktop: Some(vec![0u8; 16]),
             launch_desktop_index: None,
             launch_desktop: None, launch_x: None, launch_y: None,
-            launch_width: None, launch_height: None, command_file_path: None,
+            launch_width: None, launch_height: None, command_file_path: None, tab_count: 1, extra_tab_scripts: vec![],
         };
         let result = launch_item(&item, &None);
         assert!(result.is_err()); // nonexistent exe → error, not crash

@@ -62,19 +62,27 @@ async function duplicateItem(item) {
     try {
       const newPath = await invoke('duplicate_command_file', { path: clone.command_file_path });
       clone.command_file_path = newPath;
-      // An app-managed file gets copied to a new path — track it the same as
-      // Create/Link, so it's cleaned up correctly if this session ends
-      // without saving. A directly-linked external file comes back as the
-      // same path (shared on purpose, see duplicate_command_file) and isn't
-      // tracked, since this app never owns or deletes it either way.
-      if (newPath !== item.command_file_path) {
-        sessionCreatedCommandFiles.push(newPath);
-      }
+      if (newPath !== item.command_file_path) sessionCreatedCommandFiles.push(newPath);
     } catch (e) {
       console.error('duplicate_command_file failed:', e);
       clone.command_file_path = null;
     }
   }
+  // Duplicate extra tab scripts the same way.
+  if (clone.extra_tab_scripts && clone.extra_tab_scripts.length > 0) {
+    const origExtras = item.extra_tab_scripts || [];
+    clone.extra_tab_scripts = await Promise.all(clone.extra_tab_scripts.map(async (path, i) => {
+      if (!path) return null;
+      try {
+        const newPath = await invoke('duplicate_command_file', { path });
+        if (newPath !== origExtras[i]) sessionCreatedCommandFiles.push(newPath);
+        return newPath;
+      } catch {
+        return null;
+      }
+    }));
+  }
+  clone._activeTab = 0; // reset tab selection on duplicate
   return clone;
 }
 
@@ -268,38 +276,19 @@ async function showWinAppPicker() {
 // label. Shown by default, no menu required. Cross-references the curated
 // well-known-app list against what's actually installed (see apps.rs).
 let suggestedAppsCache = null;
+let suggestionsRefreshStarted = false;
 
-async function renderSuggestedBar() {
+// Renders chips for whatever is currently in suggestedAppsCache,
+// filtering out items the user has already added to the group.
+function paintSuggestedBar() {
   const wrap = document.getElementById('suggested-wrap');
-  const bar = document.getElementById('suggested-bar');
+  const bar  = document.getElementById('suggested-bar');
   if (!bar || !wrap) return;
 
-  if (suggestedAppsCache === null) {
-    try {
-      suggestedAppsCache = await invoke('get_suggested_apps');
-      // Pre-fetch icons in parallel for apps that don't already have one —
-      // packaged/MSIX apps (Claude, ChatGPT, Copilot) come back with
-      // icon_data already filled in from Rust (read from their manifest),
-      // so only traditional .exe apps need this on-demand fetch.
-      //
-      // Fetched one at a time on purpose, not Promise.all — Windows' Shell
-      // icon extraction (SHGetFileInfoW) has real thread-safety quirks for
-      // some file types even with a COM apartment initialized, and running
-      // many of these truly concurrently caused most icons to silently fail
-      // back to a generic one. The window itself isn't blocked by this either
-      // way (get_file_icon is async on the Rust side), so going sequential
-      // here only adds a small delay before the bar populates, not a freeze.
-      for (const app of suggestedAppsCache) {
-        if (app.icon_data) continue;
-        try { app.icon_data = await invoke('get_file_icon', { path: app.path, args: app.args || '' }); } catch {}
-      }
-    } catch {
-      suggestedAppsCache = [];
-    }
-  }
-
   const addedPaths = new Set(currentItems.map(i => (i.path || '').toLowerCase()));
-  const remaining = suggestedAppsCache.filter(app => !addedPaths.has((app.path || '').toLowerCase()));
+  const remaining  = (suggestedAppsCache || []).filter(
+    app => !addedPaths.has((app.path || '').toLowerCase())
+  );
 
   if (remaining.length === 0) {
     wrap.style.display = 'none';
@@ -324,14 +313,9 @@ async function renderSuggestedBar() {
     chip.title = `Add ${app.name}`;
     chip.addEventListener('click', () => {
       if (app.is_packaged) {
-        // Packaged/MSIX apps: path holds the AUMID (launcher ignores value
-        // for this item type, so it's left null; display_name carries the
-        // friendly name shown in the items list)
         currentItems.push({ item_type: 'uwp', path: app.path, value: null, display_name: app.name, icon_data: app.icon_data || null });
         renderItems();
       } else if (isBrowserPath(app.path)) {
-        // Browsers go through the same URL/bookmark picker as "Add Item →
-        // URL / Bookmark" instead of just launching bare to the homepage.
         openBrowserUrlPicker(app);
       } else {
         currentItems.push({ item_type: 'app', path: app.path, value: app.args || null, display_name: app.name, icon_data: app.icon_data || null });
@@ -342,12 +326,81 @@ async function renderSuggestedBar() {
   });
 }
 
+async function renderSuggestedBar() {
+  const wrap = document.getElementById('suggested-wrap');
+  const bar  = document.getElementById('suggested-bar');
+  if (!bar || !wrap) return;
+
+  if (suggestedAppsCache === null) {
+    // First call this session: load the cached list from config instantly.
+    const config = await invoke('get_config');
+    const saved  = config.cached_suggestions || [];
+
+    if (saved.length > 0) {
+      suggestedAppsCache = saved;
+      paintSuggestedBar();
+    } else {
+      // No cache yet — show the spinner while the background scan runs.
+      bar.innerHTML = '<div class="suggested-loading"><span class="suggested-spinner"></span>Finding suggestions…</div>';
+    }
+  } else {
+    paintSuggestedBar();
+  }
+
+  // Kick off one background refresh per window session.
+  if (!suggestionsRefreshStarted) {
+    suggestionsRefreshStarted = true;
+    refreshSuggestionsInBackground();
+  }
+}
+
+// Runs in the background: scans for installed apps, diffs against the cached
+// list, removes uninstalled apps, prepends newly-found ones, then saves.
+// Never blocks the UI — called fire-and-forget from renderSuggestedBar.
+async function refreshSuggestionsInBackground() {
+  try {
+    const fresh = await invoke('get_suggested_apps');
+
+    // Fetch icons for any new items that don't have one yet.
+    // Sequential on purpose — see the note on SHGetFileInfoW thread safety
+    // from the original implementation above.
+    for (const app of fresh) {
+      if (app.icon_data) continue;
+      try { app.icon_data = await invoke('get_file_icon', { path: app.path, args: app.args || '' }); } catch {}
+    }
+
+    const cached     = suggestedAppsCache || [];
+    const freshPaths = new Set(fresh.map(a => (a.path || '').toLowerCase()));
+    const cachedPaths = new Set(cached.map(a => (a.path || '').toLowerCase()));
+
+    // Drop anything the user has since uninstalled.
+    const surviving = cached.filter(a => freshPaths.has((a.path || '').toLowerCase()));
+
+    // Newly-found apps go to the front of the list.
+    const newItems = fresh.filter(a => !cachedPaths.has((a.path || '').toLowerCase()));
+
+    const updated = [...newItems, ...surviving];
+
+    const changed = newItems.length > 0 || surviving.length !== cached.length;
+    if (changed) {
+      suggestedAppsCache = updated;
+      paintSuggestedBar();
+    }
+
+    // Always persist the verified list (even if nothing changed, first-run
+    // populates it so the next open is instant).
+    invoke('save_cached_suggestions', { suggestions: updated }).catch(() => {});
+  } catch {
+    // Scan failed — keep showing whatever was cached, no visible error.
+  }
+}
+
 // "Edit Command Line" — Create generates a new app-managed script and opens
 // it in the user's default editor; Link imports an existing file (used
 // directly if it's already a matching .bat/.ps1/.cmd, copied in once
 // otherwise). Either way, command_file_path ends up pointing at a directly
 // launchable script — see launcher.rs's terminal_shell_kind handling.
-function showCommandLinePicker({ item, idx }) {
+function showCommandLinePicker({ item, idx, onCreated = null }) {
   const modal = document.createElement('div');
   modal.className = 'winapp-modal';
   modal.innerHTML = `
@@ -381,8 +434,12 @@ function showCommandLinePicker({ item, idx }) {
     try {
       const path = await invoke('create_command_file', { shellPath: item.path, label });
       sessionCreatedCommandFiles.push(path);
-      currentItems[idx].command_file_path = path;
-      renderItems();
+      if (onCreated) {
+        onCreated(path);
+      } else {
+        currentItems[idx].command_file_path = path;
+        renderItems();
+      }
     } catch (e) {
       console.error('create_command_file failed:', e);
     }
@@ -394,16 +451,15 @@ function showCommandLinePicker({ item, idx }) {
       const picked = await invoke('pick_command_file');
       if (!picked) return;
       const path = await invoke('import_linked_command_file', { pickedPath: picked, shellPath: item.path, label });
-      // If the picked file didn't already match the shell's script extension,
-      // the Rust side imported its content into a brand-new app-managed copy
-      // (path !== picked) — track that one the same as Create. If it's the
-      // same path, the user's own file is used directly/live and isn't ours
-      // to ever delete.
       if (path !== picked) {
         sessionCreatedCommandFiles.push(path);
       }
-      currentItems[idx].command_file_path = path;
-      renderItems();
+      if (onCreated) {
+        onCreated(path);
+      } else {
+        currentItems[idx].command_file_path = path;
+        renderItems();
+      }
     } catch (e) {
       console.error('import_linked_command_file failed:', e);
     }
@@ -717,9 +773,14 @@ async function showLayoutEditor() {
   const layoutLabels = Array.from({ length: total }, (_, i) => `layout-item-${i}`);
   const closeAll = () => invoke('close_layout_windows', { labels: layoutLabels });
 
-  // Use window.screen for the default (no saved position) fallback
-  const centerX = Math.floor(window.screen.width / 2) - 400;
-  const centerY = Math.floor(window.screen.height / 2) - 300;
+  // Get the config window's physical rect to compute fallback positions on the
+  // correct monitor. window.screen always reports the *primary* display in
+  // WebView2 regardless of which monitor the config window is actually on.
+  let configRect = null;
+  try { configRect = await invoke('get_window_physical_rect', { label: 'config' }); } catch (_) {}
+  // configRect = [x, y, w, h] in physical pixels. Stagger fallbacks 30px apart.
+  const fallbackBaseX = configRect ? configRect[0] + 40 : 200;
+  const fallbackBaseY = configRect ? configRect[1] + 40 : 200;
 
   for (let idx = 0; idx < total; idx++) {
     const item = currentItems[idx];
@@ -737,40 +798,31 @@ async function showLayoutEditor() {
       : '';
     const label = `layout-item-${idx}`;
 
-    // Create the window via JS (WebviewWindow initialises WebView2 correctly).
-    // For items with a saved position we apply physical pixel coords via a Rust
-    // command once the window signals it's ready — this avoids the per-monitor
-    // DPR ambiguity of dividing by window.devicePixelRatio (which is the DPR
-    // of the config window's monitor, not the item's monitor).
-    const dpr = window.devicePixelRatio || 1;
-    const fallbackX = centerX + idx * 30;
-    const fallbackY = centerY + idx * 30;
+    // Physical pixel target for this window.
+    const physX = hasPos ? item.launch_x : fallbackBaseX + idx * 30;
+    const physY = hasPos ? item.launch_y : fallbackBaseY + idx * 30;
+    const physW = (hasPos && item.launch_width) ? item.launch_width : 800;
+    const physH = (hasPos && item.launch_height) ? item.launch_height : 600;
+
+    // Create the window hidden at a dummy position. We always use
+    // set_layout_window_physics (physical pixels) to place it correctly —
+    // this avoids per-monitor DPR ambiguity from window.devicePixelRatio,
+    // which reflects the config window's monitor, not the item's monitor.
     const win = new WebviewWindow(label, {
       url: `layout-item.html?idx=${idx}&name=${safeName}&total=${total}${vdParam}`,
       title: rawName,
-      x: hasPos ? Math.round(item.launch_x / dpr) : fallbackX,
-      y: hasPos ? Math.round(item.launch_y / dpr) : fallbackY,
-      width: hasPos && item.launch_width ? Math.round(item.launch_width / dpr) : 800,
-      height: hasPos && item.launch_height ? Math.round(item.launch_height / dpr) : 600,
+      x: 0, y: 0, width: physW, height: physH,
+      visible: false,
       resizable: true,
       decorations: true,
       alwaysOnTop: true,
     });
 
-    if (hasPos) {
-      // Override with exact physical position once the window is created.
-      // 'tauri://created' fires after WebView2 is fully initialised so
-      // set_position / set_size are guaranteed to succeed.
-      win.once('tauri://created', () => {
-        invoke('set_layout_window_physics', {
-          label,
-          x: item.launch_x,
-          y: item.launch_y,
-          width: item.launch_width || 800,
-          height: item.launch_height || 600,
-        }).catch(() => {});
-      });
-    }
+    // Once created: move to exact physical position, then reveal.
+    win.once('tauri://created', () => {
+      invoke('set_layout_window_physics', { label, x: physX, y: physY, width: physW, height: physH })
+        .finally(() => { invoke('show_layout_window', { label }).catch(() => {}); });
+    });
   }
 
   activeLayoutLabels = layoutLabels;
@@ -1097,35 +1149,108 @@ function buildExpandPanel(item, idx) {
   }
 
   if (item.item_type === 'app' && isTerminalPath(item.path)) {
+    const tabCount  = item.tab_count  || 1;
+    const activeTab = item._activeTab || 0; // 0-indexed, not persisted
+
+    // ── Tab count row ─────────────────────────────────────────────────────────
+    const tabCountRow = document.createElement('div');
+    tabCountRow.className = 'item-expand-row';
+    tabCountRow.style.justifyContent = 'space-between';
+    tabCountRow.innerHTML = `
+      <span style="color:#888;font-size:11px;">Tabs</span>
+      <div style="display:flex;align-items:center;gap:4px;">
+        <button class="tab-stepper" id="tab-dec">−</button>
+        <span class="tab-count-display">${tabCount}</span>
+        <button class="tab-stepper" id="tab-inc">+</button>
+      </div>
+    `;
+    tabCountRow.querySelector('#tab-dec').addEventListener('click', () => {
+      const cur = currentItems[idx].tab_count || 1;
+      if (cur <= 1) return;
+      currentItems[idx].tab_count = cur - 1;
+      // Trim extra_tab_scripts to the new size
+      if (currentItems[idx].extra_tab_scripts) {
+        currentItems[idx].extra_tab_scripts = currentItems[idx].extra_tab_scripts.slice(0, cur - 2);
+      }
+      // Clamp active tab
+      if ((currentItems[idx]._activeTab || 0) >= currentItems[idx].tab_count) {
+        currentItems[idx]._activeTab = currentItems[idx].tab_count - 1;
+      }
+      renderItems();
+    });
+    tabCountRow.querySelector('#tab-inc').addEventListener('click', () => {
+      const cur = currentItems[idx].tab_count || 1;
+      if (cur >= 8) return;
+      currentItems[idx].tab_count = cur + 1;
+      renderItems();
+    });
+    panel.appendChild(tabCountRow);
+
+    // ── Tab selector pills (only when tab_count > 1) ──────────────────────────
+    if (tabCount > 1) {
+      const pillRow = document.createElement('div');
+      pillRow.className = 'item-expand-row tab-pill-row';
+      for (let t = 0; t < tabCount; t++) {
+        const pill = document.createElement('button');
+        pill.textContent = `Tab ${t + 1}`;
+        pill.className = 'tab-pill' + (t === activeTab ? ' active' : '');
+        pill.addEventListener('click', () => {
+          currentItems[idx]._activeTab = t;
+          renderItems();
+        });
+        pillRow.appendChild(pill);
+      }
+      panel.appendChild(pillRow);
+    }
+
+    // ── Edit Command Line row (tab-aware) ─────────────────────────────────────
+    // Helpers to read/write the script for the currently-active tab.
+    const getScript = () => {
+      if (activeTab === 0) return currentItems[idx].command_file_path || null;
+      const extras = currentItems[idx].extra_tab_scripts || [];
+      return extras[activeTab - 1] || null;
+    };
+    const setScript = (path) => {
+      if (activeTab === 0) {
+        currentItems[idx].command_file_path = path;
+      } else {
+        if (!currentItems[idx].extra_tab_scripts) currentItems[idx].extra_tab_scripts = [];
+        while (currentItems[idx].extra_tab_scripts.length < activeTab) {
+          currentItems[idx].extra_tab_scripts.push(null);
+        }
+        currentItems[idx].extra_tab_scripts[activeTab - 1] = path;
+      }
+    };
+
+    const hasCmd   = !!getScript();
+    const tabLabel = tabCount > 1 ? ` (Tab ${activeTab + 1})` : '';
+
     const cmdRow = document.createElement('div');
     cmdRow.className = 'item-expand-row';
     cmdRow.style.justifyContent = 'space-between';
-    const hasCmd = !!item.command_file_path;
     cmdRow.innerHTML = `
-      <span style="color:#888;font-size:11px;">${hasCmd ? 'Command attached' : ''}</span>
+      <span style="color:#888;font-size:11px;">${hasCmd ? `Command attached${tabLabel}` : ''}</span>
       <div style="display:flex;align-items:center;gap:6px;">
         ${hasCmd ? '<button class="cmdline-clear" style="background:none;border:none;color:#555;font-size:11px;cursor:pointer;padding:0 4px;" title="Clear">✕ Clear</button>' : ''}
         <button class="pick-btn cmdline-edit-btn">${CMDLINE_ICON_SVG}Edit Command Line</button>
       </div>
     `;
     cmdRow.querySelector('.cmdline-edit-btn').addEventListener('click', () => {
-      const current = currentItems[idx].command_file_path;
+      const current = getScript();
       if (current) {
         invoke('open_command_file', { path: current }).catch(err => console.error('open_command_file error:', err));
       } else {
-        showCommandLinePicker({ item: currentItems[idx], idx });
+        // Pass a modified item snapshot so the picker uses the right label.
+        showCommandLinePicker({
+          item: currentItems[idx],
+          idx,
+          onCreated: (path) => { setScript(path); renderItems(); },
+        });
       }
     });
     if (hasCmd) {
       cmdRow.querySelector('.cmdline-clear').addEventListener('click', () => {
-        // Deliberately NOT calling clear_command_file here — deleting the file
-        // immediately on click meant Clear-then-Cancel permanently deleted a
-        // file the unchanged saved config still referenced. Just update local
-        // state; save_group's old-vs-new diff (see lib.rs) cleans up the file
-        // for real if this is actually saved, and closeConfigWindow's session
-        // cleanup only ever touches files created during THIS session anyway,
-        // so a pre-existing file is never at risk on cancel either way.
-        currentItems[idx].command_file_path = null;
+        setScript(null);
         renderItems();
       });
     }
@@ -1335,7 +1460,10 @@ async function closeConfigWindow(saved = false) {
   // nothing from an unsaved session, or whatever's left in currentItems
   // for a saved one.
   const kept = saved
-    ? new Set(currentItems.map(i => i.command_file_path).filter(Boolean))
+    ? new Set([
+        ...currentItems.map(i => i.command_file_path).filter(Boolean),
+        ...currentItems.flatMap(i => (i.extra_tab_scripts || []).filter(Boolean)),
+      ])
     : new Set();
   for (const path of sessionCreatedCommandFiles) {
     if (!kept.has(path)) {

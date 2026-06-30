@@ -1,3 +1,4 @@
+use crate::apps::InstalledApp;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -69,6 +70,16 @@ pub struct Item {
     /// new app-managed copy once, at link time. Never regenerated at launch.
     #[serde(default)]
     pub command_file_path: Option<String>,
+    /// How many terminal tabs to open when launching this item.
+    /// 1 = single window (default, backward-compatible). 2+ = Windows Terminal
+    /// multi-tab via `wt.exe`. Tab 1 uses `command_file_path`; tabs 2+ use
+    /// `extra_tab_scripts[tab_index - 2]`.
+    #[serde(default = "default_one")]
+    pub tab_count: u32,
+    /// Per-tab script paths for tabs 2, 3, 4… (index 0 = tab 2).
+    /// None at a given index means that tab opens a plain shell with no script.
+    #[serde(default)]
+    pub extra_tab_scripts: Vec<Option<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -110,6 +121,7 @@ impl Group {
 }
 
 fn default_true() -> bool { true }
+fn default_one() -> u32 { 1 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -130,6 +142,11 @@ pub struct AppConfig {
     pub hotkey: String,
     #[serde(default)]
     pub low_profile: bool,
+    /// Cached result of the last successful get_suggested_apps scan. Populated
+    /// on first open (with icons already fetched), then updated in the
+    /// background so the bar appears instantly on subsequent opens.
+    #[serde(default)]
+    pub cached_suggestions: Vec<InstalledApp>,
 }
 
 fn default_hotkey() -> String { "Ctrl+Alt+Space".to_string() }
@@ -149,6 +166,7 @@ impl Default for AppConfig {
             widget_on_top: false,
             hotkey: default_hotkey(),
             low_profile: false,
+            cached_suggestions: vec![],
         }
     }
 }
@@ -231,8 +249,8 @@ mod tests {
             name: "Work".to_string(),
             icon: "💼".to_string(),
             items: vec![
-                Item { item_type: ItemType::App, path: Some("C:\\slack.exe".to_string()), value: None, display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None },
-                Item { item_type: ItemType::Url, path: None, value: Some("https://github.com".to_string()), display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None },
+                Item { item_type: ItemType::App, path: Some("C:\\slack.exe".to_string()), value: None, display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None, tab_count: 1, extra_tab_scripts: vec![] },
+                Item { item_type: ItemType::Url, path: None, value: Some("https://github.com".to_string()), display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None, tab_count: 1, extra_tab_scripts: vec![] },
             ],
             color: None,
         });
@@ -296,7 +314,7 @@ mod tests {
             launch_virtual_desktop: None,
             launch_desktop_index: None,
             launch_desktop: None, launch_x: None, launch_y: None,
-            launch_width: None, launch_height: None, command_file_path: None,
+            launch_width: None, launch_height: None, command_file_path: None, tab_count: 1, extra_tab_scripts: vec![],
         };
         let json = serde_json::to_string(&item).unwrap();
         let loaded: Item = serde_json::from_str(&json).unwrap();
@@ -318,7 +336,7 @@ mod tests {
             launch_virtual_desktop: None,
             launch_desktop_index: None,
             launch_desktop: Some(0), launch_x: None, launch_y: None,
-            launch_width: None, launch_height: None, command_file_path: None,
+            launch_width: None, launch_height: None, command_file_path: None, tab_count: 1, extra_tab_scripts: vec![],
         };
         let json = serde_json::to_string(&item).unwrap();
         assert!(json.contains("\"steam\""), "item_type should serialize as 'steam'");
@@ -348,7 +366,7 @@ mod tests {
             launch_virtual_desktop: None,
             launch_desktop_index: None,
             launch_desktop: None, launch_x: None, launch_y: None,
-            launch_width: None, launch_height: None, command_file_path: None,
+            launch_width: None, launch_height: None, command_file_path: None, tab_count: 1, extra_tab_scripts: vec![],
         };
         let json = serde_json::to_string(&item).unwrap();
         let loaded: Item = serde_json::from_str(&json).unwrap();
@@ -375,7 +393,7 @@ mod tests {
             launch_virtual_desktop: Some(guid.clone()),
             launch_desktop_index: None,
             launch_desktop: None, launch_x: None, launch_y: None,
-            launch_width: None, launch_height: None, command_file_path: None,
+            launch_width: None, launch_height: None, command_file_path: None, tab_count: 1, extra_tab_scripts: vec![],
         };
         let json = serde_json::to_string(&item).unwrap();
         let loaded: Item = serde_json::from_str(&json).unwrap();

@@ -317,8 +317,8 @@ html, body {
   width: 100%;
   min-width: 0;
 }
-.suggested-bar::-webkit-scrollbar { height: 3px; }
-.suggested-bar::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 2px; }
+.suggested-bar::-webkit-scrollbar { height: 7px; }
+.suggested-bar::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 4px; }
 
 .suggested-loading {
   display: flex;
@@ -830,6 +830,43 @@ html, body {
   padding: 4px 8px;
 }
 .coord-display.coord-empty { color: #555; }
+
+/* ── Multi-tab terminal controls ──────────────────────────────────────────── */
+.tab-stepper {
+  background: #16213e;
+  border: 1px solid #0f3460;
+  border-radius: 4px;
+  color: #aaa;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 1px 7px;
+}
+.tab-stepper:hover { color: #fff; border-color: #e94560; }
+
+.tab-count-display {
+  color: #e0e0e0;
+  font-size: 12px;
+  min-width: 16px;
+  text-align: center;
+}
+
+.tab-pill-row {
+  flex-wrap: wrap;
+  gap: 4px !important;
+}
+
+.tab-pill {
+  background: #16213e;
+  border: 1px solid #0f3460;
+  border-radius: 4px;
+  color: #888;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 8px;
+}
+.tab-pill:hover { color: #e0e0e0; border-color: #e94560; }
+.tab-pill.active { background: #0f3460; color: #e0e0e0; border-color: #e94560; }
 
 .coord-clear {
   background: none;
