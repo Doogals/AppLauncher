@@ -35,29 +35,39 @@ html, body {
      gap directly. If this total changes, PAD in widget.js's render() must
      match or the auto-resize width calc drifts. */
   padding: 8px 12px 8px 12px;
-  background: rgba(22, 33, 62, 0.95);
-  border: 1px solid rgba(15, 52, 96, 0.8);
+  background: rgba(0, 0, 0, 0.95);
+  border: 1px solid rgba(0, 0, 0, 0.95);
+  transition: box-shadow 0.15s;
 }
 
 /* TakeOff wordmark — pinned to the right of the widget bar via flex order */
 .app-wordmark {
   order: 999;
-  /* Now that .widget stretches children instead of centering them, this
-     needs to be its own flex row to keep the text vertically centered
-     within its (now taller) box, instead of sticking to the top. */
   display: flex;
+  flex-direction: column;
   align-items: center;
+  justify-content: center;
+  gap: 1px;
+  flex-shrink: 0;
+  padding: 0 4px 0 4px;
+  user-select: none;
+  pointer-events: none;
+  transition: opacity 0.2s;
+}
+.app-logo {
+  height: 42px;
+  width: auto;
+  opacity: 1;
+  display: block;
+}
+.app-wordmark-text {
   font-size: 0.65rem;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: rgba(255, 255, 255, 0.35);
   white-space: nowrap;
-  flex-shrink: 0;
-  padding: 0 2px 0 4px;
-  user-select: none;
-  pointer-events: none;
-  transition: opacity 0.2s;
+  line-height: 1;
 }
 .app-wordmark.hidden { display: none; }
 
@@ -103,12 +113,13 @@ html, body {
 }
 
 .group-btn {
+  cursor: grab;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 3px;
-  padding: 8px 14px;
+  padding: 8px 8px;
   /* Explicit height (rather than relying on stretch) so the Add button
      (single line, just "+") matches real group buttons (icon + label, two
      lines) without filling the widget's full height edge-to-edge — that
@@ -120,29 +131,43 @@ html, body {
      as a CSS variable rather than a direct inline background — that way
      :hover below still works. Inline `style.background` would always win
      over any stylesheet rule, custom color or not. */
-  background: var(--group-color, rgba(15, 52, 96, 0.6));
+  background: var(--group-color, rgba(138, 45, 15, 0.85));
   /* Matches the background exactly when a custom color is set (same
      mismatched-border issue the widget itself had — see applyWidgetColor
-     in widget.js), falling back to the original default shade otherwise. */
-  border: 1px solid var(--group-color, rgba(15, 52, 96, 0.9));
+     in widget.js), falling back to the default Rust shade otherwise. */
+  border: 1px solid var(--group-color, rgba(138, 45, 15, 0.95));
   border-radius: 8px;
-  cursor: pointer;
-  min-width: 70px;
+  min-width: 56px;
   transition: filter 0.15s;
   flex-shrink: 0;
 }
 
-.group-btn:hover { filter: brightness(1.3); }
+.group-btn:hover  { filter: brightness(1.3); }
+.group-btn:active { cursor: grabbing; }
 
 .group-btn .icon { font-size: 1.5rem; line-height: 1; }
 .group-btn .label { font-size: 0.7rem; color: #ccc; white-space: nowrap; }
 
+.group-btn.drag-placeholder { opacity: 0.3; transition: opacity 0.1s; }
+
+/* Slot shown on the widget bar when a detached group is dragged back over it.
+   Occupies real space (pushing other buttons aside) so the user can see exactly
+   where the group will land before releasing. */
+.group-btn.drop-zone-placeholder {
+  opacity: 0.55;
+  background: rgba(255, 200, 80, 0.10);
+  border: 2px dashed rgba(255, 200, 80, 0.80);
+  pointer-events: none;
+  flex-shrink: 0;
+}
+
 .add-btn {
-  /* Same solid fill as a default (uncustomized) group button — rgba(255,255,255,0.05)
-     used to be nearly invisible whenever the widget's own background was light
-     (e.g. White), since it relied on the dark default widget bg for contrast. */
+  cursor: pointer; /* not draggable — override grab */
+  /* Uses --group-color so the user can change it independently via right-click
+     → Change Color. Falls back to the same default as a plain group button.
+     Previously hardcoded to rgba(15,52,96,0.6), which blocked the variable. */
   border: 1.5px dashed rgba(255, 255, 255, 0.4);
-  background: rgba(15, 52, 96, 0.6);
+  background: var(--group-color, rgba(138, 45, 15, 0.85));
   color: #e0e0e0;
   font-size: 1.2rem;
   /* Match width to .group-btn's explicit height (56px) above, instead of a
@@ -155,7 +180,15 @@ html, body {
 }
 .add-btn:hover {
   border-color: rgba(255, 255, 255, 0.75);
-  background: rgba(15, 52, 96, 0.85);
+  background: var(--group-color, rgba(138, 45, 15, 0.85));
+  filter: brightness(1.3);
+}
+
+/* Drop zone glow — shown on the widget bar when a detached group window is
+   dragged back over it. The amber ring signals "release to re-attach". */
+.widget.drop-zone-active {
+  box-shadow: 0 0 0 2px rgba(255, 200, 80, 0.85), 0 0 18px rgba(255, 200, 80, 0.35);
+  transition: box-shadow 0.15s;
 }
 
 /* Config window */

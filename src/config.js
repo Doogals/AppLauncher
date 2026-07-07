@@ -768,6 +768,7 @@ async function showSteamPicker() {
 
 async function showLayoutEditor() {
   if (currentItems.length === 0) return;
+  if (activeLayoutLabels) return; // already open — prevent duplicate windows
 
   const total = currentItems.length;
   const layoutLabels = Array.from({ length: total }, (_, i) => `layout-item-${i}`);
@@ -811,17 +812,23 @@ async function showLayoutEditor() {
     const win = new WebviewWindow(label, {
       url: `layout-item.html?idx=${idx}&name=${safeName}&total=${total}${vdParam}`,
       title: rawName,
-      x: 0, y: 0, width: physW, height: physH,
+      // Start tiny and hidden — set_layout_window_physics atomically positions,
+      // resizes, and shows via a single Win32 SetWindowPos(SWP_SHOWWINDOW) call,
+      // so there is no intermediate flash at the wrong size.
+      x: 0, y: 0, width: 1, height: 1,
       visible: false,
       resizable: true,
       decorations: true,
       alwaysOnTop: true,
     });
 
-    // Once created: move to exact physical position, then reveal.
+    // Once created: atomically move to exact physical position + show.
     win.once('tauri://created', () => {
       invoke('set_layout_window_physics', { label, x: physX, y: physY, width: physW, height: physH })
-        .finally(() => { invoke('show_layout_window', { label }).catch(() => {}); });
+        .catch((e) => console.error('[layout] set_layout_window_physics failed for', label, e));
+    });
+    win.once('tauri://error', (e) => {
+      console.error('[layout] tauri://error (creation FAILED) for', label, e);
     });
   }
 
@@ -975,7 +982,7 @@ async function initSettingsTab() {
       shareBtn.textContent = '✓ Link copied!';
       shareBtn.classList.add('btn-share--copied');
       setTimeout(() => {
-        shareBtn.textContent = '📤 Share App Launcher';
+        shareBtn.textContent = '📤 Share TakeOff';
         shareBtn.classList.remove('btn-share--copied');
       }, 2000);
     } catch {

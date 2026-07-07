@@ -405,6 +405,15 @@ fn save_group_color(group_id: String, color: String, state: State<AppState>, app
     Ok(())
 }
 
+#[tauri::command]
+fn save_add_btn_color(color: String, state: State<AppState>, app: tauri::AppHandle) -> Result<(), String> {
+    let mut config = state.0.lock().unwrap();
+    config.add_btn_color = if color.is_empty() { None } else { Some(color.clone()) };
+    config::save_config(&config)?;
+    let _ = app.emit("add-btn-color-changed", &color);
+    Ok(())
+}
+
 #[derive(serde::Serialize)]
 struct MonitorInfo {
     index: u32,
@@ -860,7 +869,7 @@ fn get_all_layout_positions(app: tauri::AppHandle, labels: Vec<String>) -> Vec<[
 fn close_layout_windows(app: tauri::AppHandle, labels: Vec<String>) {
     for label in &labels {
         if let Some(window) = app.get_webview_window(label) {
-            let _ = window.close();
+            let _ = window.destroy();
         }
     }
 }
@@ -923,7 +932,7 @@ fn complete_layout_save(app: tauri::AppHandle, labels: Vec<String>, ld: State<La
     let _ = app.emit("layout-save", LayoutSavePayload { positions, virtual_desktops, virtual_desktop_indices });
     for label in &labels {
         if let Some(window) = app.get_webview_window(label) {
-            let _ = window.close();
+            let _ = window.destroy();
         }
     }
 }
@@ -934,7 +943,7 @@ fn complete_layout_cancel(app: tauri::AppHandle, labels: Vec<String>, ld: State<
     let _ = app.emit("layout-cancel", ());
     for label in &labels {
         if let Some(window) = app.get_webview_window(label) {
-            let _ = window.close();
+            let _ = window.destroy();
         }
     }
 }
@@ -1075,13 +1084,36 @@ async fn detach_group_impl(app: &tauri::AppHandle, group_id: &str) -> Result<(),
 }
 
 /// Shared logic for attaching a group back into the widget.
-async fn attach_group_impl(app: &tauri::AppHandle, group_id: &str) -> Result<(), String> {
+///
+/// `insert_at` is an optional 0-based visual index among *attached* groups.
+/// When `Some(n)` the group is inserted at that visual position (same logic as
+/// `reorder_group`). When `None` the group is appended after all attached groups.
+async fn attach_group_impl(app: &tauri::AppHandle, group_id: &str, insert_at: Option<usize>) -> Result<(), String> {
     {
         let state = app.state::<AppState>();
         let mut config = state.0.lock().unwrap().clone();
-        for g in config.groups.iter_mut() {
-            if g.id == group_id { g.detached = false; break; }
-        }
+
+        // Pull the group out of the config array.
+        let from_idx = config.groups.iter().position(|g| g.id == group_id)
+            .ok_or("Group not found")?;
+        let mut group = config.groups.remove(from_idx);
+        group.detached = false;
+
+        // Re-insert at the correct visual position among attached groups.
+        let attached_indices: Vec<usize> = config.groups.iter()
+            .enumerate()
+            .filter(|(_, g)| !g.detached)
+            .map(|(i, _)| i)
+            .collect();
+
+        let config_insert = if let Some(vis) = insert_at {
+            if vis < attached_indices.len() { attached_indices[vis] } else { config.groups.len() }
+        } else {
+            // Append after the last attached group (before any detached ones at the tail).
+            attached_indices.last().map(|&i| i + 1).unwrap_or(0)
+        };
+
+        config.groups.insert(config_insert, group);
         config::save_config(&config)?;
         *state.0.lock().unwrap() = config;
     }
@@ -1098,8 +1130,253 @@ async fn detach_group(group_id: String, app: tauri::AppHandle) -> Result<(), Str
 }
 
 #[tauri::command]
-async fn attach_group(group_id: String, app: tauri::AppHandle) -> Result<(), String> {
-    attach_group_impl(&app, &group_id).await
+async fn attach_group(group_id: String, insert_at: Option<usize>, app: tauri::AppHandle) -> Result<(), String> {
+    attach_group_impl(&app, &group_id, insert_at).await
+}
+
+/// Attaches every detached group back into the widget bar in one shot.
+/// Useful as a recovery action when a group goes missing.
+#[tauri::command]
+async fn reattach_all_groups(app: tauri::AppHandle) -> Result<(), String> {
+    let detached_ids: Vec<String> = {
+        let state = app.state::<AppState>();
+        let mut config = state.0.lock().unwrap().clone();
+        let ids: Vec<String> = config.groups.iter()
+            .filter(|g| g.detached)
+            .map(|g| g.id.clone())
+            .collect();
+        for g in config.groups.iter_mut() {
+            g.detached = false;
+        }
+        config::save_config(&config)?;
+        *state.0.lock().unwrap() = config;
+        ids
+    };
+    for id in &detached_ids {
+        if let Some(win) = app.get_webview_window(&detached_group_label(id)) {
+            let _ = win.destroy();
+        }
+    }
+    let _ = app.emit("groups-updated", ());
+    Ok(())
+}
+
+/// Moves a group to a new position among the VISIBLE (non-detached) groups.
+/// `new_visual_index` is 0-based within the attached-only list.
+/// Detached groups keep their relative positions in config — they are not
+/// counted in `new_visual_index` and are not moved by this command.
+#[tauri::command]
+fn reorder_group(group_id: String, new_visual_index: usize, state: State<AppState>, app: tauri::AppHandle) -> Result<(), String> {
+    let mut config = state.0.lock().unwrap().clone();
+
+    // Remove the group to be moved.
+    let from_idx = config.groups.iter().position(|g| g.id == group_id)
+        .ok_or("Group not found")?;
+    let group = config.groups.remove(from_idx);
+
+    // After removal, collect the config-level indices of the remaining
+    // attached groups in visual order.
+    let attached_indices: Vec<usize> = config.groups.iter()
+        .enumerate()
+        .filter(|(_, g)| !g.detached)
+        .map(|(i, _)| i)
+        .collect();
+
+    // Find the config index to insert before, or append at end.
+    let insert_at = if new_visual_index < attached_indices.len() {
+        attached_indices[new_visual_index]
+    } else {
+        config.groups.len()
+    };
+
+    config.groups.insert(insert_at, group);
+    config::save_config(&config)?;
+    *state.0.lock().unwrap() = config;
+    let _ = app.emit("groups-updated", ());
+    Ok(())
+}
+
+/// Detaches a group and opens its floating window at the current cursor
+/// position. Used when the user drags a group button off the widget bar.
+#[tauri::command]
+async fn detach_group_at_cursor(group_id: String, app: tauri::AppHandle) -> Result<(), String> {
+    // Snap the saved detached position to wherever the cursor is right now
+    // so open_detached_group_window places the floating pill under the cursor.
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::POINT;
+        use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+        let mut pt = POINT { x: 0, y: 0 };
+        if unsafe { GetCursorPos(&mut pt) }.is_ok() {
+            let state = app.state::<AppState>();
+            let mut config = state.0.lock().unwrap().clone();
+            for g in config.groups.iter_mut() {
+                if g.id == group_id {
+                    g.detached_x = Some(pt.x);
+                    g.detached_y = Some(pt.y);
+                    break;
+                }
+            }
+            config::save_config(&config)?;
+            *state.0.lock().unwrap() = config;
+        }
+    }
+    detach_group_impl(&app, &group_id).await
+}
+
+/// Pre-creates the floating group window hidden at an off-screen position.
+/// Called as soon as a drag gesture starts (≥5 px) so WebView2 has time to
+/// initialise before the cursor leaves the widget. The group is NOT marked as
+/// detached yet — that happens in commit_detach when the cursor finally exits.
+#[tauri::command]
+async fn pre_detach(group_id: String, app: tauri::AppHandle) -> Result<(), String> {
+    let label = detached_group_label(&group_id);
+    // No-op if a window for this group already exists (e.g. already detached).
+    if app.get_webview_window(&label).is_some() { return Ok(()); }
+    // from_drag=1 tells detached-group.js to start with hasBeenOutsideWidget=true.
+    // This is correct because pre_detach is only called when the user is actively
+    // dragging a group — mouseleave will fire before commit_detach shows the
+    // window, so we know the cursor has already left the widget.
+    let url = format!("detached-group.html?id={}&from_drag=1", group_id);
+    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
+        .title("")
+        .inner_size(120.0, 80.0)
+        .position(-5000.0, -5000.0)   // off-screen while hidden
+        .decorations(false)
+        .transparent(true)
+        .resizable(false)
+        .always_on_top(false)
+        .skip_taskbar(true)
+        .visible(false)
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Marks the group as detached, moves its pre-created hidden window to the
+/// current cursor position, shows it, and starts a native window drag so the
+/// user's continuous mouse gesture carries over without needing to re-click.
+#[tauri::command]
+async fn commit_detach(group_id: String, app: tauri::AppHandle) -> Result<(), String> {
+    let label = detached_group_label(&group_id);
+    // Mark group as detached in config.
+    {
+        let state = app.state::<AppState>();
+        let mut config = state.0.lock().unwrap().clone();
+        for g in config.groups.iter_mut() {
+            if g.id == group_id {
+                g.detached = true;
+                break;
+            }
+        }
+        config::save_config(&config)?;
+        *state.0.lock().unwrap() = config;
+    }
+    match app.get_webview_window(&label) {
+        Some(win) => {
+            #[cfg(target_os = "windows")]
+            {
+                use windows::Win32::Foundation::POINT;
+                use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+                // Center the window on the live cursor position using physical pixels.
+                let mut pt = POINT { x: 0, y: 0 };
+                if unsafe { GetCursorPos(&mut pt) }.is_ok() {
+                    let size = win.inner_size().unwrap_or(tauri::PhysicalSize::new(80, 56));
+                    let x = pt.x - size.width as i32 / 2;
+                    let y = pt.y - size.height as i32 / 2;
+                    let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+                }
+                let _ = win.show();
+                let _ = win.set_focus();
+                // Start a native OS drag — same mechanism as Tauri's startDragging() in JS.
+                // Use extern "system" to avoid the windows-core version mismatch that
+                // prevents passing win.hwnd() directly to the windows-crate PostMessageW.
+                // WM_NCLBUTTONDOWN (0xA1) + HTCAPTION (2): Windows enters the move loop.
+                if let Ok(hwnd) = win.hwnd() {
+                    extern "system" {
+                        fn ReleaseCapture() -> i32;
+                        fn PostMessageW(hwnd: *mut std::ffi::c_void, msg: u32, wparam: usize, lparam: isize) -> i32;
+                    }
+                    unsafe {
+                        ReleaseCapture();
+                        PostMessageW(hwnd.0, 0x00A1, 2, 0); // WM_NCLBUTTONDOWN, HTCAPTION
+                    }
+                }
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let _ = win.show();
+            }
+        }
+        None => {
+            // pre_detach never created the window (e.g. window creation failed).
+            // Fall back to opening it the normal way at the cursor position.
+            let group = {
+                let state = app.state::<AppState>();
+                let found = state.0.lock().unwrap().groups.iter()
+                    .find(|g| g.id == group_id)
+                    .cloned();
+                found
+            };
+            if let Some(group) = group {
+                open_detached_group_window(&app, &group).await;
+            }
+        }
+    }
+    let _ = app.emit("groups-updated", ());
+    Ok(())
+}
+
+/// Destroys the pre-created floating window without touching config.
+/// Called when the user releases the mouse inside the widget (reorder / click)
+/// so no zombie hidden window is left behind.
+///
+/// Safety: if the group was already committed as detached (i.e. commit_detach
+/// ran before the user released the mouse), the window is the live floating
+/// pill — we must NOT destroy it here. This can happen when the cursor briefly
+/// exits then re-enters the widget edge and the user releases while the group's
+/// button is still stale in the DOM.
+#[tauri::command]
+fn cancel_detach(group_id: String, state: State<AppState>, app: tauri::AppHandle) {
+    let already_detached = {
+        let config = state.0.lock().unwrap();
+        config.groups.iter().any(|g| g.id == group_id && g.detached)
+    };
+    if already_detached {
+        return;
+    }
+    if let Some(win) = app.get_webview_window(&detached_group_label(&group_id)) {
+        let _ = win.destroy();
+    }
+}
+
+/// Returns the widget window's current physical-pixel rect so the detached
+/// group window can check for overlap without an extra Rust round-trip.
+#[derive(serde::Serialize)]
+struct WindowRect { x: i32, y: i32, width: u32, height: u32 }
+
+#[tauri::command]
+fn get_widget_rect(app: tauri::AppHandle) -> Option<WindowRect> {
+    let win = app.get_webview_window("widget")?;
+    let pos  = win.outer_position().ok()?;
+    let size = win.outer_size().ok()?;
+    Some(WindowRect { x: pos.x, y: pos.y, width: size.width, height: size.height })
+}
+
+/// Returns true if the left mouse button is currently held down.
+/// Called from the detached-group window after its onMoved debounce fires
+/// to distinguish "window stopped moving because drag ended" from
+/// "window briefly paused mid-drag".
+#[tauri::command]
+fn is_mouse_left_pressed() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+        // VK_LBUTTON = 0x01; high bit set means currently pressed.
+        (unsafe { GetAsyncKeyState(0x01) } as u16 & 0x8000) != 0
+    }
+    #[cfg(not(target_os = "windows"))]
+    false
 }
 
 #[tauri::command]
@@ -1130,18 +1407,25 @@ fn resize_detached_group(group_id: String, width: u32, height: u32, app: tauri::
 /// Right-click context menu popped from the detached group's own window.
 #[tauri::command]
 fn show_detached_group_context_menu(group_id: String, app: tauri::AppHandle) -> Result<(), String> {
+    let licensed = {
+        let state = app.state::<AppState>();
+        let config = state.0.lock().unwrap();
+        license::is_licensed(&config.license_key, &config.license_instance_id)
+    };
     let window_label = detached_group_label(&group_id);
-    popup_group_menu(app, group_id, true, window_label, false)
+    popup_group_menu(app, group_id, true, window_label, false, licensed)
 }
 
 #[tauri::command]
 fn show_group_context_menu(group_id: String, app: tauri::AppHandle) -> Result<(), String> {
-    let is_detached = {
+    let (is_detached, licensed) = {
         let state = app.state::<AppState>();
         let config = state.0.lock().unwrap();
-        config.groups.iter().find(|g| g.id == group_id).map(|g| g.detached).unwrap_or(false)
+        let detached = config.groups.iter().find(|g| g.id == group_id).map(|g| g.detached).unwrap_or(false);
+        let lic = license::is_licensed(&config.license_key, &config.license_instance_id);
+        (detached, lic)
     };
-    popup_group_menu(app, group_id, is_detached, "widget".to_string(), true)
+    popup_group_menu(app, group_id, is_detached, "widget".to_string(), true, licensed)
 }
 
 /// Shared implementation for both group context menus (widget bar and detached pill).
@@ -1154,19 +1438,27 @@ fn popup_group_menu(
     is_detached: bool,
     window_label: String,
     is_widget: bool,
+    licensed: bool,
 ) -> Result<(), String> {
     let handle = app.clone();
     app.run_on_main_thread(move || {
         use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
         let _ = (|| -> Result<(), String> {
-            let detach_label = if is_detached { "📌  Attach to Widget" } else { "📌  Detach from Widget" };
+            let detach_label = if is_detached { "Attach to Widget" } else { "Detach from Widget" };
             let detach_id    = if is_detached { format!("ctx-attach:{}", group_id) } else { format!("ctx-detach:{}", group_id) };
-            let edit   = MenuItem::with_id(&handle, format!("ctx-edit:{}", group_id),   "✏️  Edit Group",    true, None::<&str>).map_err(|e| e.to_string())?;
-            let color  = MenuItem::with_id(&handle, format!("ctx-color:{}", group_id),  "🎨  Change Color",  true, None::<&str>).map_err(|e| e.to_string())?;
-            let detach = MenuItem::with_id(&handle, detach_id,                            detach_label,       true, None::<&str>).map_err(|e| e.to_string())?;
+            let edit   = MenuItem::with_id(&handle, format!("ctx-edit:{}", group_id),   "Edit Group",    true, None::<&str>).map_err(|e| e.to_string())?;
+            let color  = MenuItem::with_id(&handle, format!("ctx-color:{}", group_id),  "Change Color",  true, None::<&str>).map_err(|e| e.to_string())?;
+            let detach = MenuItem::with_id(&handle, detach_id,                            detach_label,    true, None::<&str>).map_err(|e| e.to_string())?;
             let sep    = PredefinedMenuItem::separator(&handle).map_err(|e| e.to_string())?;
-            let delete = MenuItem::with_id(&handle, format!("ctx-delete:{}", group_id), "🗑️  Delete Group",  true, None::<&str>).map_err(|e| e.to_string())?;
-            let menu   = Menu::with_items(&handle, &[&edit, &color, &detach, &sep, &delete]).map_err(|e| e.to_string())?;
+            let delete = MenuItem::with_id(&handle, format!("ctx-delete:{}", group_id), "Delete Group",  true, None::<&str>).map_err(|e| e.to_string())?;
+            let sep2   = PredefinedMenuItem::separator(&handle).map_err(|e| e.to_string())?;
+            let share   = MenuItem::with_id(&handle, "ctx-share",   "Share TakeOff", true, None::<&str>).map_err(|e| e.to_string())?;
+            let upgrade = MenuItem::with_id(&handle, "ctx-upgrade", "Upgrade",        true, None::<&str>).map_err(|e| e.to_string())?;
+            let menu = if licensed {
+                Menu::with_items(&handle, &[&edit, &color, &detach, &sep, &delete, &sep2, &share]).map_err(|e| e.to_string())?
+            } else {
+                Menu::with_items(&handle, &[&edit, &color, &detach, &sep, &delete, &sep2, &share, &upgrade]).map_err(|e| e.to_string())?
+            };
             if let Some(win) = handle.get_webview_window(&window_label) {
                 if is_widget { force_foreground(&win); }
                 win.popup_menu(&menu).map_err(|e| e.to_string())?;
@@ -1195,11 +1487,39 @@ async fn set_layout_window_physics(
     width: u32,
     height: u32,
 ) {
-    let Some(win) = app.get_webview_window(&label) else { return };
-    // set_size on Windows maps to SetWindowPos with the outer rect dimensions,
-    // which matches GetWindowRect — so the saved physical size restores correctly.
+    let Some(win) = app.get_webview_window(&label) else {
+        eprintln!("[layout] set_layout_window_physics: window '{}' NOT FOUND", label);
+        return;
+    };
+    eprintln!("[layout] set_layout_window_physics: positioning '{}' at ({},{}) {}x{}", label, x, y, width, height);
+    // Use a single SetWindowPos call to atomically reposition, resize, restore
+    // topmost z-order, and show the window. This avoids the two-step
+    // (position-while-hidden → show) flash that occurs when the window briefly
+    // appears at the wrong size before the JS show_layout_window invoke fires.
+    #[cfg(target_os = "windows")]
+    if let Ok(hwnd) = win.hwnd() {
+        extern "system" {
+            fn SetWindowPos(
+                hwnd: *mut std::ffi::c_void,
+                hwnd_insert_after: *mut std::ffi::c_void,
+                x: i32, y: i32,
+                cx: i32, cy: i32,
+                flags: u32,
+            ) -> i32;
+        }
+        // SWP_SHOWWINDOW = 0x0040 — show the window as part of this call.
+        // HWND_TOPMOST   = -1    — keep it above non-topmost windows.
+        const SWP_SHOWWINDOW: u32 = 0x0040;
+        let hwnd_topmost = (-1isize) as *mut std::ffi::c_void;
+        unsafe {
+            SetWindowPos(hwnd.0, hwnd_topmost, x, y, width as i32, height as i32, SWP_SHOWWINDOW);
+        }
+        return;
+    }
+    // Non-Windows fallback (unused in practice — this app is Windows-only).
     let _ = win.set_size(tauri::PhysicalSize::new(width, height));
     let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+    let _ = win.show();
 }
 
 /// Shows a layout-editor window that was created hidden.
@@ -1207,8 +1527,18 @@ async fn set_layout_window_physics(
 /// so the window never flashes at a wrong position.
 #[tauri::command]
 fn show_layout_window(app: tauri::AppHandle, label: String) -> Result<(), String> {
-    let win = app.get_webview_window(&label).ok_or("window not found")?;
-    win.show().map_err(|e| e.to_string())
+    let win = app.get_webview_window(&label).ok_or_else(|| {
+        eprintln!("[layout] show_layout_window: window '{}' NOT FOUND", label);
+        "window not found".to_string()
+    })?;
+    eprintln!("[layout] show_layout_window: showing '{}'", label);
+    win.show().map_err(|e| {
+        eprintln!("[layout] show_layout_window: show() FAILED for '{}': {}", label, e);
+        e.to_string()
+    })?;
+    let _ = win.set_always_on_top(true);
+    let _ = win.set_focus();
+    Ok(())
 }
 
 /// Returns the physical-pixel rect [x, y, w, h] of any window by label.
@@ -1354,50 +1684,117 @@ async fn open_widget_color_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Same tabbed color-picker as group/widget, opened in "add-btn" mode so the
+/// chosen color is saved to add_btn_color (not widget_color or any group).
+#[tauri::command]
+async fn open_add_btn_color_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(existing) = app.get_webview_window("add-btn-color") {
+        let _ = existing.close();
+    }
+    if let Ok(win) = tauri::WebviewWindowBuilder::new(
+        &app,
+        "add-btn-color",
+        tauri::WebviewUrl::App("group-color.html?mode=add-btn".into()),
+    )
+    .title("Add Button Color")
+    .background_color(tauri::webview::Color(0x1a, 0x1a, 0x2e, 255))
+    .inner_size(280.0, 420.0)
+    .decorations(true)
+    .resizable(false)
+    .always_on_top(true)
+    .build()
+    {
+        center_on_widget_monitor(&app, &win, 280.0, 420.0);
+    }
+    Ok(())
+}
+
+/// Right-click menu on the + (add group) button — just "Change Color" so the
+/// user can give the add button its own color independent of the widget background.
+#[tauri::command]
+fn show_add_btn_context_menu(app: tauri::AppHandle) -> Result<(), String> {
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        use tauri::menu::{Menu, MenuItem};
+        let _ = (|| -> Result<(), String> {
+            let color = MenuItem::with_id(&handle, "add-btn-color-menu", "Change Color", true, None::<&str>)
+                .map_err(|e| e.to_string())?;
+            let menu = Menu::with_items(&handle, &[&color]).map_err(|e| e.to_string())?;
+            if let Some(win) = handle.get_webview_window("widget") {
+                force_foreground(&win);
+                win.popup_menu(&menu).map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        })();
+    }).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn show_widget_context_menu(app: tauri::AppHandle, state: State<AppState>) -> Result<(), String> {
-    let (launch_on_startup, low_profile) = {
+    let (launch_on_startup, low_profile, licensed, has_detached) = {
         let config = state.0.lock().unwrap();
-        (config.launch_on_startup, config.low_profile)
+        let lic = license::is_licensed(&config.license_key, &config.license_instance_id);
+        let det = config.groups.iter().any(|g| g.detached);
+        (config.launch_on_startup, config.low_profile, lic, det)
     };
     let handle = app.clone();
     app.run_on_main_thread(move || {
-        use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+        // CheckMenuItem gives the native OS checkmark glyph in the dedicated
+        // checkmark column. Regular MenuItem text then all starts at the same
+        // x position, giving perfect left-alignment across all rows.
+        use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
         let _ = (|| -> Result<(), String> {
-            let startup_label = if launch_on_startup { "✓  Launch on Startup" } else { "   Launch on Startup" };
-            let startup = MenuItem::with_id(&handle, "widget-startup", startup_label, true, None::<&str>)
+            let settings     = MenuItem::with_id(&handle, "widget-settings",   "App Settings\u{2026}", true, None::<&str>)
                 .map_err(|e| e.to_string())?;
-            let low_profile_label = if low_profile { "✓  Low Profile" } else { "   Low Profile" };
-            let low_profile_item = MenuItem::with_id(&handle, "widget-low-profile", low_profile_label, true, None::<&str>)
+            let change_color = MenuItem::with_id(&handle, "widget-color-menu", "Change Color",         true, None::<&str>)
                 .map_err(|e| e.to_string())?;
-            // Moved here from the system tray — nobody was finding it there.
+            let low_profile_item = CheckMenuItem::with_id(&handle, "widget-low-profile", "Low Profile Mode", true, low_profile, None::<&str>)
+                .map_err(|e| e.to_string())?;
             // Reuses the "bring_send" id so the existing on_menu_event handler
             // (which already handles both tray and popup-menu events) just works.
-            // Label reflects the widget's *actual current* z-order position
-            // (checked live, right now) rather than a persisted sticky flag —
-            // the widget can end up visually in front of other windows just
-            // through normal use, with no "always on top" mode ever toggled.
             let currently_in_front = handle
                 .get_webview_window("widget")
                 .map(|w| is_widget_in_front(&w))
                 .unwrap_or(false);
-            // Same leading padding as the unchecked toggle items above, so the
-            // text lines up regardless of whether a row has a checkmark or not.
-            let bring_send_label = if currently_in_front { "   Send to Back" } else { "   Bring to Front" };
+            let bring_send_label = if currently_in_front { "Send to Back" } else { "Bring to Front" };
             let bring_send = MenuItem::with_id(&handle, "bring_send", bring_send_label, true, None::<&str>)
                 .map_err(|e| e.to_string())?;
-            let sep1 = PredefinedMenuItem::separator(&handle).map_err(|e| e.to_string())?;
-            let settings = MenuItem::with_id(&handle, "widget-settings", "⚙️  App Settings\u{2026}", true, None::<&str>)
+            let startup  = CheckMenuItem::with_id(&handle, "widget-startup", "Launch on Startup", true, launch_on_startup, None::<&str>)
                 .map_err(|e| e.to_string())?;
-            let sep2 = PredefinedMenuItem::separator(&handle).map_err(|e| e.to_string())?;
-            let close = MenuItem::with_id(&handle, "widget-close", "   Close", true, None::<&str>)
+            let reattach = MenuItem::with_id(&handle, "reattach-all", "Reattach All Groups", true, None::<&str>)
+                .map_err(|e| e.to_string())?;
+            let sep1    = PredefinedMenuItem::separator(&handle).map_err(|e| e.to_string())?;
+            let share   = MenuItem::with_id(&handle, "ctx-share",   "Share TakeOff", true, None::<&str>)
+                .map_err(|e| e.to_string())?;
+            let upgrade = MenuItem::with_id(&handle, "ctx-upgrade", "Upgrade",        true, None::<&str>)
+                .map_err(|e| e.to_string())?;
+            let sep2    = PredefinedMenuItem::separator(&handle).map_err(|e| e.to_string())?;
+            let quit    = MenuItem::with_id(&handle, "widget-close", "Quit TakeOff",  true, None::<&str>)
                 .map_err(|e| e.to_string())?;
 
-            let items: Vec<&dyn tauri::menu::IsMenuItem<_>> = vec![
-                &startup, &low_profile_item, &bring_send, &sep1, &settings, &sep2, &close
-            ];
-
-            let menu = Menu::with_items(&handle, &items).map_err(|e| e.to_string())?;
+            // "Reattach All Groups" only appears when at least one group is detached.
+            let menu = match (licensed, has_detached) {
+                (true,  true)  => Menu::with_items(&handle, &[
+                    &settings as &dyn tauri::menu::IsMenuItem<_>,
+                    &change_color, &low_profile_item, &bring_send, &reattach, &startup,
+                    &sep1, &share, &sep2, &quit,
+                ]).map_err(|e| e.to_string())?,
+                (true,  false) => Menu::with_items(&handle, &[
+                    &settings as &dyn tauri::menu::IsMenuItem<_>,
+                    &change_color, &low_profile_item, &bring_send, &startup,
+                    &sep1, &share, &sep2, &quit,
+                ]).map_err(|e| e.to_string())?,
+                (false, true)  => Menu::with_items(&handle, &[
+                    &settings as &dyn tauri::menu::IsMenuItem<_>,
+                    &change_color, &low_profile_item, &bring_send, &reattach, &startup,
+                    &sep1, &share, &upgrade, &sep2, &quit,
+                ]).map_err(|e| e.to_string())?,
+                (false, false) => Menu::with_items(&handle, &[
+                    &settings as &dyn tauri::menu::IsMenuItem<_>,
+                    &change_color, &low_profile_item, &bring_send, &startup,
+                    &sep1, &share, &upgrade, &sep2, &quit,
+                ]).map_err(|e| e.to_string())?,
+            };
             if let Some(window) = handle.get_webview_window("widget") {
                 force_foreground(&window);
                 window.popup_menu(&menu).map_err(|e| e.to_string())?;
@@ -1409,6 +1806,14 @@ fn show_widget_context_menu(app: tauri::AppHandle, state: State<AppState>) -> Re
 
 #[cfg(target_os = "windows")]
 fn deregister_autostart() {
+    use std::os::windows::process::CommandExt;
+    // Remove the Task Scheduler task.
+    let _ = std::process::Command::new("schtasks")
+        .args(["/Delete", "/F", "/TN", "TakeOff"])
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW — no console flash
+        .output();
+
+    // Also clean up any legacy Run-key entry left over from older versions.
     use windows::core::HSTRING;
     use windows::Win32::System::Registry::{RegOpenKeyExW, RegDeleteValueW, HKEY, HKEY_CURRENT_USER, KEY_WRITE};
     let key_path = HSTRING::from("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
@@ -1437,26 +1842,37 @@ fn deregister_autostart() {
 
 #[cfg(target_os = "windows")]
 fn register_autostart(exe_path: &str) {
-    use windows::core::HSTRING;
-    use windows::Win32::System::Registry::{RegOpenKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_WRITE, REG_SZ};
+    use std::os::windows::process::CommandExt;
 
+    // current_exe() sometimes returns a \\?\ extended-path prefix that the
+    // Task Scheduler (and the old Run key) cannot handle — strip it off.
+    let clean = exe_path.strip_prefix(r"\\?\").unwrap_or(exe_path);
+
+    // Use Task Scheduler instead of the HKCU\Run registry key for two reasons:
+    //   1. Windows 10/11 imposes a multi-second delay on Run-key startup apps
+    //      to speed up perceived login; Task Scheduler ONLOGON tasks bypass it.
+    //   2. The Run key silently fails when the path contains spaces and is not
+    //      quoted — a common case when the username has spaces.
+    //
+    // /F  = force-overwrite an existing task with the same name
+    // /SC ONLOGON = trigger at every login of this user
+    // The path is quoted so spaces are handled correctly.
+    let task_tr = format!("\"{}\"", clean);
+    let _ = std::process::Command::new("schtasks")
+        .args(["/Create", "/F", "/TN", "TakeOff", "/TR", &task_tr, "/SC", "ONLOGON"])
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW — no console flash
+        .output();
+
+    // Erase any legacy Run-key entry from older versions of TakeOff so users
+    // aren't double-started (Task Scheduler task now owns this).
+    use windows::core::HSTRING;
+    use windows::Win32::System::Registry::{RegOpenKeyExW, RegDeleteValueW, HKEY, HKEY_CURRENT_USER, KEY_WRITE};
     let key_path = HSTRING::from("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
     let value_name = HSTRING::from("TakeOff");
-    let value_data: Vec<u16> = exe_path.encode_utf16().chain(std::iter::once(0)).collect();
-
     unsafe {
         let mut hkey = HKEY::default();
         if RegOpenKeyExW(HKEY_CURRENT_USER, &key_path, 0, KEY_WRITE, &mut hkey).is_ok() {
-            let _ = RegSetValueExW(
-                hkey,
-                &value_name,
-                0,
-                REG_SZ,
-                Some(std::slice::from_raw_parts(
-                    value_data.as_ptr() as *const u8,
-                    value_data.len() * 2,
-                )),
-            );
+            let _ = RegDeleteValueW(hkey, &value_name);
         }
     }
 }
@@ -1748,7 +2164,8 @@ pub fn run() {
                     let app2 = app.clone();
                     let group_id = group_id.to_string();
                     tauri::async_runtime::spawn(async move {
-                        let _ = attach_group_impl(&app2, &group_id).await;
+                        // Right-click attach: no target index, append at end.
+                        let _ = attach_group_impl(&app2, &group_id, None).await;
                     });
                 } else if let Some(group_id) = id.strip_prefix("ctx-edit:") {
                     // Edit can be triggered from the widget OR a detached window.
@@ -1800,6 +2217,16 @@ pub fn run() {
                         };
                         let _ = app2.emit("low-profile-changed", new_val);
                     });
+                } else if id == "widget-color-menu" {
+                    let app2 = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = open_widget_color_window(app2).await;
+                    });
+                } else if id == "add-btn-color-menu" {
+                    let app2 = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = open_add_btn_color_window(app2).await;
+                    });
                 } else if id == "widget-settings" {
                     let app2 = app.clone();
                     tauri::async_runtime::spawn(async move {
@@ -1819,6 +2246,23 @@ pub fn run() {
                             .always_on_top(true)
                             .build();
                         }
+                    });
+                } else if id == "ctx-share" {
+                    // Write to clipboard from Rust so it works even when the
+                    // webview lost focus to the native menu. Then emit an event
+                    // so the frontend shows the "Copied!" toast.
+                    if let Ok(mut board) = arboard::Clipboard::new() {
+                        let _ = board.set_text("https://tonic-tech.com/takeoff");
+                    }
+                    if let Some(window) = app.get_webview_window("widget") {
+                        let _ = window.emit("context-menu:share", ());
+                    }
+                } else if id == "ctx-upgrade" {
+                    let _ = open::that("https://tonictechapps.lemonsqueezy.com/checkout/buy/692bf539-a89a-4ff8-9da7-5c93507c21af");
+                } else if id == "reattach-all" {
+                    let app2 = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = reattach_all_groups(app2).await;
                     });
                 } else if id == "widget-close" {
                     if let Some(window) = app.get_webview_window("widget") {
@@ -1956,11 +2400,14 @@ pub fn run() {
             ensure_widget_on_screen,
             save_widget_color,
             save_group_color,
+            save_add_btn_color,
             open_group_color_window,
             open_widget_color_window,
+            open_add_btn_color_window,
             set_launch_on_startup,
             set_low_profile,
             show_widget_context_menu,
+            show_add_btn_context_menu,
             export_config,
             import_config,
             set_hotkey,
@@ -1983,8 +2430,16 @@ pub fn run() {
             save_cached_suggestions,
             show_group_context_menu,
             show_detached_group_context_menu,
+            reorder_group,
+            reattach_all_groups,
             detach_group,
             attach_group,
+            detach_group_at_cursor,
+            pre_detach,
+            commit_detach,
+            cancel_detach,
+            get_widget_rect,
+            is_mouse_left_pressed,
             save_detached_position,
             resize_detached_group,
             get_installed_browsers,

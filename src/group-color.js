@@ -1,9 +1,10 @@
 import { invoke } from '@tauri-apps/api/core';
 import { EXTRA_COLOR_HUES, withAlpha, SOLID_COLORS } from './colors.js';
 
-// This window does double duty — group color (?mode=group&id=X) and widget
-// color (?mode=widget) — rather than maintaining two near-identical tabbed
-// color pickers. Defaults to group mode for backward compatibility.
+// This window does triple duty — group color (?mode=group&id=X), widget
+// color (?mode=widget), and add-button color (?mode=add-btn) — rather than
+// maintaining three near-identical tabbed color pickers. Defaults to group
+// mode for backward compatibility.
 const params = new URLSearchParams(window.location.search);
 const mode = params.get('mode') || 'group';
 const groupId = params.get('id');
@@ -11,6 +12,7 @@ const groupId = params.get('id');
 // Each context keeps its own pre-existing 6 colors at its own opacity (the
 // widget needs to read as a solid bar, group buttons sit on top of it as
 // smaller accents at lower opacity) — only the 14 extra hues are shared.
+// The add button uses the same palette/opacity as group buttons.
 const THEME_COLORS = mode === 'widget'
   ? [
       { label: 'Translucent', value: 'rgba(15,20,40,0.25)'   },
@@ -37,6 +39,8 @@ async function applyColor(color) {
   try {
     if (mode === 'widget') {
       await invoke('save_widget_color', { color });
+    } else if (mode === 'add-btn') {
+      await invoke('save_add_btn_color', { color });
     } else {
       await invoke('save_group_color', { groupId, color });
     }
@@ -103,6 +107,8 @@ async function init() {
     const config = await invoke('get_config');
     if (mode === 'widget') {
       currentColor = config.widget_color || null;
+    } else if (mode === 'add-btn') {
+      currentColor = config.add_btn_color || null;
     } else {
       const group = (config.groups || []).find(g => g.id === groupId);
       currentColor = group?.color || null;

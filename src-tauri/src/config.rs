@@ -134,6 +134,9 @@ pub struct AppConfig {
     pub widget_x: Option<i32>,
     pub widget_y: Option<i32>,
     pub widget_color: Option<String>,
+    /// Custom color for the + (add group) button, independent of widget_color.
+    #[serde(default)]
+    pub add_btn_color: Option<String>,
     #[serde(default = "default_true")]
     pub launch_on_startup: bool,
     #[serde(default)]
@@ -162,6 +165,7 @@ impl Default for AppConfig {
             widget_x: None,
             widget_y: None,
             widget_color: None,
+            add_btn_color: None,
             launch_on_startup: true,
             widget_on_top: false,
             hotkey: default_hotkey(),
