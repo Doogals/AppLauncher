@@ -1278,28 +1278,98 @@ async fn commit_detach(group_id: String, app: tauri::AppHandle) -> Result<(), St
             {
                 use windows::Win32::Foundation::POINT;
                 use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
-                // Center the window on the live cursor position using physical pixels.
+                extern "system" {
+                    fn SetWindowPos(
+                        hwnd: *mut std::ffi::c_void,
+                        hwnd_insert_after: *mut std::ffi::c_void,
+                        x: i32, y: i32, cx: i32, cy: i32,
+                        flags: u32,
+                    ) -> i32;
+                    fn GetWindowRect(
+                        hwnd: *mut std::ffi::c_void,
+                        rect: *mut i32,
+                    ) -> i32;
+                    fn GetAsyncKeyState(vkey: i32) -> i16;
+                }
                 let mut pt = POINT { x: 0, y: 0 };
                 if unsafe { GetCursorPos(&mut pt) }.is_ok() {
                     let size = win.inner_size().unwrap_or(tauri::PhysicalSize::new(80, 56));
                     let x = pt.x - size.width as i32 / 2;
                     let y = pt.y - size.height as i32 / 2;
-                    let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
-                }
-                let _ = win.show();
-                let _ = win.set_focus();
-                // Start a native OS drag — same mechanism as Tauri's startDragging() in JS.
-                // Use extern "system" to avoid the windows-core version mismatch that
-                // prevents passing win.hwnd() directly to the windows-crate PostMessageW.
-                // WM_NCLBUTTONDOWN (0xA1) + HTCAPTION (2): Windows enters the move loop.
-                if let Ok(hwnd) = win.hwnd() {
-                    extern "system" {
-                        fn ReleaseCapture() -> i32;
-                        fn PostMessageW(hwnd: *mut std::ffi::c_void, msg: u32, wparam: usize, lparam: isize) -> i32;
-                    }
-                    unsafe {
-                        ReleaseCapture();
-                        PostMessageW(hwnd.0, 0x00A1, 2, 0); // WM_NCLBUTTONDOWN, HTCAPTION
+                    if let Ok(hwnd) = win.hwnd() {
+                        const SWP_SHOWWINDOW: u32 = 0x0040;
+                        const HWND_TOPMOST: isize = -1;
+                        unsafe {
+                            // Position, size, make topmost, and show atomically so
+                            // the window never flashes at its off-screen pre-detach
+                            // position (-5000, -5000).
+                            SetWindowPos(
+                                hwnd.0,
+                                HWND_TOPMOST as *mut _,
+                                x, y,
+                                size.width as i32, size.height as i32,
+                                SWP_SHOWWINDOW,
+                            );
+                        }
+                        // Spawn a cursor-tracking loop that moves the window to
+                        // follow the cursor until LMB is released.
+                        //
+                        // WM_NCLBUTTONDOWN + HTCAPTION (the previous approach) is
+                        // unreliable here because WebView2 holds its own internal
+                        // mouse capture from when the user pressed LMB on the widget.
+                        // That capture prevents the OS system-move loop from starting
+                        // on a window that never received the original WM_LBUTTONDOWN.
+                        // Polling with SetWindowPos sidesteps capture entirely.
+                        let hwnd_val = hwnd.0 as usize; // usize is Send; raw ptr is not
+                        std::thread::spawn(move || {
+                            const SWP_NOSIZE:     u32 = 0x0001;
+                            const SWP_NOMOVE:     u32 = 0x0002;
+                            const SWP_NOACTIVATE: u32 = 0x0010;
+                            const SWP_NOZORDER:   u32 = 0x0004;
+                            const HWND_NOTOPMOST: isize = -2;
+                            let hwnd_ptr = hwnd_val as *mut std::ffi::c_void;
+                            loop {
+                                // Stop as soon as LMB is released.
+                                if unsafe { GetAsyncKeyState(0x01 /* VK_LBUTTON */) }
+                                    & (0x8000u16 as i16) == 0
+                                {
+                                    break;
+                                }
+                                // Read live cursor position.
+                                let mut p = POINT { x: 0, y: 0 };
+                                if unsafe { GetCursorPos(&mut p) }.is_err() { break; }
+                                // Read current window size — JS may resize it while
+                                // the button content is rendering after commit.
+                                let mut rect = [0i32; 4]; // [left, top, right, bottom]
+                                unsafe { GetWindowRect(hwnd_ptr, rect.as_mut_ptr()); }
+                                let w = rect[2] - rect[0];
+                                let h = rect[3] - rect[1];
+                                // Centre the window on the cursor.
+                                unsafe {
+                                    SetWindowPos(
+                                        hwnd_ptr,
+                                        std::ptr::null_mut(),
+                                        p.x - w / 2,
+                                        p.y - h / 2,
+                                        0, 0,
+                                        SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER,
+                                    );
+                                }
+                                std::thread::sleep(
+                                    std::time::Duration::from_millis(8),
+                                );
+                            }
+                            // Clear the topmost flag that was set during the drag so
+                            // the floating pill sits in normal z-order afterwards.
+                            unsafe {
+                                SetWindowPos(
+                                    hwnd_ptr,
+                                    HWND_NOTOPMOST as *mut _,
+                                    0, 0, 0, 0,
+                                    SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE,
+                                );
+                            }
+                        });
                     }
                 }
             }
@@ -1634,7 +1704,7 @@ async fn open_group_color_window_inner(app: &tauri::AppHandle, group_id: String)
     // regardless of that timing/sizing, and the taller inner_size below
     // gives the 4-row grid proper room instead of being right at the edge.
     .background_color(tauri::webview::Color(0x1a, 0x1a, 0x2e, 255))
-    .inner_size(280.0, 420.0)
+    .inner_size(280.0, 370.0)
     .decorations(true)
     .resizable(false)
     .always_on_top(true)
@@ -1643,9 +1713,9 @@ async fn open_group_color_window_inner(app: &tauri::AppHandle, group_id: String)
     if let Ok(win) = result {
         // Prefer config window's monitor; if not open, fall back to widget's monitor
         if app.get_webview_window("config").is_some() {
-            center_on_parent_monitor(app, "config", &win, 280.0, 420.0);
+            center_on_parent_monitor(app, "config", &win, 280.0, 370.0);
         } else {
-            center_on_widget_monitor(app, &win, 280.0, 420.0);
+            center_on_widget_monitor(app, &win, 280.0, 370.0);
         }
     }
 }
@@ -1673,13 +1743,13 @@ async fn open_widget_color_window(app: tauri::AppHandle) -> Result<(), String> {
     )
     .title("Widget Color")
     .background_color(tauri::webview::Color(0x1a, 0x1a, 0x2e, 255))
-    .inner_size(280.0, 420.0)
+    .inner_size(280.0, 370.0)
     .decorations(true)
     .resizable(false)
     .always_on_top(true)
     .build()
     {
-        center_on_widget_monitor(&app, &win, 280.0, 420.0);
+        center_on_widget_monitor(&app, &win, 280.0, 370.0);
     }
     Ok(())
 }
@@ -1698,13 +1768,13 @@ async fn open_add_btn_color_window(app: tauri::AppHandle) -> Result<(), String> 
     )
     .title("Add Button Color")
     .background_color(tauri::webview::Color(0x1a, 0x1a, 0x2e, 255))
-    .inner_size(280.0, 420.0)
+    .inner_size(280.0, 370.0)
     .decorations(true)
     .resizable(false)
     .always_on_top(true)
     .build()
     {
-        center_on_widget_monitor(&app, &win, 280.0, 420.0);
+        center_on_widget_monitor(&app, &win, 280.0, 370.0);
     }
     Ok(())
 }
@@ -2309,6 +2379,25 @@ pub fn run() {
                     // No more sticky "always on top" on startup — Bring to
                     // Front / Send to Back is now a one-time z-order push,
                     // re-evaluated live each time the widget menu is opened.
+
+                    // Move the widget onto whichever virtual desktop is
+                    // currently active. Without this the widget appears at the
+                    // right screen coordinates but on whatever VD it was on
+                    // when the app last closed, making it invisible until the
+                    // user selects "Bring to View" from the tray.
+                    #[cfg(target_os = "windows")]
+                    if let Some(vd) = crate::virtual_desktop::get_current_virtual_desktop_guid() {
+                        if let Ok(hwnd) = widget.hwnd() {
+                            crate::virtual_desktop::move_window_to_virtual_desktop(
+                                hwnd.0 as *mut _, &vd,
+                            );
+                        }
+                    }
+
+                    // Widget starts hidden in tauri.conf.json ("visible": false)
+                    // so it can be positioned and moved to the right VD before
+                    // becoming visible. Now that both are done, show it.
+                    let _ = widget.show();
                 }
             }
 

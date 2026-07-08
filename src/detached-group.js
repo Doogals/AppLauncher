@@ -9,10 +9,35 @@ const widget  = document.getElementById('widget');
 // 4px padding on each side of the transparent wrapper (see detached-group.html).
 const PAD = 0;
 
-// Drag the floating pill by clicking anywhere on it (not on the button itself
-// when it's a click — mousedown is fine since startDragging takes over).
+// Drag the floating pill by moving while holding LMB. We use a movement
+// threshold (same approach as the widget bar's reorder logic) so that a
+// quick click on the button still fires the click event. Without this,
+// calling startDragging() unconditionally on mousedown hands mouse capture
+// to the OS move loop, which consumes the mouseup and prevents the click
+// event from ever reaching the launch handler.
+let dragPending  = false;
+let dragOriginX  = 0;
+let dragOriginY  = 0;
+const DRAG_PX    = 5; // pixels of movement required to start a drag
+
 widget.addEventListener('mousedown', (e) => {
-  if (e.button === 0) getCurrentWindow().startDragging();
+  if (e.button !== 0) return;
+  dragPending = true;
+  dragOriginX = e.clientX;
+  dragOriginY = e.clientY;
+});
+
+// Release on either the widget or anywhere outside (e.g. after native drag).
+document.addEventListener('mouseup', () => { dragPending = false; });
+
+widget.addEventListener('mousemove', (e) => {
+  if (!dragPending) return;
+  const dx = e.clientX - dragOriginX;
+  const dy = e.clientY - dragOriginY;
+  if (dx * dx + dy * dy >= DRAG_PX * DRAG_PX) {
+    dragPending = false;
+    getCurrentWindow().startDragging();
+  }
 });
 
 widget.addEventListener('contextmenu', (e) => {

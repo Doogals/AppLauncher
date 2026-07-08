@@ -2,6 +2,13 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen, emitTo } from '@tauri-apps/api/event';
 
+// Static imports so Vite includes both images in the production bundle and
+// gives us their hashed asset URLs. If these were plain strings Vite would
+// only bundle the one referenced in widget.html, leaving the dark variant
+// missing from the installed app.
+import lightLogoUrl from './takeoff-logo-light.png';
+import darkLogoUrl from './takeoff-logo-dark.png';
+
 const widget = document.getElementById('widget');
 
 // Drag the window by clicking the widget background (left-click only, not on buttons)
@@ -54,7 +61,7 @@ function applyWidgetColor(color) {
     const textEl = wordmark.querySelector('.app-wordmark-text');
     if (textEl) textEl.style.color = isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.8)';
     const logo = wordmark.querySelector('#app-logo');
-    if (logo) logo.src = isLight ? 'takeoff-logo-dark.png' : 'takeoff-logo-light.png';
+    if (logo) logo.src = isLight ? darkLogoUrl : lightLogoUrl;
   }
   const closeBtn = document.getElementById('widget-close-btn');
   if (closeBtn) closeBtn.style.color = getContrastColor(color, 'rgba(255,255,255,0.3)', 'rgba(0,0,0,0.35)');
@@ -136,14 +143,7 @@ document.addEventListener('mousemove', (e) => {
     isDragging = true;
     document.body.style.cursor = 'grabbing';
 
-    // Pre-create the floating window hidden so it has time to initialise
-    // before the cursor leaves the widget (WebView2 takes 150–400 ms).
-    pendingDetachGroupId = dragGroupId;
-    preDetachReady       = false;
-    pendingCommit        = null;
-    invoke('pre_detach', { groupId: dragGroupId }).catch(() => {
-      pendingDetachGroupId = null; // creation failed; mouseleave will use fallback
-    });
+    // pre_detach was already called on mousedown — no need to call it again here.
 
     const srcBtn = widget.querySelector(`[data-group-id="${dragGroupId}"]`);
     if (srcBtn) {
@@ -216,8 +216,10 @@ document.addEventListener('mouseup', () => {
     return;
   }
 
-  // If the drag ended inside the widget, destroy the pre-created hidden window.
-  if (isDragging && pendingDetachGroupId) {
+  // Cancel the pre-created window: covers both "user clicked without dragging"
+  // (isDragging still false, but pre_detach was called on mousedown) and
+  // "drag ended inside the widget" (reorder or drag-back-in).
+  if (pendingDetachGroupId) {
     invoke('cancel_detach', { groupId: pendingDetachGroupId }).catch(() => {});
     pendingDetachGroupId = null;
     preDetachReady       = false;
@@ -262,27 +264,14 @@ widget.addEventListener('mouseleave', (e) => {
     widget.querySelectorAll('.drag-placeholder').forEach(b => b.classList.remove('drag-placeholder'));
 
     if (pendingDetachGroupId === gid) {
-      if (preDetachReady) {
-        // Window fully rendered — commit right now (removes ghost inside).
-        executeCommit(gid);
-      } else {
-        // Window still loading — queue commit for when it signals ready.
-        pendingCommit = gid;
-        // Safety: if the window never becomes ready, clean up after 2 s.
-        clearTimeout(ghostCleanupTimeout);
-        ghostCleanupTimeout = setTimeout(() => {
-          if (pendingCommit) {
-            invoke('cancel_detach', { groupId: pendingDetachGroupId }).catch(() => {});
-            pendingDetachGroupId = null;
-            pendingCommit        = null;
-            preDetachReady       = false;
-          }
-          pendingGhostGroupId = null;
-          cleanupGhostOnly();
-        }, 2000);
-      }
+      // Commit immediately — don't wait for preDetachReady.
+      // PostMessage(WM_NCLBUTTONDOWN) fires while LMB is still down, so the
+      // native OS move loop starts without requiring a re-click. If WebView2
+      // hasn't finished rendering, the window is transparent for ~100 ms then
+      // the button appears — far better than the old "load pause + re-click".
+      executeCommit(gid);
     } else {
-      // Fallback: pre-detach wasn't started (drag activated at the very edge).
+      // Fallback: pre-detach wasn't started or its window creation failed.
       pendingGhostGroupId = gid;
       clearTimeout(ghostCleanupTimeout);
       ghostCleanupTimeout = setTimeout(() => {
@@ -298,18 +287,12 @@ widget.addEventListener('mouseleave', (e) => {
 
 // ── Floating-window ready signal ─────────────────────────────────────────────
 // When the detached-group window has rendered its button it fires this event.
+// The pre-detach path no longer waits for this — it commits immediately on
+// mouseleave so PostMessage(WM_NCLBUTTONDOWN) fires while LMB is still down.
+// This listener now only handles the fallback path (detach_group_at_cursor).
 listen('detached-group-ready', ({ payload }) => {
-  if (payload.groupId === pendingDetachGroupId) {
-    // Pre-detach path: the hidden window just rendered.
-    preDetachReady = true;
-    if (pendingCommit === payload.groupId) {
-      // mouseleave already fired while we were waiting — commit now.
-      executeCommit(payload.groupId);
-    }
-    // If pendingCommit is null, mouseleave hasn't fired yet; when it does
-    // it will see preDetachReady === true and call executeCommit directly.
-  } else if (payload.groupId === pendingGhostGroupId) {
-    // Fallback path: old-style single-step detach — remove the linger ghost.
+  if (payload.groupId === pendingGhostGroupId) {
+    // Fallback path: window ready, remove linger ghost.
     clearTimeout(ghostCleanupTimeout);
     pendingGhostGroupId = null;
     cleanupGhostOnly();
@@ -451,6 +434,15 @@ async function render() {
       dragSrcIndex = visualIdx;
       dragStartX   = e.clientX;
       isDragging   = false;
+      // Kick off WebView2 init immediately so the floating window has the
+      // maximum possible warmup time (~300 ms extra vs. the old 5 px trigger).
+      // mouseup cancels it if the user clicks without dragging.
+      pendingDetachGroupId = group.id;
+      preDetachReady       = false;
+      pendingCommit        = null;
+      invoke('pre_detach', { groupId: group.id }).catch(() => {
+        pendingDetachGroupId = null; // creation failed; mouseleave uses fallback
+      });
     });
 
     btn.addEventListener('click', () => {

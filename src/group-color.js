@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { EXTRA_COLOR_HUES, withAlpha, SOLID_COLORS } from './colors.js';
 
 // This window does triple duty — group color (?mode=group&id=X), widget
@@ -121,3 +122,7 @@ async function init() {
 }
 
 init();
+
+document.getElementById('gc-done-btn').addEventListener('click', async () => {
+  await getCurrentWindow().close();
+});

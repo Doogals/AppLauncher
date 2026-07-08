@@ -15,7 +15,7 @@
 #>
 
 param(
-    [string]$Version = "0.5.5",
+    [string]$Version = "0.5.6",
     [string]$KeyPath = "$HOME\.tauri\applauncher.key",
     [string]$WebsiteRepo = "C:\Users\dougb\Desktop\tonic-tech-site",
     [string]$GitHubRepo = "Doogals/AppLauncher"
@@ -65,9 +65,10 @@ if ($pending) {
     $commitMsg = @"
 Release v$Version
 
-- Fix: dragging a floating group back onto the widget now reliably reattaches
-- Fix: layout editor windows appear correctly without flash or missing windows
-- Fix: Share button label updated to TakeOff branding
+- Fix: widget now visible immediately on startup
+- Fix: TakeOff logo now displays correctly in installed app
+- Improvement: color picker has DONE button, centered layout, and correct height
+- Improvement: drag group off widget is now seamless — no re-click required
 "@
     # Writing to a temp file and using -F instead of -m $commitMsg directly --
     # passing a string with embedded "quotes" as a native-command argument
@@ -125,9 +126,10 @@ $releaseAsset = Join-Path $RepoRoot $finalMsiName
 Copy-Item $signTarget $releaseAsset -Force
 
 $notes = @"
-- Fix: Dragging a floating group back onto the widget now reliably reattaches — works even after hovering for a long time before releasing
-- Fix: Layout editor windows now open correctly every time with no flash or blank windows
-- Fix: Share button now correctly shows "Share TakeOff"
+- Fix: Widget is now visible immediately on startup (no more invisible launcher bar)
+- Fix: TakeOff logo now displays correctly in the installed app
+- Improvement: Color picker now has a DONE button, centered layout, and correct height
+- Improvement: Dragging a group off the widget is now seamless — no re-click required after detach
 "@
 
 # --notes-file instead of --notes $notes -- same reasoning as the commit
