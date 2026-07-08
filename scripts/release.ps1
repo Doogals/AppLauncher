@@ -15,7 +15,7 @@
 #>
 
 param(
-    [string]$Version = "0.5.6",
+    [string]$Version = "0.5.7",
     [string]$KeyPath = "$HOME\.tauri\applauncher.key",
     [string]$WebsiteRepo = "C:\Users\dougb\Desktop\tonic-tech-site",
     [string]$GitHubRepo = "Doogals/AppLauncher"
@@ -65,11 +65,9 @@ if ($pending) {
     $commitMsg = @"
 Release v$Version
 
-- Fix: widget now visible immediately on startup
-- Fix: TakeOff logo now displays correctly in installed app
-- Improvement: color picker has DONE button, centered layout, and correct height
-- Improvement: drag group off widget is now seamless — no re-click required
 - Fix: right-click menu after launching a group now highlights and responds correctly
+- Fix: compiler warnings cleaned (GetWindowRect signature, dead_code)
+- Bump version to $Version
 "@
     # Writing to a temp file and using -F instead of -m $commitMsg directly --
     # passing a string with embedded "quotes" as a native-command argument
@@ -127,10 +125,6 @@ $releaseAsset = Join-Path $RepoRoot $finalMsiName
 Copy-Item $signTarget $releaseAsset -Force
 
 $notes = @"
-- Fix: Widget is now visible immediately on startup (no more invisible launcher bar)
-- Fix: TakeOff logo now displays correctly in the installed app
-- Improvement: Color picker now has a DONE button, centered layout, and correct height
-- Improvement: Dragging a group off the widget is now seamless — no re-click required after detach
 - Fix: Right-click menu now highlights and responds correctly immediately after launching a group
 "@
 
