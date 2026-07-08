@@ -1287,7 +1287,7 @@ async fn commit_detach(group_id: String, app: tauri::AppHandle) -> Result<(), St
                     ) -> i32;
                     fn GetWindowRect(
                         hwnd: *mut std::ffi::c_void,
-                        rect: *mut i32,
+                        rect: *mut [i32; 4],
                     ) -> i32;
                     fn GetAsyncKeyState(vkey: i32) -> i16;
                 }
@@ -1341,7 +1341,7 @@ async fn commit_detach(group_id: String, app: tauri::AppHandle) -> Result<(), St
                                 // Read current window size — JS may resize it while
                                 // the button content is rendering after commit.
                                 let mut rect = [0i32; 4]; // [left, top, right, bottom]
-                                unsafe { GetWindowRect(hwnd_ptr, rect.as_mut_ptr()); }
+                                unsafe { GetWindowRect(hwnd_ptr, &mut rect); }
                                 let w = rect[2] - rect[0];
                                 let h = rect[3] - rect[1];
                                 // Centre the window on the cursor.
@@ -2085,20 +2085,37 @@ fn is_widget_in_front(_window: &tauri::WebviewWindow) -> bool {
 
 /// TrackPopupMenu (what Tauri's popup_menu() wraps on Windows) needs the
 /// owning window to actually be the foreground window when it's called —
-/// otherwise Windows can still draw the menu, but mouse input doesn't route
-/// to it, making it look "frozen" (visible, nothing highlights, nothing is
-/// clickable). The widget is an always-on-top floating bar that deliberately
-/// avoids stealing focus during normal use, so it's often NOT the foreground
-/// window at the moment of a right-click — hence this being intermittent.
-/// Calling this from within the same right-click's event handling is one of
-/// the documented exceptions to Windows' foreground-lock restrictions.
+/// otherwise Windows draws the menu but mouse input doesn't route to it
+/// (visible, nothing highlights, nothing clickable). Plain SetForegroundWindow
+/// is blocked by Windows' foreground-lock when our process doesn't own it,
+/// which happens reliably right after launching apps that took the foreground.
+/// Fix: AttachThreadInput borrows the current foreground window's thread
+/// input context, which lifts the restriction and lets SetForegroundWindow
+/// succeed regardless of who currently owns the foreground lock.
 #[cfg(target_os = "windows")]
 fn force_foreground(window: &tauri::WebviewWindow) {
     extern "system" {
         fn SetForegroundWindow(hwnd: *mut std::ffi::c_void) -> i32;
+        fn BringWindowToTop(hwnd: *mut std::ffi::c_void) -> i32;
+        fn GetForegroundWindow() -> *mut std::ffi::c_void;
+        fn GetWindowThreadProcessId(hwnd: *mut std::ffi::c_void, lpdw_process_id: *mut u32) -> u32;
+        fn GetCurrentThreadId() -> u32;
+        fn AttachThreadInput(id_attach: u32, id_attach_to: u32, f_attach: i32) -> i32;
     }
-    if let Ok(hwnd) = window.hwnd() {
-        unsafe { SetForegroundWindow(hwnd.0 as *mut _); }
+    let Ok(hwnd) = window.hwnd() else { return };
+    let hwnd_ptr = hwnd.0 as *mut std::ffi::c_void;
+    unsafe {
+        let fg = GetForegroundWindow();
+        let fg_tid = GetWindowThreadProcessId(fg, std::ptr::null_mut());
+        let my_tid = GetCurrentThreadId();
+        if fg_tid != 0 && fg_tid != my_tid {
+            AttachThreadInput(my_tid, fg_tid, 1);  // borrow foreground thread's input context
+            SetForegroundWindow(hwnd_ptr);
+            BringWindowToTop(hwnd_ptr);
+            AttachThreadInput(my_tid, fg_tid, 0);  // release
+        } else {
+            SetForegroundWindow(hwnd_ptr);
+        }
     }
 }
 

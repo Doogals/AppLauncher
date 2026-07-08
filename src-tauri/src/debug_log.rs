@@ -20,6 +20,7 @@ pub fn write_debug_log(msg: &str) {
 }
 
 /// Truncates the log file.
+#[allow(dead_code)]
 pub fn clear_debug_log() {
     #[cfg(debug_assertions)]
     {

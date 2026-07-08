@@ -69,6 +69,7 @@ Release v$Version
 - Fix: TakeOff logo now displays correctly in installed app
 - Improvement: color picker has DONE button, centered layout, and correct height
 - Improvement: drag group off widget is now seamless — no re-click required
+- Fix: right-click menu after launching a group now highlights and responds correctly
 "@
     # Writing to a temp file and using -F instead of -m $commitMsg directly --
     # passing a string with embedded "quotes" as a native-command argument
@@ -130,6 +131,7 @@ $notes = @"
 - Fix: TakeOff logo now displays correctly in the installed app
 - Improvement: Color picker now has a DONE button, centered layout, and correct height
 - Improvement: Dragging a group off the widget is now seamless — no re-click required after detach
+- Fix: Right-click menu now highlights and responds correctly immediately after launching a group
 "@
 
 # --notes-file instead of --notes $notes -- same reasoning as the commit
