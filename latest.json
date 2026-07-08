@@ -1,10 +1,10 @@
 {
     "version":  "0.5.6",
     "notes":  "TakeOff v0.5.6",
-    "pub_date":  "2026-07-08T00:05:31.000Z",
+    "pub_date":  "2026-07-08T00:23:32.000Z",
     "platforms":  {
                       "windows-x86_64":  {
-                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSdHZBOC9TZlBrWDU1TEVyVTlDY0grTUZtSFlUQjNVbGViRkxFSDg3RkkvQmJOdGRhanl2QmZ0ZTFyWjgzSFphUmpOa3FFZVBnaHhCTXJ1aVdKVk9NRlQzNlNWeUIxOHdFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgzNDY5MTI3CWZpbGU6YXBwLm1zaQpyazI4NFJKREVmR0R3SHArNmZjTFZkeEt3blovVEJvR0VqeHl6N2NLMXdFR3RhQm9hTHhaS0J2MW1Cc1VUWGczcWU3SUYzcHRnL2tPZ3VZcDFzNkRCdz09Cg==",
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSdHZBOC9TZlBrWDZYdGNRckV1cnc2cWh6TnlLWWhEUTJHVndDK3JPMll6ak5LWU50RURzSEtFUmFCNThWSUw5R0tEUTJXUlJQMVVPV2hOemFjRVd4clJScDZKZWE1VFFVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgzNDcwMjA4CWZpbGU6YXBwLm1zaQpjc3hDWS9RdzQxQkJWT3ZEV1lnRFVLendaVkJjTGZTSFVlU1pCS1lYZWhsdUFOWmVYNTZxM2U0TU1JQmUveTFEdk9uYnMvempVQmxlUDhVS0s0a21Cdz09Cg==",
                                              "url":  "https://github.com/Doogals/AppLauncher/releases/download/v0.5.6/TakeOff_0.5.6_x64_en-US.msi"
                                          }
                   }
