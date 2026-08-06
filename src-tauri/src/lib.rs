@@ -82,7 +82,17 @@ fn save_group(group: Group, state: State<AppState>, app: tauri::AppHandle) -> Re
             })
             .collect();
         cleanup_orphaned_command_files(&old_paths, &new_paths);
-        config.groups[pos] = group;
+        // Preserve fields that are managed outside the config editor window.
+        // The editor only touches name, icon, and items — overwriting the rest
+        // with serde defaults would silently clear color, detach state, and
+        // the hidden flag (which the free-tier enforcer sets).
+        let mut updated = group;
+        updated.color       = config.groups[pos].color.clone();
+        updated.detached    = config.groups[pos].detached;
+        updated.detached_x  = config.groups[pos].detached_x;
+        updated.detached_y  = config.groups[pos].detached_y;
+        updated.hidden      = config.groups[pos].hidden;
+        config.groups[pos] = updated;
     } else {
         if config.groups.len() >= limit {
             return Err(format!(
@@ -285,6 +295,93 @@ fn deactivate_license(state: State<AppState>) -> Result<(), String> {
     config.license_instance_id = None;
     config.license_machine_name = None;
     config::save_config(&config)
+}
+
+/// Called by the frontend after deactivation when the user has more than one
+/// group. Hides every group except `keep_group_id`. Hidden groups are
+/// preserved in config so they can be restored when the license is re-activated.
+#[tauri::command]
+fn apply_free_tier_groups(keep_group_id: String, state: State<AppState>, app: tauri::AppHandle) -> Result<(), String> {
+    let mut config = state.0.lock().unwrap();
+    for group in config.groups.iter_mut() {
+        group.hidden = group.id != keep_group_id;
+    }
+    config::save_config(&config)?;
+    let _ = app.emit("groups-updated", ());
+    Ok(())
+}
+
+/// Clears the license from config without calling the server. Used when remote
+/// revocation is detected — the server already knows; no API call is needed.
+#[tauri::command]
+fn clear_license_local(state: State<AppState>, app: tauri::AppHandle) -> Result<(), String> {
+    let mut config = state.0.lock().unwrap();
+    config.license_key = None;
+    config.license_instance_id = None;
+    config.license_machine_name = None;
+    config::save_config(&config)?;
+    let _ = app.emit("license-cleared", ());
+    Ok(())
+}
+
+/// Returns the visible groups if the user is unlicensed and has more than one
+/// visible group — meaning the free-tier limit needs to be enforced. Returns
+/// `null` when no enforcement is needed (licensed, or already ≤1 visible group).
+/// Returns the visible groups if the user is unlicensed and has more than one
+/// visible group. Returns `null` when no enforcement is needed.
+#[tauri::command]
+fn get_free_tier_enforcement(state: State<AppState>) -> Option<Vec<serde_json::Value>> {
+    let config = state.0.lock().unwrap();
+    if license::is_licensed(&config.license_key, &config.license_instance_id) {
+        return None;
+    }
+    let visible: Vec<serde_json::Value> = config.groups.iter()
+        .filter(|g| !g.hidden)
+        .map(|g| serde_json::json!({ "id": g.id, "name": g.name, "icon": g.icon }))
+        .collect();
+    if visible.len() > 1 { Some(visible) } else { None }
+}
+
+/// Opens a small centered window where the user picks which group to keep
+/// when the free-tier limit needs to be enforced. No-ops if the window is
+/// already open.
+#[tauri::command]
+fn open_group_picker_window(app: tauri::AppHandle) {
+    let app2 = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Some(existing) = app2.get_webview_window("group-picker") {
+            let _ = existing.set_focus();
+            return;
+        }
+        if let Ok(win) = tauri::WebviewWindowBuilder::new(
+            &app2,
+            "group-picker",
+            tauri::WebviewUrl::App("group-picker.html".into()),
+        )
+        .title("Choose Your Group")
+        .inner_size(360.0, 290.0)
+        .resizable(false)
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .build()
+        {
+            center_on_widget_monitor(&app2, &win, 360.0, 290.0);
+        }
+    });
+}
+
+/// Unhides all groups. Called automatically when a license is activated so
+/// groups hidden by the free-tier limit are all restored at once.
+#[tauri::command]
+fn unhide_all_groups(state: State<AppState>, app: tauri::AppHandle) -> Result<(), String> {
+    let mut config = state.0.lock().unwrap();
+    for group in config.groups.iter_mut() {
+        group.hidden = false;
+    }
+    config::save_config(&config)?;
+    let _ = app.emit("groups-updated", ());
+    Ok(())
 }
 
 #[tauri::command]
@@ -1877,23 +1974,26 @@ fn show_widget_context_menu(app: tauri::AppHandle, state: State<AppState>) -> Re
 #[cfg(target_os = "windows")]
 fn deregister_autostart() {
     use std::os::windows::process::CommandExt;
-    // Remove the Task Scheduler task.
-    let _ = std::process::Command::new("schtasks")
-        .args(["/Delete", "/F", "/TN", "TakeOff"])
-        .creation_flags(0x08000000) // CREATE_NO_WINDOW — no console flash
-        .output();
-
-    // Also clean up any legacy Run-key entry left over from older versions.
     use windows::core::HSTRING;
-    use windows::Win32::System::Registry::{RegOpenKeyExW, RegDeleteValueW, HKEY, HKEY_CURRENT_USER, KEY_WRITE};
-    let key_path = HSTRING::from("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
+    use windows::Win32::System::Registry::{RegOpenKeyExW, RegDeleteValueW, RegCloseKey, HKEY, HKEY_CURRENT_USER, KEY_WRITE};
+
+    // Remove the Run-key entry (current mechanism).
+    let key_path  = HSTRING::from("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
     let value_name = HSTRING::from("TakeOff");
     unsafe {
         let mut hkey = HKEY::default();
         if RegOpenKeyExW(HKEY_CURRENT_USER, &key_path, 0, KEY_WRITE, &mut hkey).is_ok() {
             let _ = RegDeleteValueW(hkey, &value_name);
+            RegCloseKey(hkey);
         }
     }
+
+    // Also remove any Task Scheduler task left over from older versions
+    // (v0.5.8 used Task Scheduler; v0.5.9+ uses the Run key instead).
+    let _ = std::process::Command::new("schtasks")
+        .args(["/Delete", "/F", "/TN", "TakeOff"])
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
+        .output();
 }
 
 #[cfg(target_os = "linux")]
@@ -1913,38 +2013,60 @@ fn deregister_autostart() {
 #[cfg(target_os = "windows")]
 fn register_autostart(exe_path: &str) {
     use std::os::windows::process::CommandExt;
+    use windows::core::HSTRING;
+    use windows::Win32::System::Registry::{
+        RegOpenKeyExW, RegSetValueExW, RegCloseKey, HKEY, HKEY_CURRENT_USER, KEY_WRITE, REG_SZ,
+    };
 
-    // current_exe() sometimes returns a \\?\ extended-path prefix that the
-    // Task Scheduler (and the old Run key) cannot handle — strip it off.
+    // current_exe() sometimes returns a \\?\ extended-path prefix — strip it.
     let clean = exe_path.strip_prefix(r"\\?\").unwrap_or(exe_path);
 
-    // Use Task Scheduler instead of the HKCU\Run registry key for two reasons:
-    //   1. Windows 10/11 imposes a multi-second delay on Run-key startup apps
-    //      to speed up perceived login; Task Scheduler ONLOGON tasks bypass it.
-    //   2. The Run key silently fails when the path contains spaces and is not
-    //      quoted — a common case when the username has spaces.
+    // Use HKCU\Run instead of Task Scheduler. Task Scheduler ONLOGON tasks
+    // don't fire until the Task Scheduler *service* is ready, which can be
+    // 30-60 seconds into the session on machines under load at boot. The Run
+    // key is processed by userinit.exe during shell initialisation — much
+    // earlier, before most services are even started.
     //
-    // /F  = force-overwrite an existing task with the same name
-    // /SC ONLOGON = trigger at every login of this user
-    // The path is quoted so spaces are handled correctly.
-    let task_tr = format!("\"{}\"", clean);
-    let _ = std::process::Command::new("schtasks")
-        .args(["/Create", "/F", "/TN", "TakeOff", "/TR", &task_tr, "/SC", "ONLOGON"])
-        .creation_flags(0x08000000) // CREATE_NO_WINDOW — no console flash
-        .output();
-
-    // Erase any legacy Run-key entry from older versions of TakeOff so users
-    // aren't double-started (Task Scheduler task now owns this).
-    use windows::core::HSTRING;
-    use windows::Win32::System::Registry::{RegOpenKeyExW, RegDeleteValueW, HKEY, HKEY_CURRENT_USER, KEY_WRITE};
-    let key_path = HSTRING::from("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
+    // The Run-key value is parsed as a command line, so wrap in double quotes
+    // to handle paths with spaces (e.g. C:\Users\Doug Smith\...\TakeOff.exe).
+    let value = format!("\"{}\"", clean);
+    let key_path   = HSTRING::from("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
     let value_name = HSTRING::from("TakeOff");
+    crate::debug_log::write_debug_log(&format!("AUTOSTART register: {}", value));
     unsafe {
         let mut hkey = HKEY::default();
         if RegOpenKeyExW(HKEY_CURRENT_USER, &key_path, 0, KEY_WRITE, &mut hkey).is_ok() {
-            let _ = RegDeleteValueW(hkey, &value_name);
+            // REG_SZ must be UTF-16 LE, null-terminated.
+            let wide: Vec<u16> = value.encode_utf16().chain(std::iter::once(0)).collect();
+            let result = RegSetValueExW(
+                hkey,
+                &value_name,
+                0,
+                REG_SZ,
+                Some(std::slice::from_raw_parts(
+                    wide.as_ptr() as *const u8,
+                    wide.len() * 2,
+                )),
+            );
+            // Always close the key — missing RegCloseKey can prevent the
+            // write from being flushed on some machines before the app exits.
+            RegCloseKey(hkey);
+            if result.is_ok() {
+                crate::debug_log::write_debug_log("AUTOSTART register: Run key written OK");
+            } else {
+                crate::debug_log::write_debug_log("AUTOSTART register: RegSetValueExW FAILED");
+            }
+        } else {
+            crate::debug_log::write_debug_log("AUTOSTART register: RegOpenKeyExW FAILED");
         }
     }
+
+    // Remove any Task Scheduler task from v0.5.8 so the app doesn't launch
+    // twice (once from the Run key and once from the old task).
+    let _ = std::process::Command::new("schtasks")
+        .args(["/Delete", "/F", "/TN", "TakeOff"])
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
+        .output();
 }
 
 #[cfg(target_os = "linux")]
@@ -2208,6 +2330,62 @@ fn bring_widget_to_view(_app: &tauri::AppHandle) {}
 pub fn run() {
     let config = config::load_config();
 
+    // ── Single-instance guard (free tier only) ────────────────────────────────
+    // Licensed users may open as many instances as they like.
+    // Free-tier users get one. We check this BEFORE Tauri creates any windows
+    // so the second instance exits cleanly with nothing flashing on screen.
+    #[cfg(target_os = "windows")]
+    {
+        let licensed = license::is_licensed(&config.license_key, &config.license_instance_id);
+        if !licensed {
+            extern "system" {
+                fn CreateMutexW(
+                    lp_mutex_attributes: *mut std::ffi::c_void,
+                    b_initial_owner: i32,
+                    lp_name: *const u16,
+                ) -> *mut std::ffi::c_void;
+                fn GetLastError() -> u32;
+                fn FindWindowW(
+                    lp_class_name: *const u16,
+                    lp_window_name: *const u16,
+                ) -> *mut std::ffi::c_void;
+                fn ShowWindow(hwnd: *mut std::ffi::c_void, n_cmd_show: i32) -> i32;
+                fn SetForegroundWindow(hwnd: *mut std::ffi::c_void) -> i32;
+            }
+            const ERROR_ALREADY_EXISTS: u32 = 183;
+            const SW_RESTORE: i32 = 9;
+
+            let mutex_name: Vec<u16> = "Local\\TakeOffSingleInstance\0"
+                .encode_utf16().collect();
+
+            // CreateMutex returns a handle even when ERROR_ALREADY_EXISTS,
+            // so we check GetLastError() to tell whether we created it fresh.
+            let _single_instance_mutex = unsafe {
+                CreateMutexW(std::ptr::null_mut(), 0, mutex_name.as_ptr())
+            };
+
+            if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+                // Another instance is already running — bring its widget to
+                // the foreground, then exit this second instance immediately.
+                let title: Vec<u16> = "TakeOff\0".encode_utf16().collect();
+                unsafe {
+                    let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+                    if !hwnd.is_null() {
+                        ShowWindow(hwnd, SW_RESTORE);
+                        SetForegroundWindow(hwnd);
+                    }
+                }
+                std::process::exit(0);
+            }
+            // First instance — _single_instance_mutex is a raw *mut c_void,
+            // no Drop impl, so the Windows HANDLE stays open for this process's
+            // entire lifetime. Windows closes it automatically on process exit.
+            // Do NOT call CloseHandle — that would free the mutex and allow
+            // a second free-tier instance to start.
+        }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
@@ -2216,6 +2394,14 @@ pub fn run() {
             #[allow(unused_imports)]
             use tauri::menu::{Menu, MenuItem};
             use tauri::tray::TrayIconBuilder;
+
+            // Log every startup so we can confirm via debug log whether the
+            // app launched at all (helpful for diagnosing Run-key failures).
+            crate::debug_log::write_debug_log(&format!(
+                "STARTUP TakeOff v{} pid={}",
+                env!("CARGO_PKG_VERSION"),
+                std::process::id()
+            ));
 
             // Global menu event handler — handles tray menu AND popup context menus
             app.on_menu_event(|app, event| {
@@ -2371,51 +2557,51 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .build(app)?;
 
-            // Restore saved widget position and always-on-top state
-            {
-                let state = app.state::<AppState>();
-                let cfg = state.0.lock().unwrap();
-                if let Some(widget) = app.get_webview_window("widget") {
-                    if let (Some(x), Some(y)) = (cfg.widget_x, cfg.widget_y) {
-                        // Only restore the saved position if it falls within a
-                        // currently-connected monitor. If the monitor it was on
-                        // has since been disconnected the coordinates are off-
-                        // screen, so skip the restore and let the OS place the
-                        // widget on the primary display instead.
-                        let monitors = app.available_monitors().unwrap_or_default();
-                        let visible = monitors.is_empty() || monitors.iter().any(|m| {
-                            let p = m.position();
-                            let s = m.size();
-                            x >= p.x && x < p.x + s.width as i32
-                                && y >= p.y && y < p.y + s.height as i32
-                        });
-                        if visible {
-                            let _ = widget.set_position(tauri::PhysicalPosition::new(x, y));
-                        }
-                    }
-                    // No more sticky "always on top" on startup — Bring to
-                    // Front / Send to Back is now a one-time z-order push,
-                    // re-evaluated live each time the widget menu is opened.
+            // Restore saved widget position, move to current VD, then show.
+            // widget.show() MUST be called unconditionally — if the widget
+            // stays hidden the user sees nothing and thinks the app didn't start.
+            // Hold the config lock only long enough to read the saved position,
+            // then release it before doing any Win32 work (VD move, show).
+            if let Some(widget) = app.get_webview_window("widget") {
+                let saved_pos: Option<(i32, i32)> = {
+                    let state = app.state::<AppState>();
+                    let cfg = state.0.lock().unwrap();
+                    cfg.widget_x.zip(cfg.widget_y)
+                };
 
-                    // Move the widget onto whichever virtual desktop is
-                    // currently active. Without this the widget appears at the
-                    // right screen coordinates but on whatever VD it was on
-                    // when the app last closed, making it invisible until the
-                    // user selects "Bring to View" from the tray.
-                    #[cfg(target_os = "windows")]
-                    if let Some(vd) = crate::virtual_desktop::get_current_virtual_desktop_guid() {
-                        if let Ok(hwnd) = widget.hwnd() {
-                            crate::virtual_desktop::move_window_to_virtual_desktop(
-                                hwnd.0 as *mut _, &vd,
-                            );
-                        }
+                if let Some((x, y)) = saved_pos {
+                    // Only restore if the saved position is on a connected monitor.
+                    // Skip (let OS place widget) if the monitor has been disconnected.
+                    let monitors = app.available_monitors().unwrap_or_default();
+                    let on_screen = monitors.is_empty() || monitors.iter().any(|m| {
+                        let p = m.position();
+                        let s = m.size();
+                        x >= p.x && x < p.x + s.width as i32
+                            && y >= p.y && y < p.y + s.height as i32
+                    });
+                    if on_screen {
+                        let _ = widget.set_position(tauri::PhysicalPosition::new(x, y));
                     }
-
-                    // Widget starts hidden in tauri.conf.json ("visible": false)
-                    // so it can be positioned and moved to the right VD before
-                    // becoming visible. Now that both are done, show it.
-                    let _ = widget.show();
                 }
+
+                // Move the widget onto the currently active virtual desktop.
+                // Without this the widget appears at the right screen position
+                // but on a different VD than the one the user is looking at.
+                // This is best-effort — widget.show() is called regardless.
+                #[cfg(target_os = "windows")]
+                if let Some(vd) = crate::virtual_desktop::get_current_virtual_desktop_guid() {
+                    if let Ok(hwnd) = widget.hwnd() {
+                        crate::virtual_desktop::move_window_to_virtual_desktop(
+                            hwnd.0 as *mut _, &vd,
+                        );
+                    }
+                }
+
+                // Widget starts hidden in tauri.conf.json ("visible": false)
+                // so it can be positioned and moved to the correct VD first.
+                // Always show — this is the single mandatory startup side-effect.
+                crate::debug_log::write_debug_log("STARTUP widget.show()");
+                let _ = widget.show();
             }
 
             // Reopen any groups that were detached when the app last closed.
@@ -2433,13 +2619,19 @@ pub fn run() {
                 }
             }
 
-            // Register auto-start only in release builds, only if user has it enabled
+            // Re-register auto-start in the background (release builds only).
+            // Running this on every launch ensures the registration stays
+            // current after an app update even if the install path changed.
+            // Spawned on a separate thread so it never blocks the widget from
+            // appearing — the schtasks cleanup inside register_autostart can
+            // take a second or two on some machines.
             #[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), not(debug_assertions)))]
             {
                 let launch_on_startup = app.state::<AppState>().0.lock().unwrap().launch_on_startup;
                 if launch_on_startup {
                     if let Ok(exe) = std::env::current_exe() {
-                        register_autostart(&exe.to_string_lossy());
+                        let exe_str = exe.to_string_lossy().to_string();
+                        std::thread::spawn(move || register_autostart(&exe_str));
                     }
                 }
             }
@@ -2500,6 +2692,11 @@ pub fn run() {
             set_preferred_browser,
             activate_license,
             deactivate_license,
+            apply_free_tier_groups,
+            unhide_all_groups,
+            clear_license_local,
+            get_free_tier_enforcement,
+            open_group_picker_window,
             check_license_status,
             reorder_items,
             save_widget_position,

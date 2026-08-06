@@ -1019,7 +1019,18 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
                     }
                     _ => None,
                 };
-                return shell_execute_runas(path, params.as_deref());
+                // Snapshot before elevation so we can apply saved position afterward.
+                // ShellExecuteExW doesn't return a PID we can use directly, but we
+                // know the exe filename, so tier-2 (exe match) handles it.
+                let before = if item.launch_x.is_some() { Some(collect_visible_hwnds()) } else { None };
+                shell_execute_runas(path, params.as_deref())?;
+                if let (Some(before), Some(x), Some(y)) = (before, item.launch_x, item.launch_y) {
+                    let exe = std::path::Path::new(path)
+                        .file_name().and_then(|n| n.to_str())
+                        .map(|s| s.to_ascii_lowercase());
+                    position_window_by_snapshot(before, None, exe, 0, x, y, item.launch_width, item.launch_height, item.launch_virtual_desktop.clone());
+                }
+                return Ok(());
             }
 
             // Multi-tab: if tab_count > 1, launch via Windows Terminal (wt.exe).
@@ -1125,7 +1136,17 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
             #[cfg(target_os = "windows")]
             {
                 let uri = format!("shell:AppsFolder\\{}", aumid);
+                // Snapshot before launch so we can apply saved position afterward.
+                // ShellExecuteExW doesn't give us a usable PID (the activator process
+                // exits immediately and the real window lives in a hosted process), so
+                // we rely on the any-new-window fallback (tier-3) — same approach as
+                // File/Folder items.
+                let before = if item.launch_x.is_some() { Some(collect_visible_hwnds()) } else { None };
+                let fg_before = if item.launch_x.is_some() { get_foreground_hwnd() } else { 0 };
                 shell_execute_open(&uri)?;
+                if let (Some(before), Some(x), Some(y)) = (before, item.launch_x, item.launch_y) {
+                    position_window_by_snapshot(before, None, None, fg_before, x, y, item.launch_width, item.launch_height, item.launch_virtual_desktop.clone());
+                }
             }
             #[cfg(not(target_os = "windows"))]
             {
@@ -1195,9 +1216,24 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
                 }
             }
 
-            // Non-Chromium fallback
+            // Non-Chromium fallback.
+            // If a position is saved and a specific browser is set (e.g. Firefox),
+            // use snapshot + exe-match positioning just like the Chromium path.
             match browser {
                 Some(bp) => {
+                    #[cfg(target_os = "windows")]
+                    if item.launch_x.is_some() {
+                        let before = collect_visible_hwnds();
+                        let child = Command::new(bp).arg(url).spawn()
+                            .map_err(|e| format!("Failed to open URL in browser: {}", e))?;
+                        let exe = std::path::Path::new(bp)
+                            .file_name().and_then(|n| n.to_str())
+                            .map(|s| s.to_ascii_lowercase());
+                        if let (Some(x), Some(y)) = (item.launch_x, item.launch_y) {
+                            position_window_by_snapshot(before, Some(child.id()), exe, 0, x, y, item.launch_width, item.launch_height, item.launch_virtual_desktop.clone());
+                        }
+                        return Ok(());
+                    }
                     Command::new(bp).arg(url).spawn()
                         .map_err(|e| format!("Failed to open URL in browser: {}", e))?;
                 }

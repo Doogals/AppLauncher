@@ -15,7 +15,7 @@
 #>
 
 param(
-    [string]$Version = "0.5.7",
+    [string]$Version = "0.5.9",
     [string]$KeyPath = "$HOME\.tauri\applauncher.key",
     [string]$WebsiteRepo = "C:\Users\dougb\Desktop\tonic-tech-site",
     [string]$GitHubRepo = "Doogals/AppLauncher"
@@ -65,9 +65,14 @@ if ($pending) {
     $commitMsg = @"
 Release v$Version
 
-- Fix: right-click menu after launching a group now highlights and responds correctly
-- Fix: compiler warnings cleaned (GetWindowRect signature, dead_code)
-- Bump version to $Version
+- Fix: Widget appears immediately at startup, no more 30-60s delay
+- Fix: Launch on Startup now correctly registers in Windows registry
+- Fix: Window layout positions now apply for UWP, run-as-admin, and URL items
+- Fix: Group color no longer reverts when saving the edit group window
+- Fix: Editing a group no longer resets its detached/hidden state
+- New: Free-tier users limited to one instance of TakeOff
+- New: Free-tier group limit enforced when license is missing or revoked
+- New: Suggested items bar no longer removes items after clicking
 "@
     # Writing to a temp file and using -F instead of -m $commitMsg directly --
     # passing a string with embedded "quotes" as a native-command argument
@@ -125,7 +130,13 @@ $releaseAsset = Join-Path $RepoRoot $finalMsiName
 Copy-Item $signTarget $releaseAsset -Force
 
 $notes = @"
-- Fix: Right-click menu now highlights and responds correctly immediately after launching a group
+- Fix: Widget appears immediately at Windows startup (no more 30-60 second delay)
+- Fix: Launch on Startup now correctly registers in the Windows registry
+- Fix: Window layout positions now apply correctly for UWP, run-as-admin, and browser URL items
+- Fix: Group color no longer reverts when saving from the edit group window
+- New: Free-tier users are limited to one instance of TakeOff running at a time
+- New: When a license is missing or revoked, TakeOff prompts you to pick which group to keep
+- New: Suggested items bar no longer removes items after clicking them
 "@
 
 # --notes-file instead of --notes $notes -- same reasoning as the commit

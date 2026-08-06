@@ -419,8 +419,8 @@ async function render() {
     if (!PERSISTENT_IDS.includes(el.id)) el.remove();
   });
 
-  // Only render non-detached groups; track visual index for reorder.
-  const visibleGroups = config.groups.filter(g => !g.detached);
+  // Only render non-detached, non-hidden groups; track visual index for reorder.
+  const visibleGroups = config.groups.filter(g => !g.detached && !g.hidden);
   visibleGroups.forEach((group, visualIdx) => {
     const btn = document.createElement('div');
     btn.className = 'group-btn';
@@ -570,6 +570,11 @@ listen('update-available', () => {
       clearTimeout(t);
       t = setTimeout(() => invoke('save_widget_position', { x, y }), 400);
     });
+    // Enforce free-tier group limit. Returns null if not needed (licensed,
+    // already ≤1 group, or debug build). Opens a dedicated picker window so
+    // the user isn't blocked inside the thin widget bar.
+    const toEnforce = await invoke('get_free_tier_enforcement').catch(() => null);
+    if (toEnforce) invoke('open_group_picker_window').catch(() => {});
   } catch (e) {
     console.error('Widget init error:', e);
   } finally {

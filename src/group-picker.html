@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Choose Your Group</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #1a1a2e;
+      color: #e0e0e0;
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 14px;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      padding: 22px 24px 20px;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    h3 {
+      font-size: 15px;
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 7px;
+    }
+    p {
+      font-size: 12px;
+      color: #aaa;
+      line-height: 1.5;
+      margin-bottom: 16px;
+    }
+    #group-list {
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      flex: 1;
+    }
+    .gp-btn {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding: 9px 13px;
+      background: #0f3460;
+      border: 1.5px solid transparent;
+      border-radius: 8px;
+      color: #e0e0e0;
+      font-size: 13px;
+      cursor: pointer;
+      text-align: left;
+      transition: border-color 0.12s, background 0.12s;
+      width: 100%;
+    }
+    .gp-btn:hover { background: #1a4a7a; }
+    .gp-btn.selected { border-color: #e94560; background: #1a1a3e; }
+    .gp-icon { font-size: 19px; line-height: 1; }
+    #confirm-btn {
+      width: 100%;
+      margin-top: 16px;
+      padding: 10px;
+      background: #e94560;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.12s;
+    }
+    #confirm-btn:disabled { opacity: 0.45; cursor: default; }
+    #confirm-btn:not(:disabled):hover { background: #c73652; }
+  </style>
+</head>
+<body>
+  <h3>Choose Your Active Group</h3>
+  <p>TakeOff's free plan supports 1 group. Pick which one to keep — the rest will be hidden and restored if you upgrade.</p>
+  <div id="group-list"></div>
+  <button id="confirm-btn" disabled>Confirm</button>
+  <script type="module" src="group-picker.js"></script>
+</body>
+</html>

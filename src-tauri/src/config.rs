@@ -102,6 +102,10 @@ pub struct Group {
     /// Last known physical-pixel Y position of the detached window.
     #[serde(default)]
     pub detached_y: Option<i32>,
+    /// Hidden by the free-tier limit: group still exists (so it can be
+    /// restored on license re-activation) but is not shown on the widget.
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 impl Group {
@@ -116,6 +120,7 @@ impl Group {
             detached: false,
             detached_x: None,
             detached_y: None,
+            hidden: false,
         }
     }
 }

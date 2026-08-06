@@ -52,6 +52,76 @@
       padding: 7px 14px; font-size: 13px; cursor: pointer;
     }
     #error-modal .btn-ok:hover { color: #fff; border-color: #888; }
+
+    /* Group picker modal — shown after license deactivation when >1 group exists */
+    #group-picker-backdrop {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.6);
+      z-index: 1001;
+      align-items: center; justify-content: center;
+    }
+    #group-picker-backdrop.visible { display: flex; }
+    #group-picker-modal {
+      background: #1a1a2e;
+      border: 1px solid #0f3460;
+      border-radius: 10px;
+      padding: 22px 24px 18px;
+      max-width: 320px;
+      width: 90%;
+      color: #e0e0e0;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    #group-picker-modal h3 {
+      margin: 0 0 6px;
+      font-size: 15px;
+      color: #fff;
+    }
+    #group-picker-modal p {
+      margin: 0 0 14px;
+      font-size: 13px;
+      color: #aaa;
+    }
+    #group-picker-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 16px;
+    }
+    .group-picker-btn {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 12px;
+      background: #0f3460;
+      border: 2px solid transparent;
+      border-radius: 7px;
+      color: #e0e0e0;
+      font-size: 13px;
+      cursor: pointer;
+      text-align: left;
+      transition: border-color 0.12s, background 0.12s;
+    }
+    .group-picker-btn:hover { background: #1a4a7a; }
+    .group-picker-btn.selected {
+      border-color: #e94560;
+      background: #1a1a3e;
+    }
+    .group-picker-btn .gp-icon { font-size: 18px; }
+    #group-picker-confirm {
+      width: 100%;
+      padding: 9px;
+      background: #e94560;
+      color: #fff;
+      border: none;
+      border-radius: 7px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    #group-picker-confirm:disabled { opacity: 0.45; cursor: default; }
+    #group-picker-confirm:not(:disabled):hover { background: #c73652; }
   </style>
   <title>Edit Group</title>
 </head>
@@ -131,6 +201,16 @@
   </div>
 
   </div>
+  <!-- Group picker — shown after license deactivation when >1 group exists -->
+  <div id="group-picker-backdrop">
+    <div id="group-picker-modal">
+      <h3>Choose Your Active Group</h3>
+      <p>Your license has been deactivated. The free tier supports 1 group. Pick which one to keep visible — the rest will be hidden until you reactivate.</p>
+      <div id="group-picker-list"></div>
+      <button id="group-picker-confirm" disabled>Confirm</button>
+    </div>
+  </div>
+
   <!-- Free-tier / error modal -->
   <div id="error-modal-backdrop">
     <div id="error-modal">

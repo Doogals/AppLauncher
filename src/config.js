@@ -278,19 +278,18 @@ async function showWinAppPicker() {
 let suggestedAppsCache = null;
 let suggestionsRefreshStarted = false;
 
-// Renders chips for whatever is currently in suggestedAppsCache,
-// filtering out items the user has already added to the group.
+// Renders chips for whatever is currently in suggestedAppsCache.
+// Items stay visible even after being added — users can add the same
+// app to a group more than once (e.g. two terminal windows), and the
+// bar shouldn't jump around every time they click.
 function paintSuggestedBar() {
   const wrap = document.getElementById('suggested-wrap');
   const bar  = document.getElementById('suggested-bar');
   if (!bar || !wrap) return;
 
-  const addedPaths = new Set(currentItems.map(i => (i.path || '').toLowerCase()));
-  const remaining  = (suggestedAppsCache || []).filter(
-    app => !addedPaths.has((app.path || '').toLowerCase())
-  );
+  const apps = suggestedAppsCache || [];
 
-  if (remaining.length === 0) {
+  if (apps.length === 0) {
     wrap.style.display = 'none';
     bar.innerHTML = '';
     return;
@@ -299,7 +298,7 @@ function paintSuggestedBar() {
   wrap.style.display = 'flex';
   bar.innerHTML = '';
 
-  remaining.forEach(app => {
+  apps.forEach(app => {
     let chip;
     if (app.icon_data) {
       chip = document.createElement('img');
@@ -908,19 +907,29 @@ async function init() {
   await renderLicenseSection();
 
   // Silent background validation — check if license is still valid on LS
-  invoke('check_license_status').then(status => {
+  invoke('check_license_status').then(async status => {
     if (status === 'revoked') {
-      const summary = document.getElementById('license-summary');
-      if (summary) summary.textContent = '⚠ License Revoked';
-      const content = document.getElementById('license-content');
-      if (content) content.innerHTML = `
-        <p style="font-size:0.78rem; color:#e94560; margin-top:6px;">
-          Your license has been revoked. Please contact support.
-        </p>
-      `;
+      // Clear the local license record — server already revoked it, no API call needed.
+      try { await invoke('clear_license_local'); } catch {}
+      await renderLicenseSection();
       fitWindow();
+      // Enforce group limit now that the license is gone.
+      const cfg = await invoke('get_config');
+      const visibleGroups = cfg.groups.filter(g => !g.hidden);
+      if (visibleGroups.length > 1) showGroupPicker(visibleGroups);
     }
   }).catch(() => {}); // Unreachable = offline, ignore silently
+
+  // Enforce free-tier group limit on config-window open. Catches the case
+  // where the user is already unlicensed with >1 visible groups (e.g. the
+  // widget picker was somehow skipped, or they opened config directly).
+  {
+    const initCfg = await invoke('get_config');
+    if (!initCfg.license_key || !initCfg.license_instance_id) {
+      const visibleGroups = initCfg.groups.filter(g => !g.hidden);
+      if (visibleGroups.length > 1) showGroupPicker(visibleGroups);
+    }
+  }
 }
 
 function switchTab(name) {
@@ -1587,6 +1596,43 @@ function showErrorModal(msg) {
   backdrop.onclick = (e) => { if (e.target === backdrop) close(); };
 }
 
+function showGroupPicker(groups) {
+  const backdrop = document.getElementById('group-picker-backdrop');
+  const list     = document.getElementById('group-picker-list');
+  const confirm  = document.getElementById('group-picker-confirm');
+
+  list.innerHTML = '';
+  let selectedId = null;
+
+  groups.forEach(group => {
+    const btn = document.createElement('button');
+    btn.className = 'group-picker-btn';
+    btn.innerHTML = `<span class="gp-icon">${group.icon}</span><span>${group.name}</span>`;
+    btn.addEventListener('click', () => {
+      list.querySelectorAll('.group-picker-btn').forEach(b => b.classList.remove('selected'));
+      btn.classList.add('selected');
+      selectedId = group.id;
+      confirm.disabled = false;
+    });
+    list.appendChild(btn);
+  });
+
+  confirm.disabled = true;
+  backdrop.classList.add('visible');
+
+  confirm.onclick = async () => {
+    if (!selectedId) return;
+    confirm.disabled = true;
+    try {
+      await invoke('apply_free_tier_groups', { keepGroupId: selectedId });
+      backdrop.classList.remove('visible');
+    } catch (e) {
+      confirm.disabled = false;
+    }
+  };
+  // No click-outside-to-close — user must pick a group.
+}
+
 async function renderLicenseSection() {
   const config = await invoke('get_config');
   const content = document.getElementById('license-content');
@@ -1611,6 +1657,12 @@ async function renderLicenseSection() {
         await invoke('deactivate_license');
         await renderLicenseSection();
         fitWindow();
+        // If the user has more than one visible group, ask which to keep.
+        const cfg = await invoke('get_config');
+        const visibleGroups = cfg.groups.filter(g => !g.hidden);
+        if (visibleGroups.length > 1) {
+          showGroupPicker(visibleGroups);
+        }
       } catch (e) {
         btn.textContent = 'Transfer';
         btn.disabled = false;
@@ -1640,6 +1692,7 @@ async function renderLicenseSection() {
       btn.disabled = true;
       try {
         await invoke('activate_license', { key });
+        await invoke('unhide_all_groups');
         await renderLicenseSection();
         fitWindow();
       } catch (e) {
