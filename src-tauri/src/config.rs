@@ -261,7 +261,7 @@ mod tests {
                 Item { item_type: ItemType::App, path: Some("C:\\slack.exe".to_string()), value: None, display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None, tab_count: 1, extra_tab_scripts: vec![] },
                 Item { item_type: ItemType::Url, path: None, value: Some("https://github.com".to_string()), display_name: None, urls: vec![], icon_data: None, browser_name: None, run_in_terminal: true, run_as_admin: false, launch_virtual_desktop: None, launch_desktop_index: None, launch_desktop: None, launch_x: None, launch_y: None, launch_width: None, launch_height: None, command_file_path: None, tab_count: 1, extra_tab_scripts: vec![] },
             ],
-            color: None,
+            ..Group::new("Work", "💼")
         });
 
         let loaded = tmp_config_roundtrip(&config);

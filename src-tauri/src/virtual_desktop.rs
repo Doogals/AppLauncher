@@ -357,6 +357,12 @@ fn force_foreground_for_move(hwnd: *mut std::ffi::c_void) {
     }
 }
 
+// Currently unused: the per-window corrective desktop move was removed from
+// launcher.rs because it acts on the FOREGROUND window rather than the HWND
+// passed in, and running it from the delayed re-apply thread dragged unrelated
+// windows to the wrong desktop. Kept for a future, safer approach to the
+// Brave-lands-on-its-own-remembered-desktop problem.
+#[allow(dead_code)]
 #[cfg(target_os = "windows")]
 pub fn move_window_with_keyboard(hwnd: *mut std::ffi::c_void, current_guid: &[u8], target_guid: &[u8]) -> bool {
     use std::thread;

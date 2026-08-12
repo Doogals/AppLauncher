@@ -29,6 +29,35 @@ fn claims() -> &'static Mutex<HashMap<usize, u64>> {
     CLAIMS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+// Every HWND already selected by an item's placer during the current launch.
+// Without this, two items can independently select the SAME new window: the
+// first positions it, the second re-positions it to different coordinates, and
+// one item ends up with no positioning at all. Cleared at the start of every
+// launch_group so stale entries from a previous launch never block a match.
+static CLAIMED_HWNDS: OnceLock<Mutex<std::collections::HashSet<usize>>> = OnceLock::new();
+
+#[cfg(target_os = "windows")]
+fn claimed_hwnds() -> &'static Mutex<std::collections::HashSet<usize>> {
+    CLAIMED_HWNDS.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+#[cfg(target_os = "windows")]
+fn clear_claimed_hwnds() {
+    claimed_hwnds().lock().unwrap().clear();
+}
+
+#[cfg(target_os = "windows")]
+fn is_claimed(hwnd: usize) -> bool {
+    claimed_hwnds().lock().unwrap().contains(&hwnd)
+}
+
+// Marks an HWND as taken. Returns false if another item already claimed it,
+// in which case the caller must keep looking rather than steal it.
+#[cfg(target_os = "windows")]
+fn try_claim_hwnd(hwnd: usize) -> bool {
+    claimed_hwnds().lock().unwrap().insert(hwnd)
+}
+
 // ── Snapshot-based window positioning (Windows only) ─────────────────────────
 //
 // Snapshot all visible HWNDs before launch, then poll for any new HWND that
@@ -54,6 +83,126 @@ fn collect_visible_hwnds() -> std::collections::HashSet<usize> {
     let mut set = std::collections::HashSet::new();
     unsafe { EnumWindows(cb, &mut set as *mut _ as isize); }
     set
+}
+
+// Returns (width, height) of the window's outer rect.
+#[cfg(target_os = "windows")]
+fn window_size(hwnd: usize) -> (i32, i32) {
+    extern "system" {
+        fn GetWindowRect(hwnd: *mut std::ffi::c_void, rect: *mut [i32; 4]) -> i32;
+    }
+    let mut r = [0i32; 4];
+    unsafe {
+        if GetWindowRect(hwnd as *mut _, &mut r) == 0 {
+            return (0, 0);
+        }
+    }
+    (r[2] - r[0], r[3] - r[1])
+}
+
+// Rejects windows that are technically "visible" per IsWindowVisible but are
+// not real application frames. EnumWindows surfaces a great deal of junk:
+//   - WS_EX_TOOLWINDOW palettes, tooltips and helper frames
+//   - DWM-cloaked windows — every packaged/UWP app creates these, they report
+//     IsWindowVisible = TRUE while being completely invisible on screen
+//   - zero/near-zero size shims created during process startup
+//   - untitled windows (transient shell and IME artifacts)
+// Without this filter the any-new-window fallback frequently grabs one of the
+// above, positions it, and the real window is never touched.
+#[cfg(target_os = "windows")]
+fn is_real_app_window(hwnd: usize) -> bool {
+    #[link(name = "dwmapi")]
+    extern "system" {
+        fn DwmGetWindowAttribute(
+            hwnd: *mut std::ffi::c_void,
+            attr: u32,
+            value: *mut std::ffi::c_void,
+            size: u32,
+        ) -> i32;
+    }
+    extern "system" {
+        fn GetWindowLongPtrW(hwnd: *mut std::ffi::c_void, index: i32) -> isize;
+        fn GetWindowTextLengthW(hwnd: *mut std::ffi::c_void) -> i32;
+    }
+    const GWL_EXSTYLE: i32 = -20;
+    const WS_EX_TOOLWINDOW: isize = 0x0000_0080;
+    const DWMWA_CLOAKED: u32 = 14;
+
+    unsafe {
+        if GetWindowLongPtrW(hwnd as *mut _, GWL_EXSTYLE) & WS_EX_TOOLWINDOW != 0 {
+            return false;
+        }
+        let mut cloaked: u32 = 0;
+        let hr = DwmGetWindowAttribute(
+            hwnd as *mut _,
+            DWMWA_CLOAKED,
+            &mut cloaked as *mut u32 as *mut _,
+            std::mem::size_of::<u32>() as u32,
+        );
+        if hr == 0 && cloaked != 0 {
+            return false;
+        }
+        if GetWindowTextLengthW(hwnd as *mut _) == 0 {
+            return false;
+        }
+    }
+    let (w, h) = window_size(hwnd);
+    w >= 50 && h >= 50
+}
+
+// Candidate windows for a launch match, in Z-order (topmost first) and with
+// junk filtered out.
+//
+// This deliberately returns a Vec, NOT a HashSet. collect_visible_hwnds returns
+// a HashSet, and iterating one yields a DIFFERENT order on every run because
+// Rust seeds its hasher randomly per process. Any selection made by iterating
+// that set — including the any-new-window fallback and every .find() tier — was
+// therefore picking an arbitrary window whenever an app produced more than one
+// (splash + main frame, cloaked shim + real window). That is the single biggest
+// cause of "the layout works sometimes but not always". EnumWindows enumerates
+// top-level windows in Z-order, so preserving its order gives a stable,
+// meaningful ranking with the most recently surfaced window first.
+#[cfg(target_os = "windows")]
+fn enumerate_candidate_windows() -> Vec<usize> {
+    extern "system" {
+        fn EnumWindows(callback: unsafe extern "system" fn(*mut std::ffi::c_void, isize) -> i32, data: isize) -> i32;
+        fn IsWindowVisible(hwnd: *mut std::ffi::c_void) -> i32;
+    }
+
+    unsafe extern "system" fn cb(hwnd: *mut std::ffi::c_void, data: isize) -> i32 {
+        let list = &mut *(data as *mut Vec<usize>);
+        if IsWindowVisible(hwnd) != 0 {
+            list.push(hwnd as usize);
+        }
+        1
+    }
+
+    let mut list: Vec<usize> = Vec::new();
+    unsafe { EnumWindows(cb, &mut list as *mut _ as isize); }
+    list.retain(|&h| is_real_app_window(h));
+    list
+}
+
+// Picks the best window among equally-valid matches. Prefers the one that
+// currently holds the foreground (a freshly launched app almost always takes
+// it), then falls back to the largest by area — a real application frame is
+// bigger than any leftover helper window that survived the filter.
+#[cfg(target_os = "windows")]
+fn pick_best(candidates: &[usize]) -> Option<usize> {
+    if candidates.is_empty() {
+        return None;
+    }
+    let fg = get_foreground_hwnd();
+    if fg != 0 && candidates.contains(&fg) {
+        return Some(fg);
+    }
+    candidates
+        .iter()
+        .copied()
+        .max_by_key(|&h| {
+            let (w, ht) = window_size(h);
+            (w as i64) * (ht as i64)
+        })
 }
 
 #[cfg(target_os = "windows")]
@@ -114,45 +263,49 @@ fn poll_for_new_window(
     preferred_exe: Option<&str>,
     fg_before: usize,
     polls: usize,
+    allow_any_new: bool,
 ) -> Option<usize> {
     use std::thread;
     use std::time::Duration;
+
+    // Selects `h` unless another item's placer already took it. Returning None
+    // keeps the caller searching the remaining candidates instead of two items
+    // fighting over one window.
+    fn take(h: usize, why: &str, poll: usize) -> Option<usize> {
+        if try_claim_hwnd(h) {
+            crate::debug_log::write_debug_log(&format!(
+                "LAUNCH HWND 0x{:X} found ({}) poll={}", h, why, poll
+            ));
+            Some(h)
+        } else {
+            crate::debug_log::write_debug_log(&format!(
+                "LAUNCH HWND 0x{:X} skipped ({}) — already claimed by an earlier item", h, why
+            ));
+            None
+        }
+    }
+
     for i in 0..polls {
         // Honour an abort request immediately — don't wait for the full poll budget.
         if check_abort() { return None; }
         thread::sleep(Duration::from_millis(300));
-        let new_hwnds: Vec<usize> = collect_visible_hwnds()
+
+        // Ordered (Z-order, topmost first) and filtered — see enumerate_candidate_windows.
+        // Windows already claimed by an earlier item are dropped here rather than at
+        // selection time, so a tier whose best candidate happens to be taken still
+        // considers the remaining ones instead of falling through to the next tier.
+        let new_hwnds: Vec<usize> = enumerate_candidate_windows()
             .into_iter()
-            .filter(|h| !before.contains(h))
+            .filter(|h| !before.contains(h) && !is_claimed(*h))
             .collect();
+
         if !new_hwnds.is_empty() {
-            // Diagnostic: log every new top-level window seen this poll, not just
-            // whichever one we end up selecting below — to check whether an app
-            // (e.g. Brave) creates more than one new window during startup, and
-            // which virtual desktop each one actually lands on. Temporary, for
-            // tracking down the Brave-lands-on-wrong-desktop issue.
-            #[cfg(target_os = "windows")]
-            for &h in &new_hwnds {
-                let exe = get_hwnd_exe(h).unwrap_or_else(|| "?".to_string());
-                let vd = crate::virtual_desktop::get_window_virtual_desktop(h as *mut _)
-                    .map(|g| {
-                        crate::virtual_desktop::get_virtual_desktops()
-                            .iter()
-                            .position(|d| d.guid == g)
-                            .map(|i| format!("Desktop{}", i + 1))
-                            .unwrap_or_else(|| "unknown-desktop".to_string())
-                    })
-                    .unwrap_or_else(|| "?".to_string());
-                crate::debug_log::write_debug_log(&format!(
-                    "LAUNCH poll={} new HWND 0x{:X} exe={} pid={} on {}",
-                    i, h, exe, get_hwnd_pid(h), vd
-                ));
-            }
             // Tier 1: PID
             if let Some(pid) = preferred_pid {
-                if let Some(&h) = new_hwnds.iter().find(|&&h| get_hwnd_pid(h) == pid) {
-                    crate::debug_log::write_debug_log(&format!("LAUNCH HWND 0x{:X} found (PID match) poll={}", h, i));
-                    return Some(h);
+                let matches: Vec<usize> = new_hwnds.iter().copied()
+                    .filter(|&h| get_hwnd_pid(h) == pid).collect();
+                if let Some(h) = pick_best(&matches) {
+                    if let Some(h) = take(h, "PID match", i) { return Some(h); }
                 }
             }
             // Tier 1.5: console-app proxy — cmd.exe and powershell.exe don't own their window;
@@ -161,47 +314,51 @@ fn poll_for_new_window(
                 matches!(e, "cmd.exe" | "powershell.exe" | "pwsh.exe")
             });
             if is_console_app {
-                if let Some(&h) = new_hwnds.iter().find(|&&h| {
+                let matches: Vec<usize> = new_hwnds.iter().copied().filter(|&h| {
                     matches!(get_hwnd_exe(h).as_deref(), Some("conhost.exe") | Some("windowsterminal.exe"))
-                }) {
-                    crate::debug_log::write_debug_log(&format!("LAUNCH HWND 0x{:X} found (console-host proxy) poll={}", h, i));
-                    return Some(h);
+                }).collect();
+                if let Some(h) = pick_best(&matches) {
+                    if let Some(h) = take(h, "console-host proxy", i) { return Some(h); }
                 }
             }
             // Tier 2: exe name (handles Store apps with hosted window process)
             if let Some(exe) = preferred_exe {
-                if let Some(&h) = new_hwnds.iter().find(|&&h| get_hwnd_exe(h).as_deref() == Some(exe)) {
-                    crate::debug_log::write_debug_log(&format!("LAUNCH HWND 0x{:X} found (exe match) poll={}", h, i));
-                    return Some(h);
+                let matches: Vec<usize> = new_hwnds.iter().copied()
+                    .filter(|&h| get_hwnd_exe(h).as_deref() == Some(exe)).collect();
+                if let Some(h) = pick_best(&matches) {
+                    if let Some(h) = take(h, "exe match", i) { return Some(h); }
                 }
             }
-            // Tier 3: any new window.
-            // Items with no PID/exe hint (File/Folder via open::that) have no specific match
-            // to wait for — accept after 2 polls (600ms grace) so a brief transient window
-            // doesn't get grabbed on the very first poll.
-            // Items with PID/exe hints that haven't matched yet: last poll only (true last resort).
-            let tier3_ready = if preferred_pid.is_none() && preferred_exe.is_none() {
-                i >= 2
-            } else {
-                i == polls - 1
-            };
-            if tier3_ready {
-                let h = new_hwnds.into_iter().next();
-                crate::debug_log::write_debug_log(&format!("LAUNCH HWND {:?} found (any-new fallback)", h));
-                return h;
+            // Tier 3: any new window — only when the caller allows it.
+            // Disabled entirely for the Phase 2 background pass: by the time that
+            // runs the next item has already launched, so "any new window" is
+            // overwhelmingly likely to be THAT item's window, which would then be
+            // dragged to this item's coordinates.
+            // Items with no PID/exe hint (File/Folder via open::that) have no specific
+            // match to wait for — accept after 2 polls (600ms grace) so a brief
+            // transient window doesn't get grabbed on the very first poll.
+            // Items with hints that haven't matched yet: last poll only (true last resort).
+            if allow_any_new {
+                let tier3_ready = if preferred_pid.is_none() && preferred_exe.is_none() {
+                    i >= 2
+                } else {
+                    i == polls - 1
+                };
+                if tier3_ready {
+                    if let Some(h) = pick_best(&new_hwnds) {
+                        if let Some(h) = take(h, "any-new fallback", i) { return Some(h); }
+                    }
+                }
             }
         }
         // Tier 4: no new window appeared, but the foreground changed to a window that was
         // already open before launch — open::that focused an existing instance rather than
         // creating a new one. Only fires for File/Folder items (no PID/exe hint), starting
         // at poll ≥ 1 (≥600ms) so any transient launcher-window focus has settled.
-        if preferred_pid.is_none() && preferred_exe.is_none() && fg_before != 0 && i >= 1 {
+        if allow_any_new && preferred_pid.is_none() && preferred_exe.is_none() && fg_before != 0 && i >= 1 {
             let fg_now = get_foreground_hwnd();
-            if fg_now != fg_before && fg_now != 0 && before.contains(&fg_now) {
-                crate::debug_log::write_debug_log(&format!(
-                    "LAUNCH HWND 0x{:X} found (already-open foreground fallback) poll={}", fg_now, i
-                ));
-                return Some(fg_now);
+            if fg_now != fg_before && fg_now != 0 && before.contains(&fg_now) && is_real_app_window(fg_now) {
+                if let Some(h) = take(fg_now, "already-open foreground fallback", i) { return Some(h); }
             }
         }
     }
@@ -209,13 +366,18 @@ fn poll_for_new_window(
 }
 
 // Positions the window immediately and re-applies after short delays to handle apps
-// that reset their own position after initialization. Desktop targeting is mostly
-// handled upstream (switch-before-launch in launch_group), but some apps (Brave,
-// confirmed via debug log) place their window on whatever desktop they personally
-// remember regardless of which one is actually active -- ensure_correct_desktop
-// below corrects that explicitly rather than relying solely on switch-before-launch.
+// that reset their own position after initialization.
+//
+// Desktop targeting is handled entirely upstream by switch-before-launch in
+// launch_group. A per-window corrective move used to run here as well, but it
+// fell back to simulating the OS "move window to adjacent desktop" shortcut,
+// which acts on whatever window holds the FOREGROUND rather than on the HWND
+// passed to it. Running from the delayed re-apply thread (+1s / +3s) that was
+// frequently a LATER item's window, which then got dragged to the wrong
+// desktop. `_virtual_desktop` is retained on the signature so the corrective
+// step can be reintroduced later without touching every call site.
 #[cfg(target_os = "windows")]
-fn apply_window_placement(found: usize, x: i32, y: i32, w: Option<u32>, h: Option<u32>, virtual_desktop: Option<Vec<u8>>) {
+fn apply_window_placement(found: usize, x: i32, y: i32, w: Option<u32>, h: Option<u32>, _virtual_desktop: Option<Vec<u8>>) {
     use std::thread;
     use std::time::Duration;
 
@@ -246,65 +408,21 @@ fn apply_window_placement(found: usize, x: i32, y: i32, w: Option<u32>, h: Optio
     claims().lock().unwrap().insert(target, gen);
 
     place_window(target as *mut _, x, y, w, h);
-    ensure_correct_desktop(target, virtual_desktop.as_deref());
     crate::debug_log::write_debug_log(&format!(
         "LAUNCH window HWND 0x{:X} positioned at ({}, {}) {}x{}",
         target, x, y,
         w.unwrap_or(0), h.unwrap_or(0)
     ));
-    let vd_for_thread = virtual_desktop.clone();
     thread::spawn(move || {
         thread::sleep(Duration::from_millis(1000));
         if !check_abort() && claims().lock().unwrap().get(&target) == Some(&gen) {
             place_window(target as *mut _, x, y, w, h);
-            ensure_correct_desktop(target, vd_for_thread.as_deref());
         }
         thread::sleep(Duration::from_millis(2000));
         if !check_abort() && claims().lock().unwrap().get(&target) == Some(&gen) {
             place_window(target as *mut _, x, y, w, h);
-            ensure_correct_desktop(target, vd_for_thread.as_deref());
         }
     });
-}
-
-// Some apps (observed with Brave specifically — not Chrome or Edge) restore their
-// window directly onto whatever virtual desktop they last remember being on,
-// overriding the one that's actually active at the moment their window is created
-// -- even though switch-before-launch already confirmed the target desktop was
-// active before the process was ever spawned. Debug logging confirmed the window
-// already reports the WRONG desktop the instant it's first detected, before any
-// of our own positioning code has touched it. SetWindowPos can't fix that (it's
-// not a screen-position problem).
-//
-// Two-tier fix: try IVirtualDesktopManager::MoveWindowToDesktop first (cheap,
-// no visible side effects if it works) — but confirmed via debug log that it
-// silently fails here (returns false), matching this project's own documented
-// "fails cross-process" gotcha for that API. Falls back to actually driving
-// the OS shortcut for "move the focused window to the adjacent desktop",
-// which works regardless of which process owns the window since it's a
-// keyboard-level OS feature, not a COM call into that process.
-// Re-checked on every re-apply pass too, in case the app re-asserts its own
-// placement later.
-#[cfg(target_os = "windows")]
-fn ensure_correct_desktop(hwnd: usize, target_guid: Option<&[u8]>) {
-    let Some(target_guid) = target_guid else { return };
-    let Some(current) = crate::virtual_desktop::get_window_virtual_desktop(hwnd as *mut _) else { return };
-    if current.as_slice() == target_guid {
-        return;
-    }
-    let moved = crate::virtual_desktop::move_window_to_virtual_desktop(hwnd as *mut _, target_guid);
-    crate::debug_log::write_debug_log(&format!(
-        "LAUNCH window HWND 0x{:X} was on wrong desktop — move_window_to_virtual_desktop returned {}",
-        hwnd, moved
-    ));
-    if moved {
-        return;
-    }
-    let moved_via_keyboard = crate::virtual_desktop::move_window_with_keyboard(hwnd as *mut _, &current, target_guid);
-    crate::debug_log::write_debug_log(&format!(
-        "LAUNCH window HWND 0x{:X} move_window_with_keyboard returned {}",
-        hwnd, moved_via_keyboard
-    ));
 }
 
 // Phase 1 runs synchronously on the caller's thread, blocking until the window appears.
@@ -330,21 +448,21 @@ fn position_window_by_snapshot(
     // likely opened inside an existing app window (e.g. tabbed Notepad) — bail early.
     // Items with a hint (App/Script-run) keep 50 polls (15s) for slow cold-start apps.
     let phase1_polls = if preferred_pid.is_none() && preferred_exe.is_none() { 10 } else { 50 };
-    if let Some(found) = poll_for_new_window(&before, preferred_pid, preferred_exe.as_deref(), fg_before, phase1_polls) {
+    if let Some(found) = poll_for_new_window(&before, preferred_pid, preferred_exe.as_deref(), fg_before, phase1_polls, true) {
         apply_window_placement(found, x, y, w, h, virtual_desktop);
         return;
     }
 
     // --- Phase 2: background fallback for slow apps ---
-    // Only useful for items with a PID/exe hint. File/Folder items have no hint so
-    // their any-new fallback in Phase 2 would race with the next item's launch and
-    // steal its window. If Phase 1's 50-poll any-new couldn't find a window, Phase 2
-    // won't do better — it will just claim whatever new window the next item opens.
+    // Only useful for items with a PID/exe hint, and ONLY via a real PID/exe match
+    // (allow_any_new = false). By the time this thread runs the next item has already
+    // launched, so an any-new match here would almost always grab THAT item's window
+    // and drag it to this item's coordinates.
     if preferred_pid.is_none() && preferred_exe.is_none() {
         return;
     }
     thread::spawn(move || {
-        if let Some(found) = poll_for_new_window(&before, preferred_pid, preferred_exe.as_deref(), fg_before, 15) {
+        if let Some(found) = poll_for_new_window(&before, preferred_pid, preferred_exe.as_deref(), fg_before, 15, false) {
             apply_window_placement(found, x, y, w, h, virtual_desktop);
         }
     });
@@ -567,6 +685,66 @@ fn collect_browser_urls(
     (browser_urls, fallback_urls)
 }
 
+// Opens every URL as its own tab.
+//
+// Chromium-based browsers (Edge, Chrome, Brave, …) do NOT reliably honour a
+// multi-URL command line when an instance is already running: the second
+// process hands its command line to the existing instance, which opens one tab
+// and then navigates THAT SAME TAB through the remaining URLs. The visible
+// result is a blank tab plus a single tab showing whichever URL came last.
+// Passing --new-window doesn't help — the hand-off happens before the flag is
+// considered. Spawning one invocation per URL is the only approach that
+// reliably yields one tab per URL, running or not.
+//
+// Non-Chromium browsers (Firefox et al.) handle a multi-URL command line
+// correctly, so they keep the single-invocation path.
+fn open_urls_in_browser(browser: &str, urls: &[String]) -> Result<(), String> {
+    if urls.is_empty() {
+        return Ok(());
+    }
+    if !is_chromium_based(browser) {
+        Command::new(browser)
+            .args(urls)
+            .spawn()
+            .map_err(|e| format!("Failed to open URLs in '{}': {}", browser, e))?;
+        return Ok(());
+    }
+
+    Command::new(browser)
+        .arg(&urls[0])
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Failed to open URLs in '{}': {}", browser, e))?;
+    open_extra_tabs(browser, &urls[1..]);
+    Ok(())
+}
+
+// Opens `urls` as additional tabs in the browser window that was just launched.
+// The initial pause lets a cold-starting browser finish coming up — handing it
+// more URLs before its window exists gets them dropped. Failures are logged and
+// skipped rather than aborting: losing one tab shouldn't fail the whole launch.
+fn open_extra_tabs(browser: &str, urls: &[String]) {
+    use std::thread;
+    use std::time::Duration;
+
+    if urls.is_empty() {
+        return;
+    }
+    thread::sleep(Duration::from_millis(1200));
+    for url in urls {
+        if let Err(e) = Command::new(browser)
+            .arg(url)
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            crate::debug_log::write_debug_log(&format!(
+                "LAUNCH extra tab '{}' failed in '{}': {}", url, browser, e
+            ));
+        }
+        thread::sleep(Duration::from_millis(400));
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn shell_execute_runas(path: &str, parameters: Option<&str>) -> Result<(), String> {
     use std::ffi::OsStr;
@@ -745,6 +923,12 @@ fn launch_group_inner(group_id: &str, config: &AppConfig, app: Option<tauri::App
     crate::debug_log::write_debug_log(&format!(
         "LAUNCH group \"{}\" ({} items)", group.name, group.items.len()
     ));
+
+    // Reset per-launch window ownership. Without this, HWNDs claimed during an
+    // earlier launch would still be marked as taken and would block a legitimate
+    // match on this one.
+    #[cfg(target_os = "windows")]
+    clear_claimed_hwnds();
 
     // Read current desktop once and track it manually throughout the launch sequence.
     // Re-reading from the registry mid-sequence returns stale data — the registry lags
@@ -985,10 +1169,7 @@ fn launch_group_inner(group_id: &str, config: &AppConfig, app: Option<tauri::App
     }
 
     for (browser, urls) in &browser_urls {
-        Command::new(browser)
-            .args(urls)
-            .spawn()
-            .map_err(|e| format!("Failed to open URLs in '{}': {}", browser, e))?;
+        open_urls_in_browser(browser, urls)?;
     }
 
     for url in &fallback_urls {
@@ -1166,13 +1347,17 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
             }
         }
         ItemType::Url => {
-            let url_owned: String;
-            let url: &str = if !item.urls.is_empty() {
-                &item.urls[0]
+            // A single URL item can carry several URLs (multiple bookmarks ticked
+            // in the editor). Every path below must open ALL of them — previously
+            // only urls[0] was used and the rest were silently dropped for items
+            // with a saved position or a target desktop.
+            let url_list: Vec<String> = if !item.urls.is_empty() {
+                item.urls.clone()
             } else {
-                url_owned = item.value.clone().ok_or("URL item is missing a value")?;
-                &url_owned
+                vec![item.value.clone().ok_or("URL item is missing a value")?]
             };
+            let url: &str = &url_list[0];
+            let extra_urls: &[String] = &url_list[1..];
             let browser = item.path.as_deref().or(preferred_browser.as_deref());
 
             if let (Some(bp), Some(x), Some(y)) = (browser, item.launch_x, item.launch_y) {
@@ -1193,6 +1378,9 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
                             .file_name().and_then(|n| n.to_str())
                             .map(|s| s.to_ascii_lowercase());
                         position_window_by_snapshot(before, Some(child.id()), exe, 0, x, y, item.launch_width, item.launch_height, item.launch_virtual_desktop.clone());
+                        // Positioning is synchronous (Phase 1), so the new window
+                        // exists and holds focus — the remaining URLs land in it as tabs.
+                        open_extra_tabs(bp, extra_urls);
                         return Ok(());
                     }
                     // Non-Windows: fall through to the flag-based launch below
@@ -1232,13 +1420,15 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
                         if let (Some(x), Some(y)) = (item.launch_x, item.launch_y) {
                             position_window_by_snapshot(before, Some(child.id()), exe, 0, x, y, item.launch_width, item.launch_height, item.launch_virtual_desktop.clone());
                         }
+                        open_extra_tabs(bp, extra_urls);
                         return Ok(());
                     }
-                    Command::new(bp).arg(url).spawn()
-                        .map_err(|e| format!("Failed to open URL in browser: {}", e))?;
+                    open_urls_in_browser(bp, &url_list)?;
                 }
                 None => {
-                    open::that(url).map_err(|e| format!("Failed to open URL '{}': {}", url, e))?;
+                    for u in &url_list {
+                        open::that(u).map_err(|e| format!("Failed to open URL '{}': {}", u, e))?;
+                    }
                 }
             }
         }
@@ -1330,12 +1520,14 @@ mod tests {
 
     fn make_config_with_group(items: Vec<Item>) -> (AppConfig, String) {
         let mut config = AppConfig::default();
+        // ..Group::new(..) fills in every remaining field, so adding a new one
+        // to the struct doesn't break this test the way `detached` and `hidden` did.
         let group = Group {
             id: "group-1".to_string(),
             name: "Test".to_string(),
             icon: "🧪".to_string(),
             items,
-            color: None,
+            ..Group::new("Test", "🧪")
         };
         let id = group.id.clone();
         config.groups.push(group);

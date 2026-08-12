@@ -11,15 +11,20 @@ npm run tauri dev
 # Release build (produces MSI + NSIS in src-tauri/target/release/bundle/)
 npm run tauri build
 
-# Rust tests only (fast, no Tauri build needed)
-cargo test --manifest-path src-tauri/Cargo.toml
+# Type-check the tests. NOTE: `cargo test` COMPILES but CANNOT RUN on Windows.
+# tauri-plugin-dialog imports TaskDialogIndirect (comctl32 v6), and the unittest
+# harness gets no manifest declaring that assembly, so it aborts at load with
+# STATUS_ENTRYPOINT_NOT_FOUND (0xC0000139). No cargo directive can fix it:
+# rustc-link-arg-tests covers only [[test]] targets (none exist here), and the
+# generic rustc-link-arg would also hit the app binary, whose manifest already
+# comes from a resource script. Use check instead:
+cargo check --tests --manifest-path src-tauri/Cargo.toml
 
-# Single test module
-cargo test --manifest-path src-tauri/Cargo.toml config::tests
-cargo test --manifest-path src-tauri/Cargo.toml launcher::tests
+# Deploy (build → sign → GitHub release → update latest.json → push both repos)
+powershell -ExecutionPolicy Bypass -File scripts\release.ps1
 
-# Deploy (build → sign → GitHub release → update latest.json)
-# Use the hub MCP tool: deploy_app(app="app-launcher")
+# The Cloudflare Worker deploys SEPARATELY — release.ps1 does not touch it:
+#   cd cloudflare-worker && npx wrangler deploy
 ```
 
 **Signing note:** `TAURI_SIGNING_PRIVATE_KEY_PATH` env vars are NOT picked up by `npm run tauri build`. Sign post-build with `npx tauri signer sign`. MSI filename must have no spaces — copy to `app.msi` first. Key at `C:\Users\dougb\.tauri\applauncher.key` (no password).
@@ -40,7 +45,7 @@ Vite root is `src/`, outDir is `dist/` — this is intentional and must not chan
 ### Rust modules (`src-tauri/src/`)
 
 - **`lib.rs`** — all Tauri commands, menu handlers, tray, app setup, updater. The `AppState(Mutex<AppConfig>)` is the single source of truth for config, managed by Tauri's state system. `LayoutDesktops(Mutex<HashMap<String, Vec<u8>>>)` is transient state for the layout editor session (maps window label → virtual desktop GUID).
-- **`config.rs`** — `AppConfig`, `Group`, `Item` structs (serde serialize/deserialize), `load_config()` / `save_config()`. Config persists at `%LOCALAPPDATA%\AppLauncher\config.json`.
+- **`config.rs`** — `AppConfig`, `Group`, `Item` structs (serde serialize/deserialize), `load_config()` / `save_config()`. Config persists at `%LOCALAPPDATA%\TakeOff\config.json` (folder is `TakeOff`, NOT `AppLauncher` — renamed with the rebrand; a stale `AppLauncher` folder may still exist on older machines and is ignored).
 - **`launcher.rs`** — all launch logic. `launch_group` orchestrates virtual-desktop switching then `launch_item` per item. Window positioning uses a snapshot-before/poll-after approach (`collect_visible_hwnds` → spawn → `poll_for_new_window`) because PID matching fails for Store/UWP apps.
 - **`virtual_desktop.rs`** — Windows virtual desktop support. `get_virtual_desktops()` reads ordered GUID list from registry. `switch_virtual_desktop(from, to)` simulates Win+Ctrl+Arrow via `SendInput`, polls registry to confirm completion. `get_current_virtual_desktop_guid()` reads `CurrentVirtualDesktop` from registry.
 - **`license.rs`** — `group_limit()` enforces free tier (1 group). `is_licensed()` checks both key and instance ID are present.

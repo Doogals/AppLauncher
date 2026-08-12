@@ -15,7 +15,7 @@
 #>
 
 param(
-    [string]$Version = "0.5.9",
+    [string]$Version = "0.6.0",
     [string]$KeyPath = "$HOME\.tauri\applauncher.key",
     [string]$WebsiteRepo = "C:\Users\dougb\Desktop\tonic-tech-site",
     [string]$GitHubRepo = "Doogals/AppLauncher"
@@ -65,14 +65,12 @@ if ($pending) {
     $commitMsg = @"
 Release v$Version
 
-- Fix: Widget appears immediately at startup, no more 30-60s delay
-- Fix: Launch on Startup now correctly registers in Windows registry
-- Fix: Window layout positions now apply for UWP, run-as-admin, and URL items
-- Fix: Group color no longer reverts when saving the edit group window
-- Fix: Editing a group no longer resets its detached/hidden state
-- New: Free-tier users limited to one instance of TakeOff
-- New: Free-tier group limit enforced when license is missing or revoked
-- New: Suggested items bar no longer removes items after clicking
+- Fix: Window layout positions now apply reliably every launch
+- Fix: URL items with several links now open each one in its own tab
+- Fix: Quit TakeOff now closes every window, not just the launcher bar
+- New: License activations are tied to a machine fingerprint
+- New: Reactivation self-heals after a reinstall or lost config
+- Style: Buy a license button restyled to match the app theme
 "@
     # Writing to a temp file and using -F instead of -m $commitMsg directly --
     # passing a string with embedded "quotes" as a native-command argument
@@ -130,13 +128,11 @@ $releaseAsset = Join-Path $RepoRoot $finalMsiName
 Copy-Item $signTarget $releaseAsset -Force
 
 $notes = @"
-- Fix: Widget appears immediately at Windows startup (no more 30-60 second delay)
-- Fix: Launch on Startup now correctly registers in the Windows registry
-- Fix: Window layout positions now apply correctly for UWP, run-as-admin, and browser URL items
-- Fix: Group color no longer reverts when saving from the edit group window
-- New: Free-tier users are limited to one instance of TakeOff running at a time
-- New: When a license is missing or revoked, TakeOff prompts you to pick which group to keep
-- New: Suggested items bar no longer removes items after clicking them
+- Fix: Window layout positions now apply reliably. Previously a group could place some windows correctly and miss others, differently on each launch.
+- Fix: A URL item with several links now opens each link in its own tab. Previously only the last one survived.
+- Fix: Quit TakeOff now closes every window. The group editor could be left open with TakeOff still running in the background.
+- New: License activations are now tied to the machine they run on, so reinstalling Windows or losing your settings no longer uses up an activation permanently.
+- Style: The Buy a license button now matches the rest of the app.
 "@
 
 # --notes-file instead of --notes $notes -- same reasoning as the commit

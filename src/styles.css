@@ -726,14 +726,35 @@ html, body {
   margin-top: 1px;
 }
 
+/* Secondary upsell CTA. Was previously styled as if it were an <a> — with no
+   background/border reset it rendered as a raw OS button. Outlined in the
+   accent colour so it reads as a real, clickable call to action without
+   competing with the primary Activate button next to it. */
 .buy-link {
-  display: inline-block;
-  margin-top: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid rgba(233, 69, 96, 0.45);
+  border-radius: 6px;
+  color: #e94560;
+  font-family: inherit;
   font-size: 0.75rem;
-  color: #888;
+  font-weight: 500;
   text-decoration: none;
+  cursor: pointer;
+  transition: background 0.14s, border-color 0.14s, color 0.14s;
 }
-.buy-link:hover { color: #e94560; }
+.buy-link:hover {
+  background: rgba(233, 69, 96, 0.12);
+  border-color: #e94560;
+  color: #ff5c77;
+}
+.buy-link:active {
+  background: rgba(233, 69, 96, 0.2);
+}
 
 /* ── Tab bar ──────────────────────────────────────────────────────────────── */
 .tab-bar {

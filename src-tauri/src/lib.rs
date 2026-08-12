@@ -1,6 +1,7 @@
 mod config;
 mod launcher;
 mod license;
+mod machine_id;
 mod apps;
 mod browsers;
 mod icons;
@@ -227,6 +228,11 @@ fn set_preferred_browser(path: String, state: State<AppState>) -> Result<(), Str
 fn activate_license(key: String, state: State<AppState>) -> Result<(), String> {
     let machine_name = std::env::var("COMPUTERNAME")
         .unwrap_or_else(|_| "Unknown PC".to_string());
+    // The activation label carries a machine fingerprint, not just the computer
+    // name. The Worker reclaims a stale activation by matching this label, and
+    // computer names are not unique — without the fingerprint two machines
+    // sharing a name would repeatedly deactivate each other. See machine_id.
+    let instance_name = machine_id::activation_label();
 
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
@@ -237,7 +243,7 @@ fn activate_license(key: String, state: State<AppState>) -> Result<(), String> {
         .post(format!("{}/activate", WORKER_URL))
         .json(&serde_json::json!({
             "license_key": key,
-            "instance_name": machine_name,
+            "instance_name": instance_name,
         }))
         .send()
         .map_err(|e| format!("Network error: {}", e))?;
@@ -1122,6 +1128,17 @@ fn resize_widget(width: u32, height: u32, app: tauri::AppHandle) -> Result<(), S
     Ok(())
 }
 
+/// Fully exits TakeOff, closing every window it owns.
+///
+/// Closing just the widget window is NOT a quit: the config editor, detached
+/// group windows, the group picker and the colour pickers are all separate
+/// top-level windows, so they stay open and keep the process alive. Anything
+/// user-facing that means "quit" must route here.
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 /// Returns the stable window label for a detached group.
 fn detached_group_label(group_id: &str) -> String {
     format!("detached-{}", group_id)
@@ -1984,7 +2001,7 @@ fn deregister_autostart() {
         let mut hkey = HKEY::default();
         if RegOpenKeyExW(HKEY_CURRENT_USER, &key_path, 0, KEY_WRITE, &mut hkey).is_ok() {
             let _ = RegDeleteValueW(hkey, &value_name);
-            RegCloseKey(hkey);
+            let _ = RegCloseKey(hkey);
         }
     }
 
@@ -2050,7 +2067,7 @@ fn register_autostart(exe_path: &str) {
             );
             // Always close the key — missing RegCloseKey can prevent the
             // write from being flushed on some machines before the app exits.
-            RegCloseKey(hkey);
+            let _ = RegCloseKey(hkey);
             if result.is_ok() {
                 crate::debug_log::write_debug_log("AUTOSTART register: Run key written OK");
             } else {
@@ -2538,9 +2555,8 @@ pub fn run() {
                         let _ = reattach_all_groups(app2).await;
                     });
                 } else if id == "widget-close" {
-                    if let Some(window) = app.get_webview_window("widget") {
-                        let _ = window.close();
-                    }
+                    // Full quit — not just the widget window. See quit_app.
+                    app.exit(0);
                 } else {
                     #[cfg(debug_assertions)]
                     eprintln!("[menu] unhandled event id: {:?}", id);
@@ -2728,6 +2744,7 @@ pub fn run() {
             get_window_physical_rect,
             open_config_window,
             resize_widget,
+            quit_app,
             get_installed_apps,
             get_suggested_apps,
             save_cached_suggestions,

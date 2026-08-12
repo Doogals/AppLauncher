@@ -18,10 +18,13 @@ widget.addEventListener('mousedown', (e) => {
   }
 });
 
-// Close button — top-right of the widget
+// Close button — top-right of the widget.
+// Quits the whole app, not just this window: the config editor, detached group
+// windows and the colour pickers are separate top-level windows, so closing
+// only the widget would leave them on screen with the process still running.
 document.getElementById('widget-close-btn').addEventListener('click', (e) => {
   e.stopPropagation();
-  getCurrentWindow().close();
+  invoke('quit_app').catch(() => {});
 });
 
 // Parses "rgba(r,g,b,a)"/"rgb(r,g,b)" or "#rgb"/"#rrggbb" into [r,g,b].
