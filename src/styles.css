@@ -962,3 +962,17 @@ html, body {
   white-space: nowrap;
 }
 .pick-btn:hover { border-color: #e94560; color: #e0e0e0; }
+
+/* Build version, bottom of the Settings tab. Intentionally low-contrast: it
+   exists for bug reports, not for reading every day. Selectable so it can be
+   copied into a support message. */
+.app-version {
+  margin: 18px 0 0;
+  text-align: center;
+  font-size: 0.68rem;
+  color: rgba(255, 255, 255, 0.22);
+  letter-spacing: 0.02em;
+  user-select: text;
+  transition: color 0.15s;
+}
+.app-version:hover { color: rgba(255, 255, 255, 0.45); }

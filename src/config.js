@@ -952,6 +952,13 @@ async function initSettingsTab() {
   const config = await invoke('get_config');
   document.getElementById('hotkey-input').value = config.hotkey || 'Ctrl+Alt+Space';
 
+  // Build version at the foot of the tab. Sourced from the binary itself
+  // (CARGO_PKG_VERSION) rather than anything in config, so it can't drift.
+  invoke('get_app_version').then(v => {
+    const el = document.getElementById('app-version');
+    if (el) el.textContent = `TakeOff v${v}`;
+  }).catch(() => {});
+
   // Widget color picking moved to its own window (same tabbed picker the
   // group "Change Color" button uses, in "widget" mode) — keeps this
   // Settings tab from getting cluttered with a 20-swatch grid inline.

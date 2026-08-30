@@ -15,10 +15,19 @@
 #>
 
 param(
-    [string]$Version = "0.6.0",
+    [string]$Version = "0.6.1",
     [string]$KeyPath = "$HOME\.tauri\applauncher.key",
     [string]$WebsiteRepo = "C:\Users\dougb\Desktop\tonic-tech-site",
-    [string]$GitHubRepo = "Doogals/AppLauncher"
+    [string]$GitHubRepo = "Doogals/AppLauncher",
+    # SSL.com eSigner CodeSignTool - Authenticode signing so Windows SmartScreen
+    # shows "Tonic Technologies LLC" instead of "Unknown Publisher".
+    [string]$CodeSignToolPath = "C:\CodeSignTool\CodeSignTool.bat",
+    # Ships an UNSIGNED installer. Only for testing - never for a public release.
+    [switch]$SkipCodeSigning,
+    # Validates the code-signing setup and exits without building or releasing.
+    # Run this once after setting the environment variables - it surfaces a
+    # missing tool or bad credential in seconds instead of after a full build.
+    [switch]$VerifySigningSetup
 )
 
 $ErrorActionPreference = "Stop"
@@ -26,6 +35,109 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
 
 function Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
+
+# Locates CodeSignTool.bat. Checks the -CodeSignToolPath parameter, then the
+# CODESIGNTOOL_PATH environment variable, then the places the SSL.com zip
+# normally gets extracted to. Returns $null if it can't be found, so callers
+# decide whether that is fatal.
+function Resolve-CodeSignTool($explicitPath) {
+    if ($explicitPath -and (Test-Path $explicitPath)) { return $explicitPath }
+    if ($env:CODESIGNTOOL_PATH -and (Test-Path $env:CODESIGNTOOL_PATH)) { return $env:CODESIGNTOOL_PATH }
+    $candidates = @(
+        "C:\CodeSignTool\CodeSignTool.bat",
+        "$HOME\CodeSignTool\CodeSignTool.bat",
+        "$HOME\Desktop\CodeSignTool\CodeSignTool.bat",
+        "$HOME\Downloads\CodeSignTool\CodeSignTool.bat"
+    )
+    foreach ($c in $candidates) { if (Test-Path $c) { return $c } }
+    # The zip extracts to a versioned folder name (CodeSignTool-v1.3.2-windows
+    # and similar), so glob for it rather than guessing the version.
+    foreach ($root in @("C:\", "$HOME", "$HOME\Desktop", "$HOME\Downloads")) {
+        if (-not (Test-Path $root)) { continue }
+        $hit = Get-ChildItem $root -Filter "CodeSignTool*" -Directory -ErrorAction SilentlyContinue |
+               ForEach-Object { Join-Path $_.FullName "CodeSignTool.bat" } |
+               Where-Object { Test-Path $_ } |
+               Select-Object -First 1
+        if ($hit) { return $hit }
+    }
+    return $null
+}
+
+# Reads the four SSL.com credentials from the environment. credential_id is
+# optional per SSL.com's docs -- CodeSignTool defaults to the only certificate
+# on the account when it is omitted, and Tonic Technologies has just one.
+# Runs CodeSignTool with its own folder as the working directory.
+# CodeSignTool.bat resolves its bundled JRE, lib and conf folders RELATIVE to
+# itself, so invoking it from anywhere else fails with the unhelpful
+# "The system cannot find the path specified." before it ever reaches SSL.com.
+function Invoke-CodeSignTool($toolPath, [string[]]$arguments) {
+    $dir = Split-Path $toolPath -Parent
+
+    # Quote the VALUE half of every -name=value argument.
+    #
+    # Two separate problems this solves:
+    #   1. PowerShell hands arguments to a .bat through cmd.exe, and cmd treats
+    #      & | < > ^ as operators. An unquoted password containing any of them
+    #      is torn apart before CodeSignTool ever sees it, surfacing as cmd's
+    #      "The syntax of the command is incorrect."
+    #   2. SSL.com's own documentation calls for exactly this: passwords with
+    #      special characters must be passed as -password="...".
+    #
+    # Building one command line and handing it to cmd /c keeps the quoting
+    # intact, rather than letting PowerShell re-quote it on the way through.
+    foreach ($a in $arguments) {
+        if ($a -match '"') {
+            throw "CodeSignTool argument contains a double-quote character, which cannot be passed safely through cmd.exe. If your SSL.com password contains a quote, change it."
+        }
+    }
+    $quoted = $arguments | ForEach-Object {
+        if ($_ -match '^(-[A-Za-z_]+)=(.*)$') { '{0}="{1}"' -f $Matches[1], $Matches[2] }
+        else { $_ }
+    }
+    $cmdLine = '"{0}" {1}' -f $toolPath, ($quoted -join ' ')
+
+    Push-Location $dir
+    try {
+        # Out-Host, NOT a bare call. A PowerShell function returns everything
+        # written to the pipeline, so without this the tool's stdout is returned
+        # alongside the exit code as an array -- and `if ($rc -ne 0)` is then
+        # true even on success. Out-Host writes straight to the console and
+        # contributes nothing to the pipeline, so only $LASTEXITCODE comes back.
+        & cmd.exe /c $cmdLine 2>&1 | Out-Host
+        return $LASTEXITCODE
+    } finally {
+        Pop-Location
+    }
+}
+
+# Sanity-checks that the CodeSignTool folder actually contains the pieces the
+# .bat needs. The SSL.com zip contains a versioned top-level folder, and it is
+# easy to end up with either a nested copy or a lone .bat with no runtime.
+function Test-CodeSignToolLayout($toolPath) {
+    $dir = Split-Path $toolPath -Parent
+    $hasJre = @(Get-ChildItem $dir -Directory -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '^(jdk|jre|java)' }).Count -gt 0
+    $hasLib = Test-Path (Join-Path $dir "lib")
+    if (-not ($hasJre -or $hasLib)) {
+        Write-Warning "$dir contains CodeSignTool.bat but no bundled runtime (no jdk*/jre*/lib folder)."
+        Write-Warning "The zip extracts to a versioned folder - move the CONTENTS of e.g. CodeSignTool-v1.3.2-windows into $dir, not just the .bat."
+    }
+}
+
+function Get-SigningCredentials {
+    $c = @{
+        Username = $env:SSL_COM_USERNAME
+        Password = $env:SSL_COM_PASSWORD
+        CredentialId = $env:SSL_COM_CREDENTIAL_ID
+        TotpSecret = $env:SSL_COM_TOTP_SECRET
+    }
+    $missing = @()
+    if (-not $c.Username)   { $missing += "SSL_COM_USERNAME" }
+    if (-not $c.Password)   { $missing += "SSL_COM_PASSWORD" }
+    if (-not $c.TotpSecret) { $missing += "SSL_COM_TOTP_SECRET" }
+    $c.Missing = $missing
+    return $c
+}
 
 # --- 0. Prerequisites ------------------------------------------------------
 Step "Checking prerequisites"
@@ -41,6 +153,66 @@ if (-not (Test-Path $KeyPath)) {
     throw "Signing key not found at $KeyPath. Pass -KeyPath if it's somewhere else."
 }
 Write-Host "OK - gh authenticated, signing key found."
+
+# --- 0b. Optional: verify code-signing setup, then exit ---------------------
+if ($VerifySigningSetup) {
+    Step "Verifying code-signing setup"
+
+    $cst = Resolve-CodeSignTool $CodeSignToolPath
+    if (-not $cst) {
+        throw "CodeSignTool not found. Download the Windows build from https://ssl.com/download/codesigntool-for-windows/ and extract it to C:\CodeSignTool, or pass -CodeSignToolPath."
+    }
+    Write-Host "Found CodeSignTool: $cst"
+    Test-CodeSignToolLayout $cst
+
+    $cred = Get-SigningCredentials
+    if ($cred.Missing.Count -gt 0) {
+        throw "Missing environment variable(s): $($cred.Missing -join ', ')."
+    }
+    Write-Host "Credentials present for user: $($cred.Username)"
+
+    # Catches the most common self-inflicted error: pasting the placeholder text
+    # from the setup instructions instead of the real value.
+    foreach ($f in @("Password","TotpSecret","Username")) {
+        if ($cred.$f -match '^your-|placeholder|paste_') {
+            throw "SSL_COM_$($f.ToUpper()) still looks like placeholder text ('$($cred.$f)'). Set it to the real value."
+        }
+    }
+
+    # Round-trips the account credentials against SSL.com and prints the
+    # credential ID(s). Confirms username/password without consuming a signature.
+    Step "Querying SSL.com for credential IDs"
+    $rc = Invoke-CodeSignTool $cst @("get_credential_ids", "-username=$($cred.Username)", "-password=$($cred.Password)")
+    if ($rc -ne 0) {
+        throw @"
+get_credential_ids failed (exit $rc). Read the CodeSignTool output above:
+  'The system cannot find the path specified' -> CodeSignTool's own files are
+      missing or misplaced. Re-extract the zip so the .bat sits alongside its
+      jdk/lib folders.
+  'The syntax of the command is incorrect'    -> a credential contains a
+      character cmd.exe treats specially. A '%' in the password is the usual
+      culprit and cannot be escaped reliably - change the SSL.com password to
+      alphanumerics to rule it out.
+  'Error: Invalid username or password'       -> the credentials are simply wrong.
+"@
+    }
+
+    # If a credential ID is configured, confirm it resolves to a real certificate
+    # and show its subject and expiry.
+    if ($cred.CredentialId) {
+        Step "Checking certificate for credential ID $($cred.CredentialId)"
+        $rc = Invoke-CodeSignTool $cst @("credential_info", "-credential_id=$($cred.CredentialId)", "-username=$($cred.Username)", "-password=$($cred.Password)")
+        if ($rc -ne 0) {
+            throw "credential_info failed (exit $rc) - SSL_COM_CREDENTIAL_ID may be wrong."
+        }
+    } else {
+        Write-Host "SSL_COM_CREDENTIAL_ID not set - fine if the account holds exactly one code signing certificate (see the list above)."
+    }
+
+    Write-Host "`nSigning setup looks good. Re-run without -VerifySigningSetup to do a real release." -ForegroundColor Green
+    Write-Host "Note: the TOTP secret is only exercised during an actual signature, so it is not validated here."
+    exit 0
+}
 
 # --- 1. Commit whatever's pending in the app repo --------------------------
 Step "Committing pending changes in AppLauncher"
@@ -65,12 +237,8 @@ if ($pending) {
     $commitMsg = @"
 Release v$Version
 
-- Fix: Window layout positions now apply reliably every launch
-- Fix: URL items with several links now open each one in its own tab
-- Fix: Quit TakeOff now closes every window, not just the launcher bar
-- New: License activations are tied to a machine fingerprint
-- New: Reactivation self-heals after a reinstall or lost config
-- Style: Buy a license button restyled to match the app theme
+- New: Installer is Authenticode-signed by Tonic Technologies LLC
+- New: Version number shown at the bottom of the Settings tab
 "@
     # Writing to a temp file and using -F instead of -m $commitMsg directly --
     # passing a string with embedded "quotes" as a native-command argument
@@ -102,7 +270,84 @@ Write-Host "Found: $($msi.Name)"
 $signTarget = Join-Path $RepoRoot "app.msi"
 Copy-Item $msi.FullName $signTarget -Force
 
-# --- 4. Sign -----------------------------------------------------------------
+# --- 3b. Authenticode-sign the MSI via SSL.com eSigner ----------------------
+# ORDER IS CRITICAL: this MUST run BEFORE `tauri signer sign` below.
+# Authenticode signing rewrites the MSI's bytes. The Tauri updater signature is
+# a hash over those bytes, so signing in the other order would produce an
+# updater signature for a file that no longer exists -- every existing install
+# would reject the update as corrupt, silently, with no way to push a fix.
+#
+# Using eSigner (cloud) rather than the YubiKey deliberately: the hardware token
+# prompts for a PIV PIN on every signature, which would stop this script dead
+# partway through. CodeSignTool derives its own TOTP from the secret, so the
+# release stays unattended.
+if ($SkipCodeSigning) {
+    Write-Warning "SKIPPING Authenticode signing - this installer will show 'Unknown Publisher'. Do not publish it."
+} else {
+    Step "Authenticode-signing installer (SSL.com eSigner)"
+
+    $cst = Resolve-CodeSignTool $CodeSignToolPath
+    if (-not $cst) {
+        throw "CodeSignTool not found. Download the Windows build from https://ssl.com/download/codesigntool-for-windows/ and extract it to C:\CodeSignTool, or pass -CodeSignToolPath. (The Windows package bundles its own Java runtime - nothing else to install.)"
+    }
+    Write-Host "Using CodeSignTool: $cst"
+    Test-CodeSignToolLayout $cst
+
+    $cred = Get-SigningCredentials
+    if ($cred.Missing.Count -gt 0) {
+        throw "Missing environment variable(s): $($cred.Missing -join ', '). Set them in this shell, or pass -SkipCodeSigning to build an unsigned installer for testing."
+    }
+    foreach ($f in @("Password","TotpSecret","Username")) {
+        if ($cred.$f -match '^your-|placeholder|paste_') {
+            throw "SSL_COM_$($f.ToUpper()) still looks like placeholder text ('$($cred.$f)'). Set it to the real value."
+        }
+    }
+
+    # CodeSignTool writes the signed file into a directory rather than editing in
+    # place. Without -output_dir_path it prompts before overwriting, which would
+    # hang an unattended release, so always sign into a temp dir and copy back.
+    $signedDir = Join-Path $RepoRoot "signed-tmp"
+    if (Test-Path $signedDir) { Remove-Item $signedDir -Recurse -Force }
+    New-Item -ItemType Directory -Path $signedDir | Out-Null
+
+    # -credential_id is only required when the account holds more than one code
+    # signing certificate; omitted, CodeSignTool uses the single one. Built as an
+    # array so the argument is simply absent when the env var isn't set.
+    $cstArgs = @("sign")
+    if ($cred.CredentialId) { $cstArgs += "-credential_id=$($cred.CredentialId)" }
+    $cstArgs += @(
+        "-username=$($cred.Username)",
+        "-password=$($cred.Password)",
+        "-totp_secret=$($cred.TotpSecret)",
+        "-program_name=TakeOff",          # shown in the MSI's install dialog
+        "-input_file_path=$signTarget",
+        "-output_dir_path=$signedDir"
+    )
+
+    $rc = Invoke-CodeSignTool $cst $cstArgs
+    if ($rc -ne 0) {
+        Remove-Item $signedDir -Recurse -Force -ErrorAction SilentlyContinue
+        throw "CodeSignTool failed (exit $rc). 'invalid otp' usually means SSL_COM_TOTP_SECRET doesn't match the enrolled certificate. Also confirm the certificate is enrolled for eSigner."
+    }
+
+    $signedMsi = Join-Path $signedDir (Split-Path $signTarget -Leaf)
+    if (-not (Test-Path $signedMsi)) {
+        Remove-Item $signedDir -Recurse -Force -ErrorAction SilentlyContinue
+        throw "CodeSignTool reported success but produced no file at $signedMsi."
+    }
+    Copy-Item $signedMsi $signTarget -Force
+    Remove-Item $signedDir -Recurse -Force
+
+    # Verify the signature actually landed. CodeSignTool has been known to exit 0
+    # having done nothing, and an unsigned release is worse than a failed one.
+    $sig = Get-AuthenticodeSignature $signTarget
+    if ($sig.Status -ne "Valid") {
+        throw "Authenticode verification failed after signing: $($sig.Status) - $($sig.StatusMessage)"
+    }
+    Write-Host "Authenticode OK - signed by: $($sig.SignerCertificate.Subject)"
+}
+
+# --- 4. Sign (Tauri updater signature) --------------------------------------
 Step "Signing installer"
 # -f loads the private key FROM A FILE PATH. -k instead treats its argument
 # as the literal key content and tries to base64-decode it directly -- that
@@ -128,11 +373,8 @@ $releaseAsset = Join-Path $RepoRoot $finalMsiName
 Copy-Item $signTarget $releaseAsset -Force
 
 $notes = @"
-- Fix: Window layout positions now apply reliably. Previously a group could place some windows correctly and miss others, differently on each launch.
-- Fix: A URL item with several links now opens each link in its own tab. Previously only the last one survived.
-- Fix: Quit TakeOff now closes every window. The group editor could be left open with TakeOff still running in the background.
-- New: License activations are now tied to the machine they run on, so reinstalling Windows or losing your settings no longer uses up an activation permanently.
-- Style: The Buy a license button now matches the rest of the app.
+- New: The installer is now digitally signed by Tonic Technologies LLC. Windows will no longer warn about an unknown publisher when you install or update TakeOff.
+- New: The version you are running is shown at the bottom of the Settings tab, which makes it easier to report issues.
 "@
 
 # --notes-file instead of --notes $notes -- same reasoning as the commit

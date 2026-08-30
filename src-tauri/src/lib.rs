@@ -1128,6 +1128,14 @@ fn resize_widget(width: u32, height: u32, app: tauri::AppHandle) -> Result<(), S
     Ok(())
 }
 
+/// The running build's version, e.g. "0.6.0". Read from CARGO_PKG_VERSION at
+/// compile time, so it always matches the actual binary — no second place to
+/// forget to update when bumping a release.
+#[tauri::command]
+fn get_app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
 /// Fully exits TakeOff, closing every window it owns.
 ///
 /// Closing just the widget window is NOT a quit: the config editor, detached
@@ -2745,6 +2753,7 @@ pub fn run() {
             open_config_window,
             resize_widget,
             quit_app,
+            get_app_version,
             get_installed_apps,
             get_suggested_apps,
             save_cached_suggestions,
