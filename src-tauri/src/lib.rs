@@ -348,6 +348,43 @@ fn get_free_tier_enforcement(state: State<AppState>) -> Option<Vec<serde_json::V
     if visible.len() > 1 { Some(visible) } else { None }
 }
 
+/// Opens the "Add an item" type picker. `target` is a human-readable
+/// description of where the item will go (e.g. "Desktop 2"), shown as a
+/// subtitle so the choice made in the config window stays visible here.
+///
+/// A separate window rather than an inline menu: the config window rebuilds its
+/// item list on every render, so an inline menu parented into that list was
+/// being destroyed the moment anything re-rendered.
+#[tauri::command]
+fn open_add_item_window(app: tauri::AppHandle, target: Option<String>) {
+    let app2 = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Some(existing) = app2.get_webview_window("add-item") {
+            let _ = existing.set_focus();
+            return;
+        }
+        let url = match &target {
+            Some(t) => format!("add-item.html?target={}", percent_encode(t)),
+            None => "add-item.html".to_string(),
+        };
+        if let Ok(win) = tauri::WebviewWindowBuilder::new(
+            &app2,
+            "add-item",
+            tauri::WebviewUrl::App(url.into()),
+        )
+        .title("Add Item")
+        .inner_size(340.0, 430.0)
+        .resizable(false)
+        .decorations(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .build()
+        {
+            center_on_widget_monitor(&app2, &win, 340.0, 430.0);
+        }
+    });
+}
+
 /// Opens a small centered window where the user picks which group to keep
 /// when the free-tier limit needs to be enforced. No-ops if the window is
 /// already open.
@@ -1106,14 +1143,23 @@ pub(crate) fn open_config_window_inner(app: tauri::AppHandle, group_id: Option<S
             tauri::WebviewUrl::App(url.into()),
         )
         .title(title)
-        .inner_size(420.0, 580.0)
-        .min_inner_size(360.0, 460.0)
+        // Width is mirrored by CONFIG_WINDOW_WIDTH in config.js — fitWindow()
+        // re-asserts it after every render, so the two must agree or the window
+        // snaps back to the JS value.
+        .inner_size(840.0, 725.0)
+        .min_inner_size(720.0, 575.0)
+        // Tauri runs its own file-focused drag-and-drop handler by default, and
+        // while it is active the webview does NOT deliver DOM drag events to the
+        // page. That is why the item list's drag-to-reorder handlers never
+        // fired. Turning it off is required for HTML5 drag-and-drop on Windows.
+        // This window has no use for OS file drops.
+        .disable_drag_drop_handler()
         .decorations(true)
         .resizable(true)
         .always_on_top(true)
         .build()
         {
-            center_on_widget_monitor(&app2, &win, 420.0, 580.0);
+            center_on_widget_monitor(&app2, &win, 840.0, 725.0);
         }
     });
 }
@@ -1166,6 +1212,11 @@ async fn open_detached_group_window(app: &tauri::AppHandle, group: &config::Grou
     .inner_size(120.0, 80.0)
     .decorations(false)
     .transparent(true)
+    // Windows draws a DWM drop shadow around every window by default, OUTSIDE
+    // the content area. On a transparent, undecorated window that renders as a
+    // dark halo bleeding around the floating pill, which no CSS can remove
+    // because it isn't part of the page.
+    .shadow(false)
     .resizable(false)
     .always_on_top(false)
     .skip_taskbar(true)
@@ -1366,6 +1417,7 @@ async fn pre_detach(group_id: String, app: tauri::AppHandle) -> Result<(), Strin
         .position(-5000.0, -5000.0)   // off-screen while hidden
         .decorations(false)
         .transparent(true)
+        .shadow(false)                // see pre_detach - kills the DWM halo
         .resizable(false)
         .always_on_top(false)
         .skip_taskbar(true)
@@ -2537,7 +2589,11 @@ pub fn run() {
                                 tauri::WebviewUrl::App("config.html?tab=settings".into()),
                             )
                             .title("App Settings")
-                            .inner_size(420.0, 460.0)
+                            // Same 2x width / 1.25x height as the group editor —
+                            // it is the same config.html, so a different width
+                            // would be undone by fitWindow() on first render.
+                            .inner_size(840.0, 575.0)
+                            .disable_drag_drop_handler()   // see open_config_window_inner
                             .center()
                             .decorations(true)
                             .resizable(false)
@@ -2721,6 +2777,7 @@ pub fn run() {
             clear_license_local,
             get_free_tier_enforcement,
             open_group_picker_window,
+            open_add_item_window,
             check_license_status,
             reorder_items,
             save_widget_position,

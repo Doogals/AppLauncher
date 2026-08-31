@@ -27,7 +27,7 @@
       justify-content: center;
     }
     #pk-name {
-      font-size: 0.95rem;
+      font-size: 1.15rem;
       font-weight: 600;
       color: #fff;
       text-align: center;
@@ -35,6 +35,21 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+    /* Full path, kept for disambiguation when two items share a name (two
+       Chrome profiles, two copies of a script) but deliberately quiet — it is
+       reference detail, not the heading. */
+    #pk-path {
+      font-size: 0.72rem;
+      color: rgba(255, 255, 255, 0.38);
+      text-align: center;
+      max-width: 90%;
+      margin: 3px auto 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      direction: rtl;          /* keep the filename visible when truncating */
+      unicode-bidi: plaintext;
     }
     #pk-cross { font-size: 2.4rem; color: #4a9eff; line-height: 1; }
     #pk-hint {
@@ -63,6 +78,7 @@
 <body>
   <div id="pk-body">
     <div id="pk-name"></div>
+    <div id="pk-path"></div>
     <div id="pk-cross">&#x2316;</div>
     <div id="pk-hint">
       Drag &amp; resize this window to set its launch position<br>

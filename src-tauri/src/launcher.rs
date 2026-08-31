@@ -885,6 +885,15 @@ fn shell_execute_open(path: &str) -> Result<(), String> {
     }
 }
 
+/// Short hex rendering of a virtual desktop GUID, for debug logging.
+/// First 4 bytes are plenty to tell desktops apart while staying readable.
+fn guid_hex(guid: &[u8]) -> String {
+    if guid.is_empty() {
+        return "<empty>".to_string();
+    }
+    guid.iter().take(4).map(|b| format!("{:02x}", b)).collect::<String>()
+}
+
 fn emit_progress(app: &Option<tauri::AppHandle>, msg: &str) {
     if let Some(h) = app {
         let _ = h.emit("launch-progress", msg);
@@ -986,10 +995,28 @@ fn launch_group_inner(group_id: &str, config: &AppConfig, app: Option<tauri::App
             let effective_guid = {
                 let desktops = crate::virtual_desktop::get_virtual_desktops();
                 let exists = desktops.iter().any(|d| d.guid.as_slice() == resolved_guid.as_slice());
+
+                // Diagnostic for the "target desktop missing" case. Resolution
+                // failing when the user demonstrably picked a live desktop means
+                // the saved GUID and the registry's GUIDs disagree, and the only
+                // way to tell WHY is to see both.
+                if !exists {
+                    crate::debug_log::write_debug_log(&format!(
+                        "LAUNCH GUID MISMATCH: wanted {} | saved_index={:?} | {} desktop(s) present: [{}]",
+                        guid_hex(&resolved_guid),
+                        items.iter().find_map(|i| i.launch_desktop_index),
+                        desktops.len(),
+                        desktops.iter()
+                            .map(|d| guid_hex(&d.guid))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+
                 if exists {
                     resolved_guid.clone()
-                } else if let Some(target_desktop) = items.first()
-                    .and_then(|i| i.launch_desktop_index)
+                } else if let Some(target_desktop) = items.iter()
+                    .find_map(|i| i.launch_desktop_index)
                     .and_then(|idx| desktops.get(idx as usize))
                 {
                     // GUID no longer matches anything — this does NOT necessarily mean
@@ -1004,14 +1031,42 @@ fn launch_group_inner(group_id: &str, config: &AppConfig, app: Option<tauri::App
                         target_desktop.index
                     ));
                     target_desktop.guid.clone()
+                } else if items.iter().find_map(|i| i.launch_desktop_index).is_none() {
+                    // No GUID match AND no saved position. Nothing indicates
+                    // WHICH desktop was wanted, so creating one is a guess — and
+                    // a costly one, since it repeats on every launch and piles
+                    // up desktops.
+                    //
+                    // Fall back to the desktop the user was on when they hit
+                    // Launch, NOT the current one. "Current" is wherever the
+                    // previous batch happened to leave us, which is an artefact
+                    // of processing order — an unresolvable item would get
+                    // dragged along behind whichever item was handled before it.
+                    let fallback = original_desktop.clone().unwrap_or_else(|| current_desktop.clone());
+                    crate::debug_log::write_debug_log(&format!(
+                        "LAUNCH target desktop unresolvable and no saved position — using starting desktop {}",
+                        guid_hex(&fallback)
+                    ));
+                    emit_progress(&app, "Saved desktop not found - launching on your starting desktop");
+                    fallback
                 } else {
-                    crate::debug_log::write_debug_log("LAUNCH target desktop missing — creating new desktop");
+                    // A position WAS saved but is now out of range: positive
+                    // evidence a desktop that used to exist has been removed.
+                    // Recreating is the right call here.
+                    crate::debug_log::write_debug_log("LAUNCH saved desktop position no longer exists — creating new desktop");
                     emit_progress(&app, "Creating missing desktop…");
                     match crate::virtual_desktop::create_virtual_desktop() {
                         Some(new_guid) => {
                             crate::debug_log::write_debug_log("LAUNCH new desktop created");
                             // Record remap so subsequent items targeting the same missing GUID land here too
                             guid_remaps.insert(target_guid.clone(), new_guid.clone());
+                            // Win+Ctrl+D CREATES the desktop and SWITCHES to it, so we
+                            // are already standing on it. Record that here — otherwise
+                            // current_desktop still names the old desktop, the check
+                            // below sees a difference, and it fires arrow presses
+                            // measured from a stale origin that walk us straight off
+                            // the desktop we just arrived on.
+                            current_desktop = new_guid.clone();
                             new_guid
                         }
                         None => {
@@ -1034,11 +1089,49 @@ fn launch_group_inner(group_id: &str, config: &AppConfig, app: Option<tauri::App
                 crate::debug_log::write_debug_log(&format!(
                     "LAUNCH batch switching desktop ({} item(s))", items.len()
                 ));
-                let switched = crate::virtual_desktop::switch_virtual_desktop(&current_desktop, &effective_guid);
+                let mut switched = crate::virtual_desktop::switch_virtual_desktop(&current_desktop, &effective_guid);
+
+                // A failed switch leaves us on an UNKNOWN desktop — some steps of
+                // the chord may have landed before it stalled. Recording the
+                // target anyway (which is what used to happen) meant every later
+                // batch counted its arrow presses from a position we were never
+                // actually at, so the error compounded and items scattered across
+                // the wrong desktops.
+                //
+                // Re-read the real position from the registry and retry once from
+                // there. A single retry covers the common cause: a transient stall
+                // under load, or a keypress the shell dropped.
                 if !switched {
-                    crate::debug_log::write_debug_log("LAUNCH batch desktop switch timed out or failed");
+                    crate::debug_log::write_debug_log("LAUNCH batch desktop switch failed — re-reading actual desktop");
+                    match crate::virtual_desktop::get_current_virtual_desktop_guid() {
+                        Some(actual) => {
+                            current_desktop = actual;
+                            if current_desktop.as_slice() != effective_guid.as_slice() {
+                                crate::debug_log::write_debug_log("LAUNCH retrying desktop switch from actual position");
+                                switched = crate::virtual_desktop::switch_virtual_desktop(&current_desktop, &effective_guid);
+                            } else {
+                                // The switch actually completed after the poll gave up.
+                                switched = true;
+                            }
+                        }
+                        None => {
+                            crate::debug_log::write_debug_log("LAUNCH could not read current desktop — launching wherever we are");
+                        }
+                    }
                 }
-                current_desktop = effective_guid.clone();
+
+                if switched {
+                    current_desktop = effective_guid.clone();
+                } else {
+                    // Still not there. Launch anyway rather than dropping the
+                    // user's items, but leave current_desktop reflecting reality
+                    // so the NEXT batch is measured from a true origin.
+                    if let Some(actual) = crate::virtual_desktop::get_current_virtual_desktop_guid() {
+                        current_desktop = actual;
+                    }
+                    crate::debug_log::write_debug_log("LAUNCH proceeding on current desktop — target unreachable");
+                    emit_progress(&app, "Could not switch desktop - launching here");
+                }
             }
             for item in items {
                 if check_abort() {
@@ -1298,6 +1391,14 @@ pub fn launch_item(item: &Item, preferred_browser: &Option<String>) -> Result<()
                 const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
                 cmd.creation_flags(CREATE_NEW_CONSOLE);
             }
+            // NOTE: the child's stderr is deliberately left inherited.
+            //
+            // It was briefly redirected to NUL to quieten Chrome's internal
+            // chatter, which was a mistake: release builds set
+            // windows_subsystem = "windows" and have no console at all, so that
+            // output never reaches users anyway. Silencing it only removed
+            // information from dev builds — the one place it is visible and
+            // useful when diagnosing why an app misbehaved after launch.
             #[cfg(target_os = "windows")]
             let before = if item.launch_x.is_some() { Some(collect_visible_hwnds()) } else { None };
             let child = cmd.spawn().map_err(|e| format!("Failed to launch app '{}': {}", path, e))?;

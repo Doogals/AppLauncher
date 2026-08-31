@@ -42,6 +42,7 @@ mod com {
 
     extern "system" {
         pub fn CoInitializeEx(reserved: *mut std::ffi::c_void, co_init: u32) -> i32;
+        pub fn CoUninitialize();
         pub fn CoCreateInstance(
             rclsid: *const [u8; 16],
             punk_outer: *mut std::ffi::c_void,
@@ -51,9 +52,18 @@ mod com {
         ) -> i32;
     }
 
-    /// Create IVirtualDesktopManager. Returns null on failure; caller must Release.
-    pub unsafe fn create_vdm() -> *mut IVdm {
-        CoInitializeEx(std::ptr::null_mut(), COINIT_APARTMENTTHREADED);
+    /// Creates IVirtualDesktopManager.
+    ///
+    /// Returns the interface pointer plus whether THIS call initialised COM on
+    /// the current thread. Every successful CoInitializeEx must be matched by a
+    /// CoUninitialize, so that flag has to travel back to the caller: pass both
+    /// to `destroy_vdm`. CoInitializeEx returns S_OK (0) when it initialised the
+    /// apartment and S_FALSE (1) when the thread was already initialised — only
+    /// the former is ours to undo. On failure the pointer is null and any
+    /// initialisation is unwound here.
+    pub unsafe fn create_vdm() -> (*mut IVdm, bool) {
+        let hr_init = CoInitializeEx(std::ptr::null_mut(), COINIT_APARTMENTTHREADED);
+        let we_initialised = hr_init == 0;
         let mut ptr: *mut IVdm = std::ptr::null_mut();
         let hr = CoCreateInstance(
             &CLSID,
@@ -62,7 +72,20 @@ mod com {
             &IID,
             &mut ptr as *mut *mut IVdm as *mut *mut std::ffi::c_void,
         );
-        if hr != 0 { std::ptr::null_mut() } else { ptr }
+        if hr != 0 {
+            if we_initialised { CoUninitialize(); }
+            return (std::ptr::null_mut(), false);
+        }
+        (ptr, we_initialised)
+    }
+
+    /// Releases the interface and unwinds COM initialisation if `create_vdm`
+    /// performed it.
+    pub unsafe fn destroy_vdm(vdm: *mut IVdm, we_initialised: bool) {
+        if !vdm.is_null() {
+            ((*(*vdm).vtbl).release)(vdm as *mut _);
+        }
+        if we_initialised { CoUninitialize(); }
     }
 }
 
@@ -72,11 +95,11 @@ mod com {
 pub fn get_window_virtual_desktop(hwnd: *mut std::ffi::c_void) -> Option<Vec<u8>> {
     #[cfg(target_os = "windows")]
     unsafe {
-        let vdm = com::create_vdm();
+        let (vdm, inited) = com::create_vdm();
         if vdm.is_null() { return None; }
         let mut guid = [0u8; 16];
         let hr = ((*(*vdm).vtbl).get_desktop_id)(vdm as *mut _, hwnd, &mut guid);
-        ((*(*vdm).vtbl).release)(vdm as *mut _);
+        com::destroy_vdm(vdm, inited);
         if hr != 0 { return None; }
         Some(guid.to_vec())
     }
@@ -92,12 +115,12 @@ pub fn move_window_to_virtual_desktop(hwnd: *mut std::ffi::c_void, guid: &[u8]) 
     if guid.len() != 16 { return false; }
     #[cfg(target_os = "windows")]
     unsafe {
-        let vdm = com::create_vdm();
+        let (vdm, inited) = com::create_vdm();
         if vdm.is_null() { return false; }
         let mut arr = [0u8; 16];
         arr.copy_from_slice(guid);
         let hr = ((*(*vdm).vtbl).move_to_desktop)(vdm as *mut _, hwnd, &arr);
-        ((*(*vdm).vtbl).release)(vdm as *mut _);
+        com::destroy_vdm(vdm, inited);
         hr == 0
     }
     #[cfg(not(target_os = "windows"))]
@@ -207,6 +230,7 @@ fn switch_vd_windows(from_guid: &[u8], to_guid: &[u8]) -> bool {
         // Fixed sleeps are unreliable — Windows 11 animation takes 300-400 ms and varies.
         let deadline = std::time::Instant::now() + Duration::from_millis(600);
         let poll_start = std::time::Instant::now();
+        let mut confirmed = false;
         loop {
             thread::sleep(Duration::from_millis(50));
             if let Some(cur) = get_current_vd_windows() {
@@ -215,13 +239,27 @@ fn switch_vd_windows(from_guid: &[u8], to_guid: &[u8]) -> bool {
                         "VD switch confirmed after {}ms",
                         poll_start.elapsed().as_millis()
                     ));
+                    confirmed = true;
                     break;
                 }
             }
             if std::time::Instant::now() >= deadline {
-                crate::debug_log::write_debug_log("VD switch timed out after 600ms — proceeding");
                 break;
             }
+        }
+
+        // An unconfirmed step means we are NOT where the caller thinks we are.
+        // Previously this logged and carried on, and the function returned true
+        // regardless — so the caller recorded a successful move it never made,
+        // and every later switch counted arrow presses from a wrong origin,
+        // compounding the error across a launch. Bail immediately instead: the
+        // remaining steps would be measured from an unknown position anyway.
+        if !confirmed {
+            crate::debug_log::write_debug_log(&format!(
+                "VD switch step {}/{} NOT confirmed within 600ms — aborting switch",
+                step + 1, steps
+            ));
+            return false;
         }
     }
     true
@@ -524,9 +562,23 @@ fn get_virtual_desktops_windows() -> Vec<VirtualDesktop> {
             return vec![];
         }
 
-        let mut buf = vec![0u8; 1024];
-        let mut size = buf.len() as u32;
+        // Ask for the required size first, then allocate exactly that.
+        // A fixed buffer capped this at 64 desktops, and overflowing it did not
+        // truncate gracefully: RegQueryValueExW returns ERROR_MORE_DATA, the
+        // early return fires, and an EMPTY list comes back — silently disabling
+        // every virtual-desktop feature rather than degrading.
         let mut typ = 0u32;
+        let mut size = 0u32;
+        let probe = RegQueryValueExW(
+            hkey, value_name.as_ptr(), std::ptr::null_mut(), &mut typ,
+            std::ptr::null_mut(), &mut size,
+        );
+        if probe != 0 || size == 0 {
+            RegCloseKey(hkey);
+            return vec![];
+        }
+
+        let mut buf = vec![0u8; size as usize];
         let ret = RegQueryValueExW(
             hkey, value_name.as_ptr(), std::ptr::null_mut(), &mut typ,
             buf.as_mut_ptr(), &mut size,
@@ -534,6 +586,7 @@ fn get_virtual_desktops_windows() -> Vec<VirtualDesktop> {
         RegCloseKey(hkey);
 
         if ret != 0 { return vec![]; }
+        if size as usize > buf.len() { return vec![]; }
 
         // REG_BINARY: packed 16-byte GUIDs in Task View order
         buf[..size as usize]

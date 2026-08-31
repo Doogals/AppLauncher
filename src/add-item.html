@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Add Item</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #1a1a2e;
+      color: #e0e0e0;
+      font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      padding: 18px 20px 16px;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    h3 {
+      font-size: 15px;
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 3px;
+    }
+    #target {
+      font-size: 11.5px;
+      color: #5f7a9c;
+      margin-bottom: 14px;
+      min-height: 14px;
+    }
+    #types {
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      flex: 1;
+    }
+    .type-btn {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      width: 100%;
+      padding: 11px 13px;
+      background: #16213e;
+      border: 1px solid #0f3460;
+      border-radius: 7px;
+      color: #e0e0e0;
+      font-family: inherit;
+      font-size: 13px;
+      text-align: left;
+      cursor: pointer;
+      transition: background 0.12s, border-color 0.12s;
+    }
+    .type-btn:hover { background: #1a4a7a; border-color: #2da86a; }
+    .type-icon { font-size: 17px; line-height: 1; }
+    #cancel {
+      width: 100%;
+      margin-top: 14px;
+      padding: 9px;
+      background: transparent;
+      border: 1px solid #3a3a6a;
+      border-radius: 7px;
+      color: #888;
+      font-family: inherit;
+      font-size: 12.5px;
+      cursor: pointer;
+    }
+    #cancel:hover { border-color: #e94560; color: #e94560; }
+  </style>
+</head>
+<body>
+  <h3>Add an item</h3>
+  <div id="target"></div>
+  <div id="types">
+    <button class="type-btn" data-type="winapp"><span class="type-icon">&#x1FA9F;</span>Windows Apps</button>
+    <button class="type-btn" data-type="url"><span class="type-icon">&#x1F310;</span>URL / Bookmark</button>
+    <button class="type-btn" data-type="file"><span class="type-icon">&#x1F4C4;</span>File / Program</button>
+    <button class="type-btn" data-type="folder"><span class="type-icon">&#x1F4C1;</span>Folder</button>
+    <button class="type-btn" data-type="steam"><span class="type-icon">&#x1F3AE;</span>Steam Game</button>
+  </div>
+  <button id="cancel">Cancel</button>
+  <script type="module" src="add-item.js"></script>
+</body>
+</html>

@@ -411,7 +411,10 @@ async function applyLowProfile(enabled) {
 listen('low-profile-changed', (e) => applyLowProfile(e.payload));
 
 const GAP   = 8;
-const PAD   = 24;
+// Must equal .widget's TOTAL horizontal padding in styles.css (left + right).
+// The window auto-resizes to exactly this plus the measured children, so a
+// mismatch shows up as the last button being clipped or a gap on the right.
+const PAD   = 32;
 const WIN_H = 80;
 
 const PERSISTENT_IDS = ['app-wordmark', 'widget-close-btn', 'close-btn-spacer'];

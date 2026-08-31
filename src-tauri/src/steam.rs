@@ -105,6 +105,7 @@ pub fn get_installed_steam_games() -> Vec<SteamGame> {
         .filter_map(|e| {
             let content = std::fs::read_to_string(e.path()).ok()?;
             let (appid, name) = parse_acf(&content)?;
+            if is_non_launchable_appid(&appid) { return None; }
             let icon_data = load_icon_base64(&steam_path, &appid);
             Some(SteamGame { appid, name, icon_data })
         })
@@ -112,6 +113,56 @@ pub fn get_installed_steam_games() -> Vec<SteamGame> {
 
     games.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     games
+}
+
+/// Steam depots that appear in appmanifest files but are not launchable.
+///
+/// These are shared dependencies and tooling installed alongside real games —
+/// they have no executable, so `steam://rungameid/<id>` does nothing at all.
+/// Steamworks Common Redistributables (228980) is the one that shows up on
+/// essentially every Windows install; it is the DirectX / Visual C++ runtime
+/// bundle that games pull in.
+///
+/// Matched on appid rather than name: appids are stable, whereas names are
+/// localised and occasionally renamed, and a name-substring rule risks hiding a
+/// real game that happens to contain a matching word.
+fn is_non_launchable_appid(appid: &str) -> bool {
+    matches!(
+        appid,
+        "228980"    // Steamworks Common Redistributables
+        | "1070560" // Steam Linux Runtime
+        | "1391110" // Steam Linux Runtime - Soldier
+        | "1628350" // Steam Linux Runtime - Sniper
+        | "1493710" // Proton Experimental
+        | "2180100" // Proton Hotfix
+        | "858280"  // Proton 3.7 / compatibility tool
+        | "961940"  // Proton 4.2
+        | "1054830" // Proton 4.11
+        | "1113280" // Proton 5.0
+        | "1245040" // Proton 5.13
+        | "1420170" // Proton 6.3
+        | "1580130" // Proton 7.0
+        | "2230260" // Proton 8.0
+        | "2805730" // Proton 9.0
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filters_steamworks_redistributables() {
+        assert!(is_non_launchable_appid("228980"));
+    }
+
+    #[test]
+    fn keeps_real_games() {
+        // Half-Life 2, Counter-Strike 2, Age of Mythology: Retold.
+        assert!(!is_non_launchable_appid("220"));
+        assert!(!is_non_launchable_appid("730"));
+        assert!(!is_non_launchable_appid("1934680"));
+    }
 }
 
 fn parse_acf(content: &str) -> Option<(String, String)> {

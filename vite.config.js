@@ -23,6 +23,7 @@ export default defineConfig({
         groupColor: resolve(__dirname, 'src/group-color.html'),
         detachedGroup: resolve(__dirname, 'src/detached-group.html'),
         groupPicker: resolve(__dirname, 'src/group-picker.html'),
+        addItem: resolve(__dirname, 'src/add-item.html'),
       },
     },
   },

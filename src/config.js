@@ -544,17 +544,18 @@ async function showBookmarkStep(modal, browser, closeModal, existingItem = null,
       <span class="url-step-title">${safeBrowserName} Bookmarks</span>
       <button class="winapp-close" id="url-close2">✕</button>
     </div>
-    <div class="url-custom">
+    <div class="url-custom bookmark-search-row">
       <input type="text" id="bookmark-search" placeholder="Search bookmarks..." autocomplete="off" />
+      <button type="button" class="bookmark-clear-btn" id="bookmark-clear" title="Uncheck every selected bookmark">Clear All</button>
     </div>
     <div class="winapp-list" id="bookmark-list">
       <div class="winapp-empty">Loading bookmarks...</div>
     </div>
     <div class="url-entry">
-      <input type="text" id="custom-url-input" placeholder="Or enter a custom URL: https://..." autocomplete="off" />
+      <input type="text" id="custom-url-input" placeholder="Type a URL, IP or address and press Enter to add" autocomplete="off" />
     </div>
     <div class="url-footer">
-      ${isEdit ? '' : '<button class="btn btn-cancel" id="skip-url-btn">Just Open Browser (No URL)</button>'}
+      <button class="btn btn-cancel" id="skip-url-btn">Just Open Browser (No URL)</button>
       <button class="btn btn-save" id="add-selected-btn" disabled>${isEdit ? 'Save' : 'Add Selected'}</button>
     </div>
   `;
@@ -564,14 +565,42 @@ async function showBookmarkStep(modal, browser, closeModal, existingItem = null,
       closeModal();
       showUrlPicker();
     });
-    document.getElementById('skip-url-btn').addEventListener('click', async () => {
-      let icon_data = null;
-      try { icon_data = await invoke('get_file_icon', { path: browser.path }); } catch {}
-      currentItems.push({ item_type: 'app', path: browser.path, value: null, display_name: browser.name, icon_data });
-      renderItems();
-      closeModal();
-    });
   }
+
+  // Available when editing too, not just when adding. Without it, clearing every
+  // bookmark from an existing item was a dead end: Save stays disabled at zero
+  // URLs (a url-type item with nothing to open breaks the whole group's launch),
+  // and there was no other way out of the dialog with a saved change.
+  // Converting to an app-type item pointing at the browser is the correct
+  // representation of "just open the browser" — same thing the add flow does.
+  document.getElementById('skip-url-btn').addEventListener('click', async () => {
+    let icon_data = null;
+    try { icon_data = await invoke('get_file_icon', { path: browser.path }); } catch {}
+    const appItem = {
+      item_type: 'app',
+      path: browser.path,
+      value: null,
+      display_name: browser.name,
+      icon_data,
+    };
+    if (isEdit) {
+      // Carry over everything the bookmark dialog doesn't own. The user set
+      // these elsewhere (layout editor) and would not expect editing URLs to
+      // discard their window placement or desktop assignment.
+      appItem.launch_desktop         = existingItem.launch_desktop ?? null;
+      appItem.launch_x               = existingItem.launch_x ?? null;
+      appItem.launch_y               = existingItem.launch_y ?? null;
+      appItem.launch_width           = existingItem.launch_width ?? null;
+      appItem.launch_height          = existingItem.launch_height ?? null;
+      appItem.launch_virtual_desktop = existingItem.launch_virtual_desktop ?? null;
+      appItem.launch_desktop_index   = existingItem.launch_desktop_index ?? null;
+      currentItems[existingIdx] = appItem;
+    } else {
+      currentItems.push(appItem);
+    }
+    renderItems();
+    closeModal();
+  });
   document.getElementById('url-close2').addEventListener('click', closeModal);
 
   const customInput = document.getElementById('custom-url-input');
@@ -609,13 +638,21 @@ async function showBookmarkStep(modal, browser, closeModal, existingItem = null,
     bookmarks.forEach(bm => {
       const label = document.createElement('label');
       label.className = 'bookmark-row';
-      const safeTitle = bm.title.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      const safeUrl   = bm.url.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      // Many bookmarks come back with no title, which left the URL rendering in
+      // the dim secondary style while manually-added entries used the bright
+      // primary one — the same list in two different fonts. Promote the URL to
+      // the primary line whenever there's no title, and only show the secondary
+      // line when it would say something the primary doesn't.
+      const hasTitle  = !!(bm.title && bm.title.trim());
+      const esc = (s) => String(s ?? '')
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const primary   = esc(hasTitle ? bm.title : bm.url);
+      const secondary = hasTitle ? esc(bm.url) : '';
       label.innerHTML = `
         <input type="checkbox" class="bookmark-checkbox" />
         <div class="bookmark-info">
-          <div class="bookmark-title">${safeTitle}</div>
-          <div class="bookmark-url">${safeUrl}</div>
+          <div class="bookmark-title">${primary}</div>
+          ${secondary ? `<div class="bookmark-url">${secondary}</div>` : ''}
         </div>
       `;
       const cb = label.querySelector('.bookmark-checkbox');
@@ -634,6 +671,78 @@ async function showBookmarkStep(modal, browser, closeModal, existingItem = null,
       row.style.display = (!q || title.includes(q) || url.includes(q)) ? '' : 'none';
     });
     updateAddBtn();
+  });
+
+  // Clears every checked bookmark, including ones currently hidden by the
+  // search filter. That is the point of the button: the count on the Save
+  // button can say 8 while only a few are on screen, and hunting down the
+  // rest by scrolling is exactly the chore this avoids. The custom URL field
+  // is deliberately left alone — it isn't a bookmark, and silently wiping
+  // something the user typed would be a nasty surprise.
+  document.getElementById('bookmark-clear').addEventListener('click', () => {
+    modal.querySelectorAll('.bookmark-checkbox').forEach(cb => { cb.checked = false; });
+    updateAddBtn();
+  });
+
+  // Adds whatever is in the custom field to the list as a checked row, so more
+  // than one can be stacked up. Previously the field contributed exactly one URL
+  // at save time, making it impossible to add several by hand.
+  //
+  // NO VALIDATION, deliberately. Anything the user types is accepted verbatim:
+  // bare hostnames, IP addresses, ports, localhost, intranet names, custom
+  // schemes. The browser is a far better judge of what resolves than a regex
+  // here would be, and rejecting input that would have worked is worse than
+  // passing through something that doesn't.
+  function addCustomUrl(raw) {
+    const url = raw.trim();
+    if (!url) return;
+
+    // Already listed? Tick that row instead of creating a duplicate.
+    const existing = [...modal.querySelectorAll('.bookmark-checkbox')]
+      .find(cb => cb.dataset.url === url);
+    if (existing) {
+      existing.checked = true;
+      const row = existing.closest('.bookmark-row');
+      if (row) {
+        row.style.display = '';
+        row.scrollIntoView({ block: 'nearest' });
+      }
+      customInput.value = '';
+      updateAddBtn();
+      return;
+    }
+
+    const listEl = document.getElementById('bookmark-list');
+    // Drop the "No bookmarks found." placeholder if it's still showing.
+    listEl.querySelector('.winapp-empty')?.remove();
+
+    const safeUrl = url.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const label = document.createElement('label');
+    label.className = 'bookmark-row';
+    label.innerHTML = `
+      <input type="checkbox" class="bookmark-checkbox" checked />
+      <div class="bookmark-info">
+        <div class="bookmark-title">${safeUrl}</div>
+        <div class="bookmark-url">Added manually</div>
+      </div>
+    `;
+    const cb = label.querySelector('.bookmark-checkbox');
+    cb.dataset.url = url;
+    cb.addEventListener('change', updateAddBtn);
+    // Prepended rather than appended so it's visible straight away instead of
+    // buried at the bottom of a long bookmark list.
+    listEl.prepend(label);
+
+    customInput.value = '';
+    updateAddBtn();
+    label.scrollIntoView({ block: 'nearest' });
+  }
+
+  customInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();   // stop the dialog's default button from firing
+      addCustomUrl(customInput.value);
+    }
   });
 
   customInput.addEventListener('input', updateAddBtn);
@@ -670,6 +779,13 @@ async function showBookmarkStep(modal, browser, closeModal, existingItem = null,
       newItem.launch_y       = existingItem.launch_y ?? null;
       newItem.launch_width   = existingItem.launch_width ?? null;
       newItem.launch_height  = existingItem.launch_height ?? null;
+      // These two were missing, so editing an item's bookmarks silently wiped
+      // its virtual-desktop assignment: newItem never carried them, and the
+      // Rust side defaults absent fields to None. The user's desktop choice
+      // disappeared with no indication, and the item then launched wherever
+      // the fallback sent it.
+      newItem.launch_virtual_desktop = existingItem.launch_virtual_desktop ?? null;
+      newItem.launch_desktop_index   = existingItem.launch_desktop_index ?? null;
       currentItems[existingIdx] = newItem;
     } else {
       currentItems.push(newItem);
@@ -767,31 +883,97 @@ async function showSteamPicker() {
 
 async function showLayoutEditor() {
   if (currentItems.length === 0) return;
-  if (activeLayoutLabels) return; // already open — prevent duplicate windows
 
   const total = currentItems.length;
   const layoutLabels = Array.from({ length: total }, (_, i) => `layout-item-${i}`);
   const closeAll = () => invoke('close_layout_windows', { labels: layoutLabels });
+
+  // Pressing Edit Layout during a live session TOPS IT UP rather than being
+  // refused. Layout windows carry normal title bars, so any of them can be
+  // closed individually — and a window on another virtual desktop keeps the
+  // session "open", which used to block reopening the one you just closed on
+  // the desktop you are actually looking at.
+  //
+  // Resuming recreates only the missing windows. Survivors are left strictly
+  // alone: not re-created, not re-positioned, and deliberately NOT focused,
+  // since focusing a window on another desktop would drag the user over there.
+  const resuming = !!activeLayoutLabels;
+
+  if (!resuming) {
+    // Fresh session: reclaim the fixed labels (layout-item-0, ...) from any
+    // previous run. destroy() is asynchronous on the Rust side and the label
+    // stays registered until the window is really gone, so creating too soon
+    // fails with "a window with label layout-item-0 already exists" — which
+    // only surfaces as tauri://error and made the button look dead.
+    try { await invoke('close_layout_windows', { labels: layoutLabels }); } catch (_) {}
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const existing = await Promise.all(
+        layoutLabels.map(l => WebviewWindow.getByLabel(l).catch(() => null))
+      );
+      if (existing.every(w => !w)) break;
+      await new Promise(r => setTimeout(r, 50));   // up to ~1s total
+    }
+  }
+
+  // Which labels already have a live window right now.
+  const liveWindows = await Promise.all(
+    layoutLabels.map(l => WebviewWindow.getByLabel(l).catch(() => null))
+  );
 
   // Get the config window's physical rect to compute fallback positions on the
   // correct monitor. window.screen always reports the *primary* display in
   // WebView2 regardless of which monitor the config window is actually on.
   let configRect = null;
   try { configRect = await invoke('get_window_physical_rect', { label: 'config' }); } catch (_) {}
-  // configRect = [x, y, w, h] in physical pixels. Stagger fallbacks 30px apart.
-  const fallbackBaseX = configRect ? configRect[0] + 40 : 200;
-  const fallbackBaseY = configRect ? configRect[1] + 40 : 200;
+
+  // Fallback geometry for items with no saved position.
+  //
+  // These were a fixed 800x600 PHYSICAL pixels, which is the problem: on a
+  // scaled display that is far fewer CSS pixels (800 physical at 150% is 533
+  // logical), so the window's own content overflowed and it looked tiny. Sizing
+  // relative to the monitor scales correctly at any resolution or DPI.
+  //
+  // The cascade also started 40px from the config window, which now overlaps it
+  // since that window is 840 wide — so the layout windows appeared to spawn
+  // inside it. Starting from the monitor's own top-left keeps them clear.
+  const monitors = await placementMonitors();
+  const cfgCx = configRect ? configRect[0] + Math.floor(configRect[2] / 2) : 0;
+  const cfgCy = configRect ? configRect[1] + Math.floor(configRect[3] / 2) : 0;
+  const mon = monitors.find(m =>
+    cfgCx >= m.x && cfgCx < m.x + m.width && cfgCy >= m.y && cfgCy < m.y + m.height
+  ) || monitors[0];
+
+  const fallbackW = mon ? Math.round(mon.width  * 0.55) : 1000;
+  const fallbackH = mon ? Math.round(mon.height * 0.55) : 700;
+  const fallbackBaseX = mon ? mon.x + Math.round(mon.width  * 0.06) : 200;
+  const fallbackBaseY = mon ? mon.y + Math.round(mon.height * 0.06) : 200;
+  const cascadeStep = 44;   // enough that stacked title bars stay distinguishable
+  let layoutErrorShown = false;
 
   for (let idx = 0; idx < total; idx++) {
+    // Still open — leave it exactly as the user left it, including any dragging
+    // they have already done that isn't saved yet.
+    if (liveWindows[idx]) continue;
+
     const item = currentItems[idx];
     const hasPos = item.launch_x != null && item.launch_y != null;
 
+    // Heading is the friendly name — the same one the item list shows — with
+    // the full path relegated to a small line beneath it. Previously the
+    // heading WAS the raw path, which made every window shout an absolute
+    // filesystem path at the user instead of naming the app.
     const rawName = item.item_type === 'steam'
       ? (item.path || 'Steam Game')
       : item.item_type === 'url'
         ? browserDisplayName(item)
-        : (item.path || item.value || 'Item');
+        : (item.display_name || fallbackDisplayName(item.path) || item.path || 'Item');
+    // Secondary detail: the path for anything file-based, the first URL for a
+    // browser item. Suppressed by layout-item.js when it merely repeats the name.
+    const rawSub = item.item_type === 'url'
+      ? ((item.urls && item.urls[0]) || item.value || '')
+      : (item.path || '');
     const safeName = encodeURIComponent(rawName);
+    const safeSub  = encodeURIComponent(rawSub);
 
     const vdParam = item.launch_virtual_desktop
       ? '&vd=' + encodeURIComponent(JSON.stringify(item.launch_virtual_desktop))
@@ -799,17 +981,17 @@ async function showLayoutEditor() {
     const label = `layout-item-${idx}`;
 
     // Physical pixel target for this window.
-    const physX = hasPos ? item.launch_x : fallbackBaseX + idx * 30;
-    const physY = hasPos ? item.launch_y : fallbackBaseY + idx * 30;
-    const physW = (hasPos && item.launch_width) ? item.launch_width : 800;
-    const physH = (hasPos && item.launch_height) ? item.launch_height : 600;
+    const physX = hasPos ? item.launch_x : fallbackBaseX + idx * cascadeStep;
+    const physY = hasPos ? item.launch_y : fallbackBaseY + idx * cascadeStep;
+    const physW = (hasPos && item.launch_width)  ? item.launch_width  : fallbackW;
+    const physH = (hasPos && item.launch_height) ? item.launch_height : fallbackH;
 
     // Create the window hidden at a dummy position. We always use
     // set_layout_window_physics (physical pixels) to place it correctly —
     // this avoids per-monitor DPR ambiguity from window.devicePixelRatio,
     // which reflects the config window's monitor, not the item's monitor.
     const win = new WebviewWindow(label, {
-      url: `layout-item.html?idx=${idx}&name=${safeName}&total=${total}${vdParam}`,
+      url: `layout-item.html?idx=${idx}&name=${safeName}&sub=${safeSub}&total=${total}${vdParam}`,
       title: rawName,
       // Start tiny and hidden — set_layout_window_physics atomically positions,
       // resizes, and shows via a single Win32 SetWindowPos(SWP_SHOWWINDOW) call,
@@ -828,10 +1010,23 @@ async function showLayoutEditor() {
     });
     win.once('tauri://error', (e) => {
       console.error('[layout] tauri://error (creation FAILED) for', label, e);
+      // Surface it. This previously logged only to the dev console, so a
+      // failure to open the layout editor looked identical to the button
+      // being broken. Guarded so N failing windows produce one message.
+      if (!layoutErrorShown) {
+        layoutErrorShown = true;
+        activeLayoutLabels = null;   // don't leave the re-entry guard latched
+        showErrorModal('Could not open the layout editor. Close any leftover layout windows and try again.');
+      }
     });
   }
 
   activeLayoutLabels = layoutLabels;
+
+  // Only one set of listeners per session. Resuming must not register a second
+  // pair — save/cancel would then be handled twice, and the first handler's
+  // unlisten() calls would leave the duplicates alive for the next session.
+  if (resuming) return;
 
   const unlistenSave = await listen('layout-save', ({ payload }) => {
     const { positions, virtual_desktops, virtual_desktop_indices } = payload;
@@ -860,10 +1055,16 @@ async function showLayoutEditor() {
   });
 }
 
+// Width must match the inner_size the window is created with in lib.rs
+// (open_config_window_inner and the App Settings builder). This runs after
+// every render, so a mismatch here silently overrides the Rust value and the
+// window snaps back to the old width.
+const CONFIG_WINDOW_WIDTH = 840;
+
 async function fitWindow() {
   await new Promise(resolve => requestAnimationFrame(resolve));
   const h = document.querySelector('.config-window').offsetHeight;
-  await getCurrentWindow().setSize(new LogicalSize(420, h));
+  await getCurrentWindow().setSize(new LogicalSize(CONFIG_WINDOW_WIDTH, h));
 }
 
 async function init() {
@@ -1085,6 +1286,57 @@ function initHotkeyRecorder() {
   });
 }
 
+// Desktop/monitor lookups for the placement chips. Cached as promises for the
+// duration of one render pass so a group with ten items issues two IPC calls
+// rather than twenty. renderItems() clears these, so reopening the panel after
+// changing desktops or displays picks up the new layout.
+let _placementDesktops = null;
+let _placementMonitors = null;
+function resetPlacementCaches() {
+  _placementDesktops = null;
+  _placementMonitors = null;
+}
+function placementDesktops() {
+  return (_placementDesktops ??= invoke('get_virtual_desktops').catch(() => []));
+}
+function placementMonitors() {
+  return (_placementMonitors ??= invoke('get_monitors').catch(() => []));
+}
+
+// Virtual desktop GUIDs arrive as byte arrays, so compare element-wise.
+function sameGuid(a, b) {
+  return Array.isArray(a) && Array.isArray(b)
+    && a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+// Which monitor a saved rectangle sits on, or undefined if none.
+// Tested against the window's CENTRE: Windows reports a few pixels of negative
+// offset on ordinary windows (-12 is routine), so a top-left test would place
+// such a window off the leftmost monitor and wrongly report it off-screen.
+function monitorForItem(item, monitors) {
+  if (item.launch_x == null || item.launch_y == null) return undefined;
+  const cx = item.launch_x + Math.floor((item.launch_width || 0) / 2);
+  const cy = item.launch_y + Math.floor((item.launch_height || 0) / 2);
+  return monitors.find(m =>
+    cx >= m.x && cx < m.x + m.width && cy >= m.y && cy < m.y + m.height);
+}
+
+// A sensible starting rectangle on `m`, preserving the item's existing size if
+// it has one so switching screens doesn't also resize the window. 60% of the
+// monitor, centred — big enough to be usable, clearly not maximised, and
+// obviously deliberate so it reads as a default rather than a glitch.
+function defaultRectOnMonitor(m, keepW, keepH) {
+  const width  = Math.min(keepW || Math.round(m.width  * 0.6), m.width);
+  const height = Math.min(keepH || Math.round(m.height * 0.6), m.height);
+  return {
+    launch_x: m.x + Math.round((m.width  - width)  / 2),
+    launch_y: m.y + Math.round((m.height - height) / 2),
+    launch_width: width,
+    launch_height: height,
+  };
+}
+
+
 function buildExpandPanel(item, idx) {
   const panel = document.createElement('div');
   panel.className = 'item-expand';
@@ -1120,23 +1372,122 @@ function buildExpandPanel(item, idx) {
     return panel;
   }
 
-  // All non-Steam items: optional clear row + type-specific options
-  const hasPos = item.launch_x != null && item.launch_y != null;
-  if (hasPos) {
-    const posRow = document.createElement('div');
-    posRow.className = 'item-expand-row';
-    posRow.innerHTML = `
-      <span style="color:#888;font-size:11px;">Position saved</span>
-      <button class="coord-clear" style="background:none;border:none;color:#555;font-size:11px;cursor:pointer;padding:0 4px;" title="Clear">✕ Clear</button>
+  // Desktop + screen pickers, side by side.
+  //
+  // Both used to require the layout editor: desktop via its per-window
+  // dropdown, screen only implicitly by dragging a window onto a monitor. That
+  // meant a full drag-the-windows session to set either. They live here now,
+  // and a separate read-only summary is unnecessary because the dropdowns show
+  // the current state themselves.
+  {
+    const placeRow = document.createElement('div');
+    placeRow.className = 'item-expand-row placement-selects';
+    placeRow.innerHTML = `
+      <label class="placement-field">
+        <span class="placement-field-label">Desktop</span>
+        <select class="vd-sel">
+          <option value="">First desktop (default)</option>
+        </select>
+      </label>
+      <label class="placement-field">
+        <span class="placement-field-label">Screen</span>
+        <select class="mon-sel" title="Choosing a screen saves a default position on it. Use Edit Layout to fine-tune.">
+          <option value="">Any screen (default)</option>
+        </select>
+      </label>
     `;
-    posRow.querySelector('.coord-clear').addEventListener('click', () => {
-      currentItems[idx].launch_x = null;
-      currentItems[idx].launch_y = null;
-      currentItems[idx].launch_width = null;
-      currentItems[idx].launch_height = null;
+    const vdSel  = placeRow.querySelector('.vd-sel');
+    const monSel = placeRow.querySelector('.mon-sel');
+
+    // --- Desktop -------------------------------------------------------------
+    placementDesktops().then(desktops => {
+      desktops.forEach((d, pos) => {
+        const opt = document.createElement('option');
+        // Value is the ARRAY POSITION (0-based) — that is what
+        // launch_desktop_index means to the launcher. VirtualDesktop.index is
+        // 1-based and for display only; confusing the two silently targets the
+        // wrong desktop.
+        opt.value = String(pos);
+        opt.textContent = d.name || `Desktop ${d.index}`;
+        if (hasDesktop(item) && sameGuid(d.guid, item.launch_virtual_desktop)) opt.selected = true;
+        vdSel.appendChild(opt);
+      });
+      // A saved desktop that no longer exists must still be represented, or the
+      // dropdown would read "First desktop" and misreport where the item goes.
+      if (hasDesktop(item) && !desktops.some(d => sameGuid(d.guid, item.launch_virtual_desktop))) {
+        const opt = document.createElement('option');
+        opt.value = 'missing';
+        opt.textContent = 'Saved desktop (missing)';
+        opt.selected = true;
+        vdSel.appendChild(opt);
+        vdSel.classList.add('select-warn');
+      }
+    }).catch(() => {});
+
+    vdSel.addEventListener('change', async (e) => {
+      const v = e.target.value;
+      if (v === 'missing') return;
+      if (v === '') {
+        currentItems[idx].launch_virtual_desktop = null;
+        currentItems[idx].launch_desktop_index = null;
+      } else {
+        const desktops = await placementDesktops();
+        const pos = parseInt(v, 10);
+        const d = desktops[pos];
+        if (d) {
+          currentItems[idx].launch_virtual_desktop = d.guid;
+          // Stored with the GUID so the launcher can still find the right
+          // desktop if Windows regenerates GUIDs later.
+          currentItems[idx].launch_desktop_index = pos;
+        }
+      }
+      renderItems();   // regroups, so the item moves to its new section
+    });
+
+    // --- Screen --------------------------------------------------------------
+    // There is no separate "monitor" field for ordinary items: the launcher
+    // works purely from the saved rectangle. So picking a screen writes a
+    // concrete default rect on it, which is also what makes an unedited item
+    // open somewhere sensible instead of wherever the app feels like.
+    placementMonitors().then(monitors => {
+      const current = monitorForItem(item, monitors);
+      monitors.forEach((m, pos) => {
+        const opt = document.createElement('option');
+        opt.value = String(pos);
+        opt.textContent = m.is_primary ? 'Main screen' : `Screen ${m.index + 1}`;
+        opt.title = `${m.name} - ${m.width}x${m.height}`;
+        if (current === m) opt.selected = true;
+        monSel.appendChild(opt);
+      });
+      // Saved coordinates that aren't on any connected display — common after
+      // unplugging a monitor. Surfaced rather than silently showing "Any".
+      if (item.launch_x != null && !current) {
+        const opt = document.createElement('option');
+        opt.value = 'offscreen';
+        opt.textContent = 'Off-screen position';
+        opt.selected = true;
+        monSel.appendChild(opt);
+        monSel.classList.add('select-warn');
+      }
+    }).catch(() => {});
+
+    monSel.addEventListener('change', async (e) => {
+      const v = e.target.value;
+      if (v === 'offscreen') return;
+      const it = currentItems[idx];
+      if (v === '') {
+        // "Any screen" means no saved geometry at all — the app opens wherever
+        // it normally would. This doubles as the old Clear button.
+        it.launch_x = it.launch_y = it.launch_width = it.launch_height = null;
+      } else {
+        const monitors = await placementMonitors();
+        const m = monitors[parseInt(v, 10)];
+        if (m) Object.assign(it, defaultRectOnMonitor(m, it.launch_width, it.launch_height));
+      }
       renderItems();
     });
-    panel.appendChild(posRow);
+
+    panel.appendChild(placeRow);
   }
 
   if (item.item_type === 'script') {
@@ -1283,8 +1634,201 @@ function buildExpandPanel(item, idx) {
   return panel;
 }
 
+// ── Launch-order grouping ───────────────────────────────────────────────────
+// Mirrors how launch_group_inner actually batches work, so the list reflects
+// real launch order instead of hiding it:
+//   * items are grouped by target virtual desktop, batches running in
+//     first-appearance order;
+//   * an item with no desktop is folded into the first desktop's batch;
+//   * a URL item with NO saved position and NO desktop is excluded from the
+//     batches entirely and opened at the very end as one multi-tab launch, so
+//     it can never run first no matter where it sits in the list;
+//   * if nothing targets a desktop at all, there is no batching and the list
+//     is a plain sequence.
+const GROUP_TRAILING_URLS = 'trailing-urls';
+const GROUP_FLAT = 'flat';
+
+function hasDesktop(item) {
+  return Array.isArray(item.launch_virtual_desktop) && item.launch_virtual_desktop.length > 0;
+}
+
+function groupKeyFor(item, anyDesktop) {
+  if (item.item_type === 'url' && item.launch_x == null && !hasDesktop(item)) {
+    return GROUP_TRAILING_URLS;
+  }
+  if (!anyDesktop) return GROUP_FLAT;
+  return hasDesktop(item) ? 'vd:' + item.launch_virtual_desktop.join(',') : 'vd:first';
+}
+
+// Rewrites currentItems so members of a group are contiguous, keeping each
+// group's first-appearance order. Without this the UI could show items grouped
+// while the array had them interleaved, and dragging within a visual group
+// would map onto scattered array indices.
+function normaliseItemOrder() {
+  const anyDesktop = currentItems.some(hasDesktop);
+  const order = [];
+  const buckets = new Map();
+  // Buckets hold INDICES, not items, so the same permutation can be applied to
+  // activeLayoutLabels below.
+  currentItems.forEach((item, i) => {
+    const key = groupKeyFor(item, anyDesktop);
+    if (!buckets.has(key)) { buckets.set(key, []); order.push(key); }
+    buckets.get(key).push(i);
+  });
+  // Trailing URLs always render last because that is when they launch.
+  const keys = order.filter(k => k !== GROUP_TRAILING_URLS);
+  if (buckets.has(GROUP_TRAILING_URLS)) keys.push(GROUP_TRAILING_URLS);
+  const perm = keys.flatMap(k => buckets.get(k));
+
+  currentItems = perm.map(i => currentItems[i]);
+  // activeLayoutLabels maps layout windows to items BY POSITION, so it has to
+  // travel with any reordering or saved geometry lands on the wrong items.
+  // Only remapped when the lengths still correspond — items added or removed
+  // mid-session are handled by removeItemAt keeping them in step.
+  if (activeLayoutLabels && activeLayoutLabels.length === perm.length) {
+    activeLayoutLabels = perm.map(i => activeLayoutLabels[i]);
+  }
+
+  return { anyDesktop, showHeaders: keys.length > 1 || buckets.has(GROUP_TRAILING_URLS) };
+}
+
+// Tracks a header drag in progress. A module-level flag rather than
+// dataTransfer because dragover is not allowed to read transfer data, and the
+// item-row handlers need to be able to tell the two kinds of drag apart.
+let draggingGroupKey = null;
+
+// Moves an entire desktop group ahead of or behind another, which is what
+// decides batch order at launch: launch_group_inner batches by desktop in
+// FIRST-APPEARANCE order, so reordering the blocks reorders the batches.
+function moveGroupBlock(fromKey, toKey, before) {
+  if (fromKey === toKey) return;
+  const anyDesktop = currentItems.some(hasDesktop);
+  const order = [];
+  const buckets = new Map();
+  currentItems.forEach((item, i) => {
+    const k = groupKeyFor(item, anyDesktop);
+    if (!buckets.has(k)) { buckets.set(k, []); order.push(k); }
+    buckets.get(k).push(i);            // indices, so labels can follow
+  });
+
+  const fromPos = order.indexOf(fromKey);
+  if (fromPos === -1) return;
+  order.splice(fromPos, 1);
+  let toPos = order.indexOf(toKey);
+  if (toPos === -1) return;
+  if (!before) toPos += 1;
+  order.splice(toPos, 0, fromKey);
+
+  // Trailing URLs are pinned last no matter what: they are launched after every
+  // batch, so letting them sit anywhere else would be a lie.
+  const keys = order.filter(k => k !== GROUP_TRAILING_URLS);
+  if (buckets.has(GROUP_TRAILING_URLS)) keys.push(GROUP_TRAILING_URLS);
+
+  const perm = keys.flatMap(k => buckets.get(k));
+  currentItems = perm.map(i => currentItems[i]);
+  if (activeLayoutLabels && activeLayoutLabels.length === perm.length) {
+    activeLayoutLabels = perm.map(i => activeLayoutLabels[i]);
+  }
+}
+
+// Makes a group header a drag handle for its whole block.
+function attachGroupDrag(header, key, list) {
+  // "Opens last" cannot move — it is defined by launching after everything.
+  if (key === GROUP_TRAILING_URLS || key === GROUP_FLAT) return;
+
+  header.setAttribute('draggable', 'true');
+  header.classList.add('item-group-draggable');
+
+  header.addEventListener('dragstart', e => {
+    draggingGroupKey = key;
+    e.dataTransfer.effectAllowed = 'move';
+    header.classList.add('item-group-dragging');
+    const ghost = document.createElement('div');
+    ghost.className = 'item-drag-ghost';
+    ghost.textContent = header.querySelector('.item-group-name')?.textContent || 'Desktop';
+    document.body.appendChild(ghost);
+    e.dataTransfer.setDragImage(ghost, 14, 14);
+    setTimeout(() => ghost.remove(), 0);
+  });
+
+  header.addEventListener('dragend', () => {
+    draggingGroupKey = null;
+    header.classList.remove('item-group-dragging');
+    list.querySelectorAll('.group-drop-before, .group-drop-after')
+      .forEach(el => el.classList.remove('group-drop-before', 'group-drop-after'));
+  });
+
+  header.addEventListener('dragover', e => {
+    if (!draggingGroupKey || draggingGroupKey === key) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const rect = header.getBoundingClientRect();
+    const after = (e.clientY - rect.top) > rect.height / 2;
+    header.classList.toggle('group-drop-after', after);
+    header.classList.toggle('group-drop-before', !after);
+  });
+
+  header.addEventListener('dragleave', e => {
+    if (header.contains(e.relatedTarget)) return;
+    header.classList.remove('group-drop-before', 'group-drop-after');
+  });
+
+  header.addEventListener('drop', e => {
+    e.preventDefault();
+    const rect = header.getBoundingClientRect();
+    const after = (e.clientY - rect.top) > rect.height / 2;
+    header.classList.remove('group-drop-before', 'group-drop-after');
+    const from = draggingGroupKey;
+    draggingGroupKey = null;
+    if (!from || from === key) return;
+    moveGroupBlock(from, key, !after);
+    renderItems();
+  });
+}
+
+function makeGroupHeader(key) {
+  const header = document.createElement('div');
+  header.className = 'item-group-header';
+  if (key === GROUP_TRAILING_URLS) {
+    header.innerHTML = `<span class="item-group-name">Opens last</span>
+      <span class="item-group-note">browser tabs, always after everything else</span>`;
+    return header;
+  }
+  header.innerHTML = `<span class="item-group-name">Desktop</span>`;
+  const nameEl = header.querySelector('.item-group-name');
+  if (key === 'vd:first') {
+    nameEl.textContent = 'First desktop';
+    header.insertAdjacentHTML('beforeend',
+      '<span class="item-group-note">no desktop set - launches on the first one</span>');
+    return header;
+  }
+  // Resolve the GUID to a readable name once the desktop list arrives.
+  const guid = key.slice(3).split(',').map(Number);
+  nameEl.textContent = 'Desktop…';
+  placementDesktops().then(desktops => {
+    const match = desktops.find(d => sameGuid(d.guid, guid));
+    nameEl.textContent = match ? (match.name || `Desktop ${match.index}`) : 'Desktop (missing)';
+    if (!match) header.classList.add('item-group-header-warn');
+  }).catch(() => {});
+  return header;
+}
+
 function renderItems() {
   renderSuggestedBar();
+  // Re-query desktops and monitors once per render, not once per item.
+  resetPlacementCaches();
+
+  // Anything appended since an "+ Add to <desktop>" button was pressed joins
+  // that desktop. Done here rather than inside each picker because every add
+  // path — Windows Apps, URL, File, Folder, Steam — ends by pushing and
+  // re-rendering, so this is the one place they all pass through.
+  if (pendingAdd && currentItems.length > pendingAdd.baseLen) {
+    for (let i = pendingAdd.baseLen; i < currentItems.length; i++) {
+      currentItems[i].launch_virtual_desktop = pendingAdd.guid;
+      currentItems[i].launch_desktop_index = pendingAdd.index;
+    }
+    closeAddMenu();
+  }
 
   const list = document.getElementById('items-list');
   list.innerHTML = '';
@@ -1295,13 +1839,48 @@ function renderItems() {
     empty.style.cssText = 'color:#4a5568;font-size:0.8rem;text-align:center;padding:12px 0;';
     empty.textContent = 'No items yet';
     list.appendChild(empty);
+    renderAddButtons(null);      // nothing to group by yet
     return;
   }
 
   list.style.overflowY = 'auto';
 
+  const { anyDesktop, showHeaders } = normaliseItemOrder();
+  let prevKey = null;
+  // Collected for the add buttons: one entry per desktop group, in list order.
+  // "Opens last" is excluded — it is defined by having no desktop and no
+  // position, so an "add to it" button would be meaningless.
+  const addGroups = [];
+
+  // Closes out a section with its own add button, so the button sits at the end
+  // of the group it adds to. "Opens last" gets none — that group is defined by
+  // having no desktop and no position, so anything added would immediately fall
+  // into a different section.
+  const emitAddButton = (key) => {
+    if (!key || key === GROUP_TRAILING_URLS) return;
+    const g = addGroups.find(x => x.key === key);
+    if (g) list.appendChild(makeAddButton(g));
+  };
+
   currentItems.forEach((item, idx) => {
+    const groupKey = groupKeyFor(item, anyDesktop);
+    if (groupKey !== GROUP_TRAILING_URLS && !addGroups.some(g => g.key === groupKey)) {
+      addGroups.push({
+        key: groupKey,
+        guid: hasDesktop(item) ? item.launch_virtual_desktop : null,
+        index: hasDesktop(item) ? (item.launch_desktop_index ?? null) : null,
+      });
+    }
+    if (showHeaders && groupKey !== prevKey) {
+      if (prevKey !== null) emitAddButton(prevKey);   // close out the previous section
+      const header = makeGroupHeader(groupKey);
+      attachGroupDrag(header, groupKey, list);
+      list.appendChild(header);
+      prevKey = groupKey;
+    }
+
     const wrapper = document.createElement('div');
+    wrapper.className = 'item-wrapper';
 
     const row = document.createElement('div');
     row.className = 'item-row';
@@ -1394,39 +1973,204 @@ function renderItems() {
       row.querySelector('.remove-btn').onclick = () => removeItemAt(idx);
     }
 
-    row.setAttribute('draggable', 'true');
     row.dataset.index = idx;
-    row.addEventListener('dragstart', e => e.dataTransfer.setData('text/plain', idx));
-    row.addEventListener('dragover', e => { e.preventDefault(); row.style.opacity = '0.5'; });
-    row.addEventListener('dragleave', () => { row.style.opacity = '1'; });
-    row.addEventListener('drop', e => {
-      e.preventDefault();
-      row.style.opacity = '1';
-      const fromIdx = parseInt(e.dataTransfer.getData('text/plain'));
-      if (fromIdx !== idx) {
+    row.dataset.groupKey = groupKey;
+    row.dataset.itemType = item.item_type;   // read during dragover
+    {
+      row.setAttribute('draggable', 'true');
+      row.classList.add('item-row-draggable');
+      row.addEventListener('dragstart', e => {
+        e.dataTransfer.setData('text/plain', String(idx));
+        e.dataTransfer.effectAllowed = 'move';
+        row.classList.add('item-row-dragging');
+
+        // Replace the default drag ghost (a full-size copy of the row) with a
+        // small chip. The default image is as wide as the list and sits under
+        // the cursor, hiding the very rows you are aiming between.
+        const ghost = document.createElement('div');
+        ghost.className = 'item-drag-ghost';
+        ghost.textContent = row.querySelector('.item-label')?.textContent?.trim() || 'Item';
+        document.body.appendChild(ghost);
+        e.dataTransfer.setDragImage(ghost, 14, 14);
+        // The browser snapshots the element synchronously, so it can be removed
+        // as soon as the current task finishes.
+        setTimeout(() => ghost.remove(), 0);
+      });
+      row.addEventListener('dragend', () => {
+        row.classList.remove('item-row-dragging');
+        list.querySelectorAll('.drop-before, .drop-after')
+          .forEach(el => el.classList.remove('drop-before', 'drop-after'));
+      });
+      // Drag-over/drop live on the WRAPPER, not the row: an item is the title
+      // row plus its expand panel, so the marker has to sit outside both. On
+      // the row alone, "after" landed between the title and the dropdowns —
+      // visually splitting one item rather than separating two.
+      wrapper.addEventListener('dragover', e => {
+        // A header drag is in flight — items are not valid targets for it.
+        if (draggingGroupKey) { e.dataTransfer.dropEffect = 'none'; return; }
+        const from = document.querySelector('.item-row-dragging');
+        if (!from) { e.dataTransfer.dropEffect = 'none'; return; }
+        // Dropping into a DIFFERENT group reassigns the item to that group's
+        // desktop — the obvious reading of the gesture. The one impossible
+        // move is a non-URL item into "Opens last", which by definition only
+        // holds URL items with no position and no desktop.
+        if (groupKey === GROUP_TRAILING_URLS && from.dataset.itemType !== 'url') {
+          e.dataTransfer.dropEffect = 'none';
+          return;
+        }
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        // Indicate the edge the item will actually land on. Which half of the
+        // row the cursor is over decides before-vs-after, so the marker always
+        // matches where the drop really goes — previously the line was drawn
+        // above the target no matter what, while a downward drag inserted below
+        // it, so the feedback contradicted the result.
+        const rect = wrapper.getBoundingClientRect();
+        const after = (e.clientY - rect.top) > rect.height / 2;
+        wrapper.classList.toggle('drop-after', after);
+        wrapper.classList.toggle('drop-before', !after);
+      });
+      wrapper.addEventListener('dragleave', e => {
+        // Ignore leaves fired while moving between the wrapper's own children
+        // (row -> expand panel), which would otherwise flicker the marker off
+        // as the cursor crosses from the title into the dropdowns.
+        if (wrapper.contains(e.relatedTarget)) return;
+        wrapper.classList.remove('drop-before', 'drop-after');
+      });
+      wrapper.addEventListener('drop', e => {
+        e.preventDefault();
+        const dropRect = wrapper.getBoundingClientRect();
+        const dropAfter = (e.clientY - dropRect.top) > dropRect.height / 2;
+        wrapper.classList.remove('drop-before', 'drop-after');
+        const fromIdx = parseInt(e.dataTransfer.getData('text/plain'), 10);
+        if (Number.isNaN(fromIdx) || fromIdx === idx) return;
+
+        const dragged = currentItems[fromIdx];
+        // Crossing into another group means adopting that group's placement.
+        // Copied from the item already sitting there rather than recomputed,
+        // so the two can never disagree about which desktop the group is.
+        if (groupKeyFor(dragged, anyDesktop) !== groupKey) {
+          const target = currentItems[idx];
+          if (groupKey === GROUP_TRAILING_URLS) {
+            if (dragged.item_type !== 'url') return;
+            // "Opens last" is defined by having neither a desktop nor a
+            // position, so joining it means giving up both.
+            dragged.launch_virtual_desktop = null;
+            dragged.launch_desktop_index = null;
+            dragged.launch_x = dragged.launch_y = null;
+            dragged.launch_width = dragged.launch_height = null;
+          } else {
+            dragged.launch_virtual_desktop = target.launch_virtual_desktop ?? null;
+            dragged.launch_desktop_index   = target.launch_desktop_index ?? null;
+          }
+        }
+
+        // Removing the dragged item first shifts everything after it down one,
+        // so an insertion point past the removal has to be decremented. Without
+        // this a downward drag lands one slot short of the indicator.
+        let insertAt = dropAfter ? idx + 1 : idx;
+        if (fromIdx < insertAt) insertAt--;
+
         const [moved] = currentItems.splice(fromIdx, 1);
-        currentItems.splice(idx, 0, moved);
+        currentItems.splice(insertAt, 0, moved);
+        // Keep the layout-window mapping aligned if a session is open — it is
+        // positional, so a reorder here has to move the labels too.
+        if (activeLayoutLabels && activeLayoutLabels.length === currentItems.length + 1) {
+          const [movedLabel] = activeLayoutLabels.splice(fromIdx, 1);
+          activeLayoutLabels.splice(insertAt, 0, movedLabel);
+        }
         renderItems();
-      }
-    });
+      });
+    }
 
     wrapper.appendChild(row);
     wrapper.appendChild(buildExpandPanel(item, idx));
     list.appendChild(wrapper);
   });
 
+  const grouped = showHeaders && addGroups.length > 1;
+  // Final section needs closing out too — the loop only emits when the group
+  // changes, so the last one never triggers it.
+  if (grouped) emitAddButton(prevKey);
+
+  // Grouped: buttons live inline above, and the area below the list is emptied.
+  // Ungrouped: a single "+ Add Item" stays in its original place.
+  renderAddButtons(grouped ? addGroups : null);
+
   fitWindow();
 }
 
-document.getElementById('add-item-btn').onclick = () => {
-  const menu = document.getElementById('add-type-menu');
-  menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
-  fitWindow();
-};
+// Which add-button currently owns the open type menu (null = closed). Needed so
+// that button can show Cancel while the others stay as Add.
+let addMenuOpenFor = null;
+// Desktop the next added item(s) should join, plus the item count at the moment
+// the menu was opened. Adding runs through several async pickers that all end in
+// currentItems.push, so rather than threading a target through every one of
+// them, anything appended past baseLen is claimed here on the next render.
+let pendingAdd = null;
 
-document.querySelectorAll('[data-type]').forEach(el => {
-  el.addEventListener('click', () => addItem(el.dataset.type));
+function closeAddMenu() {
+  addMenuOpenFor = null;
+  pendingAdd = null;
+}
+
+// The Add Item window only chooses a type; the pickers themselves live here and
+// work on currentItems, so the choice comes back as an event.
+listen('add-item-type', ({ payload }) => {
+  if (payload?.type) addItem(payload.type);
 });
+// Cancelled — drop the pending desktop so it can't be applied to some later,
+// unrelated add.
+listen('add-item-cancel', () => { pendingAdd = null; });
+
+// One add button, belonging to a single group. Rendered INSIDE the items list
+// at the end of that group's section, so the button sits exactly where the new
+// item will appear rather than in a detached area below the list.
+function makeAddButton(g) {
+  const btn = document.createElement('div');
+  btn.className = 'add-item-btn add-item-btn-inline';
+  btn.textContent = '+ Add Item';
+  // Held so the picker window can be told where the item is going.
+  let targetLabel = '';
+
+  btn.onclick = () => {
+    // Record the destination BEFORE the picker window opens. Anything appended
+    // to currentItems afterwards is claimed by renderItems and given this
+    // desktop — see the pendingAdd handling there.
+    pendingAdd = { guid: g.guid, index: g.index, baseLen: currentItems.length };
+    invoke('open_add_item_window', { target: targetLabel || null }).catch(() => {});
+  };
+
+  // Desktop names resolve asynchronously. Until then the button reads
+  // "+ Add Item" — accurate if unhelpful — rather than flashing a wrong number.
+  if (g.key !== '__all__') {
+    if (g.key === 'vd:first') {
+      targetLabel = 'the first desktop';
+      btn.textContent = '+ Add to first desktop';
+    } else {
+      placementDesktops().then(desktops => {
+        const match = desktops.find(d => sameGuid(d.guid, g.guid));
+        targetLabel = match ? (match.name || `Desktop ${match.index}`) : 'this desktop';
+        btn.textContent = '+ Add to ' + targetLabel;
+      }).catch(() => {});
+    }
+  }
+  return btn;
+}
+
+// The ungrouped case keeps a single button in its original spot below the list.
+function renderAddButtons(groups) {
+  const host = document.getElementById('add-item-buttons');
+  if (!host) return;
+  host.innerHTML = '';
+  if (groups === null) {
+    host.appendChild(makeAddButton({ key: '__all__', guid: null, index: null }));
+  }
+  // When grouped, the buttons live inside the list instead — see renderItems.
+}
+
+// (The [data-type] menu items this used to bind now live in add-item.html and
+// come back through the 'add-item-type' event instead.)
 
 function detectItemType(path) {
   const ext = path.split('.').pop().toLowerCase();
@@ -1436,8 +2180,10 @@ function detectItemType(path) {
 }
 
 async function addItem(type) {
-  document.getElementById('add-type-menu').style.display = 'none';
-  fitWindow();
+  // pendingAdd is deliberately NOT cleared here: the picker that follows is
+  // async, and the new item only lands — and gets claimed by renderItems —
+  // once it returns.
+  addMenuOpenFor = null;
 
   if (type === 'winapp') {
     await showWinAppPicker();

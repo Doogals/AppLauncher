@@ -148,14 +148,12 @@
     <div class="items-list" id="items-list"></div>
 
     <div id="add-item-area">
-      <div class="add-item-btn" id="add-item-btn">+ Add Item</div>
-      <div id="add-type-menu" style="display:none; background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:4px 0; margin-bottom:10px;">
-        <div class="context-menu-item" data-type="winapp">🪟 Windows Apps</div>
-        <div class="context-menu-item" data-type="url">🌐 URL / Bookmark</div>
-        <div class="context-menu-item" data-type="file">📄 File / Program</div>
-        <div class="context-menu-item" data-type="folder">📁 Folder</div>
-        <div class="context-menu-item" data-type="steam">🎮 Steam Game</div>
-      </div>
+      <!-- Populated by renderAddButtons(): one button per desktop group so an
+           item can be added straight into the group it belongs in. -->
+      <div id="add-item-buttons"></div>
+      <!-- The type chooser is its own window now (add-item.html). It used to be
+           an inline menu here, but moving it beside a per-group button parented
+           it into the items list, which renderItems() wipes on every render. -->
     </div>
 
     <div class="btn-row">

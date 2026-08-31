@@ -8,6 +8,16 @@ const label = getCurrentWindow().label;
 
 document.getElementById('pk-name').textContent = name;
 
+// Full path underneath, only when it says something the title doesn't.
+const subPath = decodeURIComponent(params.get('sub') || '');
+const pathEl = document.getElementById('pk-path');
+if (subPath && subPath !== name) {
+  pathEl.textContent = subPath;
+  pathEl.title = subPath;
+} else {
+  pathEl.style.display = 'none';
+}
+
 const labels = Array.from({ length: total }, (_, i) => `layout-item-${i}`);
 
 async function initDesktopDropdown() {

@@ -34,9 +34,16 @@ html, body {
      no equivalent centering offset — 12px padding here gives the same 12px
      gap directly. If this total changes, PAD in widget.js's render() must
      match or the auto-resize width calc drifts. */
-  padding: 8px 12px 8px 12px;
+  padding: 8px 16px 8px 16px;
   background: rgba(0, 0, 0, 0.95);
   border: 1px solid rgba(0, 0, 0, 0.95);
+  /* Explicit radius because the bar used to inherit Windows' own rounded
+     window frame. Disabling the DWM shadow to kill the drop-shadow halo
+     removed that rounding too, so the corners have to be drawn here. Slightly
+     larger than .group-btn's 8px so the container reads as containing the
+     buttons rather than sitting flush with them. The window is transparent,
+     so the area outside the radius simply shows through. */
+  border-radius: 14px;
   transition: box-shadow 0.15s;
 }
 
@@ -228,7 +235,18 @@ html, body {
 
 .name-input:focus { border-color: #e94560; }
 
-.items-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+/* The 8px vertical padding is load-bearing, not cosmetic. Drop markers are
+   drawn at top/bottom -6px on an item, i.e. OUTSIDE its box. This list is a
+   scroll container (overflow-y: auto), so without padding the marker above the
+   first item and below the last one is clipped at the container edge and only
+   partly visible. */
+.items-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 0;
+  margin-bottom: 12px;
+}
 
 .item-row {
   display: flex;
@@ -284,20 +302,31 @@ html, body {
   color: #fff;
 }
 
+/* Green rather than the app's usual accent: red/pink is used for destructive
+   and cancel actions throughout, and orange for Save. Adding is the one
+   constructive action here, so it gets its own colour and stops reading as
+   just another dim panel. */
 .add-item-btn {
   width: 100%;
   padding: 8px;
-  background: #16213e;
-  border: 1px dashed #0f3460;
+  background: rgba(45, 168, 106, 0.12);
+  border: 1px dashed rgba(45, 168, 106, 0.55);
   border-radius: 6px;
-  color: #aaa;
+  color: #4fc98a;
   cursor: pointer;
   font-size: 0.9rem;
+  font-weight: 500;
   text-align: center;
   margin-bottom: 16px;
+  transition: background 0.14s, border-color 0.14s, color 0.14s;
 }
 
-.add-item-btn:hover { border-color: #e94560; color: #e0e0e0; }
+.add-item-btn:hover {
+  background: rgba(45, 168, 106, 0.22);
+  border-color: #2da86a;
+  border-style: solid;
+  color: #6fe0a4;
+}
 
 .btn-row { display: flex; justify-content: center; gap: 8px; }
 
@@ -690,6 +719,198 @@ html, body {
   cursor: not-allowed;
 }
 
+/* Add buttons rendered inside the list, closing out each desktop section.
+   Quieter than the standalone one — it is a section footer, not the primary
+   action on the screen — and inset slightly so it reads as belonging to the
+   group above rather than starting a new one. */
+.add-item-btn-inline {
+  margin: 2px 0 4px;
+  padding: 7px 0;
+  font-size: 0.8rem;
+}
+
+/* Open state: the button that spawned the type menu becomes its own cancel,
+   so there is always an obvious way back out. */
+.add-item-btn-cancel {
+  border-style: solid !important;
+  border-color: rgba(233, 69, 96, 0.55) !important;
+  color: #e94560 !important;
+  background: rgba(233, 69, 96, 0.08) !important;
+}
+
+/* ── Launch-order group headers ──────────────────────────────────────────── */
+.item-group-header {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 10px 2px 4px;
+  border-bottom: 1px solid rgba(15, 52, 96, 0.7);
+  margin-bottom: 4px;
+}
+.item-group-header:first-child { padding-top: 2px; }
+
+.item-group-name {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #7f9bbd;
+}
+.item-group-note {
+  font-size: 10px;
+  color: #4a5568;
+}
+.item-group-header-warn .item-group-name { color: #d69e2e; }
+
+/* Headers are drag handles for their whole block — moving one changes which
+   desktop's batch launches first. "Opens last" is excluded, since it is
+   defined by running after everything else. */
+.item-group-draggable {
+  cursor: grab;
+  position: relative;
+  border-radius: 4px;
+  transition: background 0.14s;
+}
+.item-group-draggable:hover { background: rgba(15, 52, 96, 0.35); }
+.item-group-draggable:active { cursor: grabbing; }
+
+.item-group-dragging { opacity: 0.35; }
+
+.item-group-header.group-drop-before::before,
+.item-group-header.group-drop-after::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 5px;
+  background: #ff2d55;
+  border-radius: 3px;
+  box-shadow: 0 0 12px 3px rgba(255, 45, 85, 0.9);
+  z-index: 20;
+  pointer-events: none;
+}
+.item-group-header.group-drop-before::before { top: -4px; }
+.item-group-header.group-drop-after::after  { bottom: -4px; }
+
+/* ── Drag-to-reorder feedback ────────────────────────────────────────────── */
+.item-row-draggable { cursor: grab; }
+.item-row-draggable:active { cursor: grabbing; }
+
+/* Compact stand-in for the browser's default drag image. Positioned off-screen
+   because it only needs to exist long enough to be snapshotted. */
+.item-drag-ghost {
+  position: fixed;
+  top: -1000px;
+  left: -1000px;
+  padding: 6px 12px;
+  background: #e94560;
+  color: #fff;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+}
+
+/* The row being dragged: faded and dashed, so it reads as "in transit" rather
+   than as a normal row that happens to be dim. */
+.item-row-dragging {
+  opacity: 0.35;
+  outline: 1px dashed #e94560;
+  outline-offset: -1px;
+}
+
+/* Insertion marker for the edge the item will land on.
+   Drawn as an absolutely-positioned bar sitting in the GAP between rows rather
+   than as a border on the row itself. The browser's drag ghost follows the
+   cursor and covers the row underneath, so anything drawn inside the row's own
+   box is hidden exactly when it is needed. The gap stays visible.
+   Absolute positioning also means no reflow — a list that shifts under the
+   cursor makes the drop target feel like it is running away. */
+/* Applied to the item WRAPPER (title row + expand panel), so the bar brackets
+   the whole item. On the row alone, "after" landed between the title and the
+   desktop/screen dropdowns — splitting one item instead of separating two. */
+.item-wrapper.drop-before,
+.item-wrapper.drop-after {
+  position: relative;
+  z-index: 2;
+}
+
+.item-wrapper.drop-before::before,
+.item-wrapper.drop-after::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 5px;
+  background: #ff2d55;
+  border-radius: 3px;
+  box-shadow: 0 0 12px 3px rgba(255, 45, 85, 0.9);
+  z-index: 20;
+  pointer-events: none;   /* must never swallow the drop itself */
+}
+/* Items sit 6px apart, so -6px centres the bar in the gap between them. */
+.item-wrapper.drop-before::before { top: -6px; }
+.item-wrapper.drop-after::after  { bottom: -6px; }
+
+/* Backup signal for when the drag ghost obscures the bar anyway: tint the title
+   row so the target is identifiable even if only its edges show. */
+.item-wrapper.drop-before .item-row,
+.item-wrapper.drop-after .item-row {
+  background: rgba(255, 45, 85, 0.09);
+  border-color: rgba(255, 45, 85, 0.55);
+}
+
+/* ── Desktop + screen pickers (one row, side by side) ────────────────────── */
+.placement-selects {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.placement-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1 1 0;
+  min-width: 130px;
+  cursor: pointer;
+}
+
+.placement-field-label {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #5f7a9c;
+}
+
+.placement-field select {
+  width: 100%;
+  background: #1e1e3e;
+  border: 1px solid #3a3a6a;
+  border-radius: 4px;
+  color: #c8c8d8;
+  font-family: inherit;
+  font-size: 11px;
+  padding: 4px 6px;
+  cursor: pointer;
+}
+.placement-field select:hover { border-color: #4a4a8a; }
+.placement-field select:focus { outline: none; border-color: #e94560; }
+
+/* The saved desktop or position no longer resolves. Amber, not red — the item
+   still launches, it just may not land where the user expects. */
+.placement-field select.select-warn {
+  border-color: rgba(214, 158, 46, 0.6);
+  color: #d69e2e;
+}
+
 .bookmark-row {
   display: flex;
   align-items: center;
@@ -730,6 +951,34 @@ html, body {
    background/border reset it rendered as a raw OS button. Outlined in the
    accent colour so it reads as a real, clickable call to action without
    competing with the primary Activate button next to it. */
+/* Search row in the bookmark picker — search field plus Clear All. Scoped to
+   its own class so the plain .url-custom used elsewhere keeps its block layout. */
+.bookmark-search-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.bookmark-search-row input { flex: 1; min-width: 0; }
+
+.bookmark-clear-btn {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid #0f3460;
+  border-radius: 6px;
+  color: #888;
+  font-family: inherit;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.14s, border-color 0.14s, color 0.14s;
+}
+.bookmark-clear-btn:hover {
+  background: rgba(233, 69, 96, 0.12);
+  border-color: #e94560;
+  color: #e94560;
+}
+
 .buy-link {
   display: inline-flex;
   align-items: center;
