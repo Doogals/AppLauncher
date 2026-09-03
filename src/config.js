@@ -203,6 +203,93 @@ function appMatchesSearch(nameLower, filterLower) {
   );
 }
 
+// ── Picker row icons ────────────────────────────────────────────────────────
+// Extracting an exe icon is a Win32 round-trip per file, so fetching all ~200
+// Start Menu entries up front would stall the picker — and renderApps() rebuilds
+// the list on every keystroke, which would multiply it. Icons are therefore
+// fetched only for rows actually scrolled into view, and cached by path so
+// re-renders and repeat searches are free.
+const iconCache = new Map();   // path -> base64 PNG, or null if extraction failed
+
+// Icon bytes reach us from several sources with different formats: extracted
+// Win32 icons are PNG, Steam's cached art is JPEG on some installs and PNG on
+// others. Sniffing the base64 prefix beats hardcoding a type per call site,
+// where a mismatch silently renders a broken image.
+function dataUrlFor(b64) {
+  if (!b64) return '';
+  let mime = 'image/png';
+  if (b64.startsWith('/9j/')) mime = 'image/jpeg';
+  else if (b64.startsWith('AAABAA')) mime = 'image/x-icon';
+  else if (b64.startsWith('R0lGOD')) mime = 'image/gif';
+  return `data:${mime};base64,${b64}`;
+}
+
+function setPickerIcon(el, b64, mime) {
+  el.textContent = '';
+  const img = document.createElement('img');
+  img.src = mime ? `data:${mime};base64,${b64}` : dataUrlFor(b64);
+  img.alt = '';
+  el.appendChild(img);
+}
+
+function makePickerIcon(fallbackEmoji) {
+  const span = document.createElement('span');
+  span.className = 'picker-icon';
+  span.textContent = fallbackEmoji || '\u{1F5A5}\u{FE0F}';   // desktop computer
+  return span;
+}
+
+const pickerIconObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (!entry.isIntersecting) return;
+    pickerIconObserver.unobserve(entry.target);
+    loadPickerIcon(entry.target);
+  });
+// rootMargin so icons are ready slightly before a row scrolls in, rather than
+// visibly popping once it arrives.
+}, { rootMargin: '120px' });
+
+async function loadPickerIcon(el) {
+  const path = el.dataset.iconPath;
+  if (!path) return;
+  if (iconCache.has(path)) {
+    const cached = iconCache.get(path);
+    if (cached) setPickerIcon(el, cached);
+    return;
+  }
+  const args = el.dataset.iconArgs || '';
+  let data = null;
+  try {
+    data = await invoke('get_file_icon', { path, args });
+  } catch { /* keep the fallback glyph */ }
+
+  // A shortcut can name an icon file that no longer exists, or an index past
+  // the end of it. Fall back to the target executable rather than dropping to
+  // the placeholder glyph.
+  const alt = el.dataset.iconFallback;
+  if (!data && alt && alt !== path) {
+    try { data = await invoke('get_file_icon', { path: alt, args }); } catch {}
+  }
+
+  iconCache.set(path, data);      // cache null too, so failures aren't retried
+  if (data) setPickerIcon(el, data);
+}
+
+// Attaches an icon element that fills itself in when scrolled into view.
+// `fallbackPath` is tried if the primary yields nothing.
+function attachLazyIcon(el, path, args, fallbackPath) {
+  if (!path) return;
+  el.dataset.iconPath = path;
+  if (args) el.dataset.iconArgs = args;
+  if (fallbackPath) el.dataset.iconFallback = fallbackPath;
+  if (iconCache.has(path)) {
+    const cached = iconCache.get(path);
+    if (cached) setPickerIcon(el, cached);
+    return;
+  }
+  pickerIconObserver.observe(el);
+}
+
 async function showWinAppPicker() {
   const modal = document.createElement('div');
   modal.className = 'winapp-modal';
@@ -254,10 +341,32 @@ async function showWinAppPicker() {
     filtered.forEach(app => {
       const row = document.createElement('div');
       row.className = 'winapp-row';
-      row.textContent = app.name;
+      // Packaged (UWP) apps carry a pre-fetched icon, because theirs comes from
+      // reading a package asset rather than the exe-icon path — and get_file_icon
+      // can't do anything with an AUMID anyway. Everything else loads lazily.
+      const icon = makePickerIcon(app.is_packaged ? '\u{1FA9F}' : '\u{1F5A5}\u{FE0F}');
+      if (app.icon_data) setPickerIcon(icon, app.icon_data);
+      // Prefer the shortcut's own "iconfile|index" reference — that is the icon
+      // Explorer shows, and for the many Start Menu entries that point at a
+      // shared resource DLL it is the ONLY way to get anything but the generic
+      // glyph. Falls back to the target exe. See InstalledApp::icon_source.
+      else if (!app.is_packaged) attachLazyIcon(icon, app.icon_source || app.path, app.args, app.path);
+      row.appendChild(icon);
+      const label = document.createElement('span');
+      label.className = 'picker-label';
+      label.textContent = app.name;
+      row.appendChild(label);
       row.addEventListener('click', async () => {
         let icon_data = null;
-        try { icon_data = await invoke('get_file_icon', { path: app.path, args: app.args || '' }); } catch {}
+        // Same source as the picker row: the .lnk, falling back to the target.
+        // Reuse the cache so the icon already fetched for the row isn't
+        // extracted a second time.
+        const iconPath = app.icon_source || app.path;
+        if (iconCache.has(iconPath) && iconCache.get(iconPath)) {
+          icon_data = iconCache.get(iconPath);
+        } else {
+          try { icon_data = await invoke('get_file_icon', { path: iconPath, args: app.args || '' }); } catch {}
+        }
         currentItems.push({ item_type: 'app', path: app.path, value: app.args || null, display_name: app.name, icon_data });
         renderItems();
         closeModal();
@@ -303,7 +412,7 @@ function paintSuggestedBar() {
     if (app.icon_data) {
       chip = document.createElement('img');
       chip.className = 'suggested-chip';
-      chip.src = `data:image/png;base64,${app.icon_data}`;
+      chip.src = dataUrlFor(app.icon_data);
     } else {
       chip = document.createElement('div');
       chip.className = 'suggested-chip-fallback';
@@ -524,7 +633,15 @@ async function showUrlPicker(editContext = null) {
   browsers.forEach(browser => {
     const row = document.createElement('div');
     row.className = 'winapp-row';
-    row.textContent = browser.name;
+    // Only a handful of browsers, all visible at once, so no lazy loading
+    // needed — but reuse the same cache so a repeat visit is instant.
+    const icon = makePickerIcon('\u{1F310}');   // globe
+    attachLazyIcon(icon, browser.path, '');
+    row.appendChild(icon);
+    const label = document.createElement('span');
+    label.className = 'picker-label';
+    label.textContent = browser.name;
+    row.appendChild(label);
     row.addEventListener('click', () => showBookmarkStep(modal, browser, closeModal, null, null));
     browserList.appendChild(row);
   });
@@ -846,16 +963,15 @@ async function showSteamPicker() {
     filtered.forEach(game => {
       const row = document.createElement('div');
       row.className = 'winapp-row';
-      row.style.display = 'flex';
-      row.style.alignItems = 'center';
-      row.style.gap = '8px';
-
+      // Layout now comes from .winapp-row in styles.css, shared with the app and
+      // browser pickers, so the three lists line up instead of each doing its own
+      // inline flex.
       const iconEl = game.icon_data
-        ? `<img src="data:image/jpeg;base64,${game.icon_data}" style="width:20px;height:20px;object-fit:contain;border-radius:3px;flex-shrink:0;" alt="" />`
-        : `<span style="width:20px;text-align:center;flex-shrink:0;">🎮</span>`;
+        ? `<span class="picker-icon"><img src="${dataUrlFor(game.icon_data)}" alt="" /></span>`
+        : `<span class="picker-icon">\u{1F3AE}</span>`;
 
       const safeName = game.name.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      row.innerHTML = `${iconEl}<span>${safeName}</span>`;
+      row.innerHTML = `${iconEl}<span class="picker-label">${safeName}</span>`;
 
       row.addEventListener('click', () => {
         if (!currentItems.some(i => i.item_type === 'steam' && i.value === game.appid)) {
@@ -1894,8 +2010,8 @@ function renderItems() {
       const subtitle = hostnames.join(', ') + (allUrls.length > 2 ? ` +${allUrls.length - 2}` : '');
 
       const iconHtml = item.icon_data
-        ? `<img src="data:image/png;base64,${item.icon_data}" style="width:20px;height:20px;object-fit:contain;flex-shrink:0;" alt="" />`
-        : '<span style="flex-shrink:0;">🌐</span>';
+        ? `<img src="${dataUrlFor(item.icon_data)}" style="width:24px;height:24px;object-fit:contain;flex-shrink:0;" alt="" />`
+        : '<span style="flex-shrink:0;font-size:19px;line-height:1;">🌐</span>';
 
       const safeLabel    = label.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const safeSubtitle = subtitle.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -1904,7 +2020,7 @@ function renderItems() {
         ${iconHtml}
         <div class="item-label-multi" title="${safeSubtitle}" style="flex:1;min-width:0;overflow:hidden;">
           <div class="item-label">${safeLabel}</div>
-          <div style="font-size:10px;color:#888;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${safeSubtitle}</div>
+          <div style="font-size:11px;color:#888;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${safeSubtitle}</div>
         </div>
         <button class="edit-url-btn" title="Edit URLs">${EDIT_ICON_SVG}</button>
         <button class="duplicate-btn" title="Duplicate">${DUPLICATE_ICON_SVG}</button>
@@ -1923,11 +2039,11 @@ function renderItems() {
       const gameName = item.path || 'Unknown Game';
       const safeLabel = gameName.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const iconHtml = item.icon_data
-        ? `<img src="data:image/jpeg;base64,${item.icon_data}" style="width:20px;height:20px;object-fit:contain;flex-shrink:0;border-radius:2px;" alt="" />`
-        : '<span style="flex-shrink:0;">🎮</span>';
+        ? `<img src="${dataUrlFor(item.icon_data)}" style="width:24px;height:24px;object-fit:contain;flex-shrink:0;border-radius:2px;" alt="" />`
+        : '<span style="flex-shrink:0;font-size:19px;line-height:1;">🎮</span>';
       row.innerHTML = `
         ${iconHtml}
-        <span class="item-label" title="${safeLabel}">${safeLabel} <span style="color:#1b9fdb;font-size:10px;font-weight:400;">Steam</span></span>
+        <span class="item-label" title="${safeLabel}">${safeLabel} <span style="color:#1b9fdb;font-size:11px;font-weight:400;">Steam</span></span>
         <button class="duplicate-btn" title="Duplicate">${DUPLICATE_ICON_SVG}</button>
         <button class="remove-btn">✕</button>
       `;
@@ -1949,8 +2065,8 @@ function renderItems() {
       const safeTitle = rawTitle.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const typeEmoji = { app: '🖥️', file: '📄', folder: '📁', script: '⚡', uwp: '🪟' }[item.item_type] || '•';
       const iconHtml = item.icon_data
-        ? `<img src="data:image/png;base64,${item.icon_data}" style="width:20px;height:20px;object-fit:contain;flex-shrink:0;" alt="" />`
-        : `<span style="flex-shrink:0;">${typeEmoji}</span>`;
+        ? `<img src="${dataUrlFor(item.icon_data)}" style="width:24px;height:24px;object-fit:contain;flex-shrink:0;" alt="" />`
+        : `<span style="flex-shrink:0;font-size:19px;line-height:1;">${typeEmoji}</span>`;
       // Browsers added bare (no URL yet, e.g. via "Just Open Browser") can
       // still get URLs added later — same edit button the url-type rows use.
       const isBareBrowser = item.item_type === 'app' && isBrowserPath(item.path);
@@ -2466,7 +2582,14 @@ async function renderLicenseSection() {
   fitWindow();
 }
 
-document.getElementById('feedback-btn').addEventListener('click', () => {
+document.getElementById('feedback-btn').addEventListener('click', async () => {
+  // Shown in the dialog rather than sent silently — this is the same label that
+  // appears against the customer's license activation, so it identifies them.
+  let machineLabel = '';
+  try { machineLabel = await invoke('get_machine_label'); } catch {}
+  const safeMachine = machineLabel
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
   const modal = document.createElement('div');
   modal.className = 'winapp-modal';
   modal.innerHTML = `
@@ -2475,9 +2598,19 @@ document.getElementById('feedback-btn').addEventListener('click', () => {
         <span class="url-step-title">Send Feedback</span>
         <button class="winapp-close" id="fb-close">✕</button>
       </div>
-      <div style="padding: 12px 12px 8px;">
+      <div id="fb-body" style="padding: 12px 12px 8px;">
         <p style="font-size:0.78rem; color:#888; margin-bottom:8px;">We read every message. Thank you!</p>
         <textarea class="feedback-textarea" id="fb-text" placeholder="Tell us what you think, report a bug, or suggest a feature..."></textarea>
+        <input type="email" class="fb-email" id="fb-email" autocomplete="email" spellcheck="false"
+               placeholder="Your email (optional — only if you'd like a reply)" />
+        <label class="fb-consent">
+          <input type="checkbox" id="fb-include-config" />
+          <span>
+            <strong>Include my setup for troubleshooting</strong>
+            <span class="fb-consent-note">Sends your groups, items and settings so we can reproduce the problem. No license key, and no list of your installed software.</span>
+          </span>
+        </label>
+        ${safeMachine ? `<p class="fb-machine">Sent with this message: <code>${safeMachine}</code></p>` : ''}
       </div>
       <div style="display:flex; gap:8px; padding: 0 12px 12px;">
         <button class="btn btn-cancel" id="fb-cancel" style="flex:1;">Cancel</button>
@@ -2492,11 +2625,34 @@ document.getElementById('feedback-btn').addEventListener('click', () => {
   document.getElementById('fb-cancel').addEventListener('click', close);
   modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
 
-  document.getElementById('fb-submit').addEventListener('click', () => {
+  const submitBtn = document.getElementById('fb-submit');
+  submitBtn.addEventListener('click', async () => {
     const text = document.getElementById('fb-text').value.trim();
     if (!text) return;
-    invoke('send_feedback', { message: text }).catch(console.error);
-    close();
+    const includeConfig = document.getElementById('fb-include-config').checked;
+    const replyEmail = document.getElementById('fb-email').value.trim();
+
+    // Attaching a config makes this a slow enough round-trip that the old
+    // fire-and-close left people unsure whether anything had been sent.
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Sending...';
+    try {
+      await invoke('send_feedback', { message: text, includeConfig, replyEmail });
+      submitBtn.textContent = 'Sent ✓';
+      setTimeout(close, 700);
+    } catch (err) {
+      console.error(err);
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Retry';
+      const body = modal.querySelector('#fb-body');
+      let errEl = body.querySelector('.fb-error');
+      if (!errEl) {
+        errEl = document.createElement('p');
+        errEl.className = 'fb-error';
+        body.appendChild(errEl);
+      }
+      errEl.textContent = "Couldn't send — check your connection and try again.";
+    }
   });
 
   document.getElementById('fb-text').focus();

@@ -259,7 +259,7 @@ html, body {
   cursor: grab;
 }
 
-.item-row .item-label { flex: 1; font-size: 0.85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.item-row .item-label { flex: 1; font-size: 0.95rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .item-row .remove-btn { color: #e94560; cursor: pointer; font-size: 1rem; background: none; border: none; padding: 0; }
 
 .edit-url-btn {
@@ -508,8 +508,74 @@ html, body {
   background: #1a1a2e;
   border: 1px solid #0f3460;
   border-radius: 10px;
-  width: 320px;
+  width: 380px;
   overflow: hidden;
+}
+
+.fb-email {
+  width: 100%;
+  margin-top: 8px;
+  background: #16213e;
+  border: 1px solid #0f3460;
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: #e0e0e0;
+  font-size: 0.8rem;
+  font-family: inherit;
+  outline: none;
+  box-sizing: border-box;
+}
+.fb-email::placeholder { color: #6f6f88; }
+.fb-email:focus { border-color: #e94560; }
+
+/* Opt-in consent row. Unchecked by default — nothing about the user's setup
+   leaves the machine unless they deliberately tick it. */
+.fb-consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 9px 10px;
+  background: #16213e;
+  border: 1px solid #0f3460;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: #d0d0e0;
+  line-height: 1.35;
+}
+.fb-consent:hover { border-color: #1b9fdb; }
+.fb-consent input[type="checkbox"] {
+  margin: 2px 0 0;
+  flex-shrink: 0;
+  accent-color: #1b9fdb;
+  cursor: pointer;
+}
+.fb-consent strong { display: block; font-weight: 600; }
+.fb-consent-note {
+  display: block;
+  margin-top: 3px;
+  color: #8a8aa0;
+  font-size: 0.72rem;
+}
+
+.fb-machine {
+  margin-top: 8px;
+  font-size: 0.72rem;
+  color: #8a8aa0;
+}
+.fb-machine code {
+  color: #b9b9cc;
+  background: #16213e;
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 0.72rem;
+}
+
+.fb-error {
+  margin: 8px 0 0;
+  font-size: 0.75rem;
+  color: #e94560;
 }
 
 .feedback-textarea {
@@ -625,11 +691,40 @@ html, body {
 }
 
 .winapp-row {
-  padding: 5px 16px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 7px 16px;
   cursor: pointer;
-  font-size: 0.85rem;
+  font-size: 0.95rem;
   color: #e0e0e0;
   white-space: nowrap;
+  overflow: hidden;
+}
+
+/* Fixed-width icon slot so labels align down the list whether a row ended up
+   with a real icon or the fallback glyph. Reserving the space up front also
+   stops rows shifting as lazily-loaded icons arrive. */
+.picker-icon {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 19px;
+  line-height: 1;
+  opacity: 0.9;
+}
+.picker-icon img {
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+  border-radius: 4px;
+}
+
+.picker-label {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -640,7 +735,7 @@ html, body {
   padding: 20px;
   color: #888;
   text-align: center;
-  font-size: 0.85rem;
+  font-size: 0.95rem;
 }
 
 /* URL / Bookmark picker */

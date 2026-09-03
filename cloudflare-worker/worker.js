@@ -48,18 +48,61 @@ async function handleRequest(request) {
 
   // Handle feedback separately — does not touch LemonSqueezy
   if (action === 'feedback') {
+    // `machine` matches the instance_name shown against the customer's
+    // activation in Lemon Squeezy ("PCNAME [fingerprint]"), so a message can be
+    // traced back to an order. Older clients don't send it.
+    const machine = typeof body.machine === 'string' ? body.machine : 'unknown';
+    const version = typeof body.version === 'string' ? body.version : 'unknown';
+
+    const hasConfig = typeof body.config === 'string' && body.config.length > 0;
+    const attachmentName = `config-${safeFilePart(machine)}.json`;
+    const replyEmail = typeof body.reply_email === 'string' ? body.reply_email.trim() : '';
+
+    // Header first, message second. The identifying details are the thing you
+    // need before deciding whether to read on, and burying them under a long
+    // message means scrolling to find them.
+    const text = [
+      `Machine:  ${machine}`,
+      `Version:  ${version}`,
+      `Reply to: ${replyEmail || 'not provided'}`,
+      `Config:   ${hasConfig ? `attached as ${attachmentName}` : 'not included'}`,
+      '',
+      '────────────────────────────',
+      '',
+      body.message || '(no message)',
+    ].join('\n');
+
+    const payload = {
+      from: 'Tonic Tech Feedback <onboarding@resend.dev>',
+      to: FEEDBACK_TO,
+      subject: `Tonic Tech Feedback — ${machine}`,
+      text,
+    };
+
+    // Set Reply-To only when the address is plausible. Resend rejects the
+    // entire request on a malformed reply_to, and losing the whole message
+    // because someone fat-fingered their address would be the worst outcome —
+    // the raw text is in the header above either way.
+    if (looksLikeEmail(replyEmail)) {
+      payload.reply_to = replyEmail;
+    }
+
+    // Attached rather than inlined so it can be saved straight to disk and fed
+    // back through the app's own config import.
+    if (hasConfig) {
+      payload.attachments = [{
+        filename: attachmentName,
+        content: base64Utf8(body.config),
+      }];
+    }
+
     const res = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${RESEND_API_KEY}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        from: 'Tonic Tech Feedback <onboarding@resend.dev>',
-        to: FEEDBACK_TO,
-        subject: 'Tonic Tech Feedback',
-        text: body.message || '(no message)',
-      }),
+      body: JSON.stringify(payload),
     });
     return res.ok ? json({ ok: true }) : json({ error: 'Failed to send feedback' }, 500);
   }
@@ -215,4 +258,34 @@ function json(data, status = 200) {
     status,
     headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
   });
+}
+
+// btoa() throws on any code point above U+00FF, and group names and file paths
+// routinely contain accented characters and emoji. Encode to UTF-8 bytes first.
+function base64Utf8(str) {
+  const bytes = new TextEncoder().encode(str);
+  let binary = '';
+  // Chunked because String.fromCharCode(...bytes) blows the argument limit on
+  // anything larger than a few tens of kilobytes.
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+// Loose sanity check, not RFC validation. The only job here is to avoid handing
+// Resend something it will reject outright; anything that gets past this and is
+// still wrong just bounces when you hit Reply, which is recoverable.
+function looksLikeEmail(s) {
+  return typeof s === 'string'
+    && s.length > 2
+    && s.length <= 254
+    && /^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+$/.test(s);
+}
+
+// The machine label is user-influenced (it embeds COMPUTERNAME), so it is not
+// trusted directly in a filename.
+function safeFilePart(s) {
+  return (s || 'unknown').replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 60) || 'unknown';
 }

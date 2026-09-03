@@ -14,6 +14,16 @@ pub struct InstalledApp {
     /// launched via shell:AppsFolder, rather than a real exe path.
     #[serde(default)]
     pub is_packaged: bool,
+    /// The Start Menu .lnk this entry came from, used ONLY for icon extraction.
+    ///
+    /// Icons must come from the shortcut, not the target exe. A .lnk can name
+    /// its own icon file and index (IShellLink::GetIconLocation), which is how
+    /// Office apps, Control Panel tools and most system utilities get the icon
+    /// Explorer actually shows. Asking the shell about the target exe often
+    /// yields the generic application glyph instead, because plenty of those
+    /// executables carry no icon resource of their own.
+    #[serde(default)]
+    pub icon_source: Option<String>,
 }
 
 // Windows: scan Start Menu .lnk shortcuts via IShellLink
@@ -52,9 +62,24 @@ pub fn get_installed_apps() -> Vec<InstalledApp> {
         .iter()
         .filter_map(|lnk| {
             let name = lnk.file_stem()?.to_string_lossy().into_owned();
-            let (target, args) = resolve_lnk(lnk)?;
+            let (target, args, icon) = resolve_lnk(lnk)?;
             if seen.insert(target.to_ascii_lowercase()) {
-                Some(InstalledApp { name, path: target, args, icon_data: None, is_packaged: false })
+                // "file|index" when the shortcut names its own icon; the
+                // frontend passes this straight back to get_file_icon, which
+                // splits it and extracts that exact resource.
+                let icon_source = if icon.path.is_empty() {
+                    None
+                } else {
+                    Some(format!("{}|{}", icon.path, icon.index))
+                };
+                Some(InstalledApp {
+                    name,
+                    path: target,
+                    args,
+                    icon_data: None,
+                    is_packaged: false,
+                    icon_source,
+                })
             } else {
                 None
             }
@@ -83,8 +108,18 @@ fn collect_lnk_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     }
 }
 
+/// Where a shortcut says its icon lives: a file path plus an index into that
+/// file's icon resources. Empty path means the shortcut doesn't override the
+/// icon and the target executable's own should be used.
 #[cfg(target_os = "windows")]
-fn resolve_lnk(lnk_path: &std::path::Path) -> Option<(String, String)> {
+#[derive(Debug, Clone, Default)]
+pub struct LnkIcon {
+    pub path: String,
+    pub index: i32,
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_lnk(lnk_path: &std::path::Path) -> Option<(String, String, LnkIcon)> {
     use windows::{
         core::{Interface, PCWSTR},
         Win32::Storage::FileSystem::WIN32_FIND_DATAW,
@@ -120,8 +155,50 @@ fn resolve_lnk(lnk_path: &std::path::Path) -> Option<(String, String)> {
         let arg_end = arg_buf.iter().position(|&c| c == 0).unwrap_or(arg_buf.len());
         let args = String::from_utf16_lossy(&arg_buf[..arg_end]).trim().to_owned();
 
-        Some((target, args))
+        // Where the shortcut says its icon lives. Often empty (meaning "use the
+        // target's icon"), but Office apps, Control Panel tools and most system
+        // utilities point at a specific file and index here — which is exactly
+        // why extracting from the target exe gave the generic glyph for those.
+        let mut icon_buf = [0u16; 1024];
+        let mut icon_index: i32 = 0;
+        let mut icon = LnkIcon::default();
+        if shell_link.GetIconLocation(&mut icon_buf, &mut icon_index).is_ok() {
+            let icon_end = icon_buf.iter().position(|&c| c == 0).unwrap_or(icon_buf.len());
+            let raw = String::from_utf16_lossy(&icon_buf[..icon_end]);
+            if !raw.trim().is_empty() {
+                // Shortcuts routinely store these unexpanded, e.g.
+                // %SystemRoot%\system32\imageres.dll.
+                icon.path = expand_env_string(raw.trim());
+                icon.index = icon_index;
+            }
+        }
+
+        Some((target, args, icon))
     }
+}
+
+/// Expands %VAR% references. Returns the input unchanged if expansion fails.
+#[cfg(target_os = "windows")]
+fn expand_env_string(s: &str) -> String {
+    // Declared by hand rather than pulling in the Win32_System_Environment
+    // feature for one call, the same way icons.rs declares its GDI imports.
+    extern "system" {
+        fn ExpandEnvironmentStringsW(lp_src: *const u16, lp_dst: *mut u16, n_size: u32) -> u32;
+    }
+
+    if !s.contains('%') {
+        return s.to_string();
+    }
+    let wide: Vec<u16> = s.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut out = vec![0u16; 1024];
+    // Returns the size INCLUDING the null terminator, or 0 on failure. A value
+    // larger than the buffer means it was too small and nothing was written.
+    let n = unsafe { ExpandEnvironmentStringsW(wide.as_ptr(), out.as_mut_ptr(), out.len() as u32) };
+    if n == 0 || n as usize > out.len() {
+        return s.to_string();
+    }
+    let end = out.iter().position(|&c| c == 0).unwrap_or(out.len());
+    String::from_utf16_lossy(&out[..end])
 }
 
 // Linux/macOS: Windows Apps picker not supported — return empty
@@ -404,6 +481,9 @@ $result | ConvertTo-Json -Compress
                 args: String::new(),
                 icon_data,
                 is_packaged: true,
+                // Packaged apps have no .lnk; their icon is read from the
+                // package assets above and carried in icon_data.
+                icon_source: None,
             })
         })
         .collect()

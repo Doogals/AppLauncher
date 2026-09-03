@@ -1,3 +1,14 @@
+/// Splits a `"file|index"` icon reference. Returns None for a plain path.
+///
+/// The separator is `|`, which is illegal in Windows filenames, so it cannot
+/// collide with a real path. The index is only meaningful alongside the file,
+/// hence packing them into one string rather than widening every call site.
+pub(crate) fn split_icon_ref(s: &str) -> Option<(String, i32)> {
+    let (file, idx) = s.rsplit_once('|')?;
+    if file.is_empty() { return None; }
+    Some((file.to_string(), idx.parse().unwrap_or(0)))
+}
+
 pub fn get_file_icon(path: String) -> Option<String> {
     #[cfg(target_os = "windows")]
     return get_file_icon_windows(&path);
@@ -108,7 +119,10 @@ fn get_file_icon_windows_inner(path: &str) -> Option<String> {
     const DI_NORMAL: u32 = 0x0003;
     const SIZE: u32 = 32;
 
-    let wide: Vec<u16> = OsStr::new(path)
+    // Strip any "|index" suffix — that form is only meaningful to
+    // ExtractIconExW below, and SHGetFileInfoW would fail to resolve it.
+    let bare_path = split_icon_ref(path).map(|(f, _)| f).unwrap_or_else(|| path.to_string());
+    let wide: Vec<u16> = OsStr::new(bare_path.as_str())
         .encode_wide()
         .chain(std::iter::once(0))
         .collect();
@@ -121,21 +135,56 @@ fn get_file_icon_windows_inner(path: &str) -> Option<String> {
         sz_type_name: [0u16; 80],
     };
 
-    let result = unsafe {
-        SHGetFileInfoW(
-            wide.as_ptr(),
-            0,
-            &mut sfi,
-            std::mem::size_of::<ShFileInfoW>() as u32,
-            SHGFI_ICON | SHGFI_LARGEICON,
-        )
-    };
+    // "file|index" means the caller knows exactly which icon resource it wants
+    // — a Start Menu shortcut's GetIconLocation, typically. SHGetFileInfoW can
+    // only ever return resource 0, so an explicit index needs ExtractIconExW.
+    //
+    // ExtractIconExW is also the only one that can report failure: it returns a
+    // count, whereas SHGetFileInfoW always hands back SOMETHING, substituting
+    // the generic application glyph when the file has no icon of its own. That
+    // is why every row looked "successful" while showing the same blue monitor.
+    let mut h_icon: *mut std::ffi::c_void = std::ptr::null_mut();
 
-    if result == 0 || sfi.h_icon.is_null() {
-        return None;
+    if let Some((icon_file, idx)) = split_icon_ref(path) {
+        extern "system" {
+            fn ExtractIconExW(
+                lpsz_file: *const u16,
+                n_icon_index: i32,
+                phicon_large: *mut *mut std::ffi::c_void,
+                phicon_small: *mut *mut std::ffi::c_void,
+                n_icons: u32,
+            ) -> u32;
+        }
+        let file_wide: Vec<u16> = OsStr::new(icon_file.as_str())
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut large: *mut std::ffi::c_void = std::ptr::null_mut();
+        let extracted = unsafe {
+            ExtractIconExW(file_wide.as_ptr(), idx, &mut large, std::ptr::null_mut(), 1)
+        };
+        if extracted > 0 && !large.is_null() {
+            h_icon = large;
+        }
     }
 
-    let h_icon = sfi.h_icon;
+    // No explicit reference, or extraction found nothing there: fall back to
+    // asking the shell about the file itself.
+    if h_icon.is_null() {
+        let result = unsafe {
+            SHGetFileInfoW(
+                wide.as_ptr(),
+                0,
+                &mut sfi,
+                std::mem::size_of::<ShFileInfoW>() as u32,
+                SHGFI_ICON | SHGFI_LARGEICON,
+            )
+        };
+        if result == 0 || sfi.h_icon.is_null() {
+            return None;
+        }
+        h_icon = sfi.h_icon;
+    }
 
     let rgba_pixels = unsafe {
         // Get a reference DC from the screen so CreateCompatibleDC works correctly

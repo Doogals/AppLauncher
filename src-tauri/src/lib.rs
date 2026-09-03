@@ -912,7 +912,19 @@ async fn get_browser_bookmarks(browser_path: String) -> Vec<browsers::BookmarkIt
 #[tauri::command]
 async fn get_file_icon(path: String, args: Option<String>) -> Option<String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let resolved = apps::resolve_icon_source_path(&path, args.as_deref().unwrap_or(""));
+        let args = args.unwrap_or_default();
+        // `path` may be an "iconfile|index" reference lifted from a Start Menu
+        // shortcut. resolve_icon_source_path has to see the file half on its
+        // own or it can't recognise a Squirrel Update.exe stub — which is how
+        // Discord ended up with a generic icon. If it does redirect us to the
+        // real exe, the shortcut's index no longer indexes that file, so drop it.
+        let resolved = match icons::split_icon_ref(&path) {
+            Some((file, idx)) => {
+                let real = apps::resolve_icon_source_path(&file, &args);
+                if real == file { format!("{}|{}", file, idx) } else { real }
+            }
+            None => apps::resolve_icon_source_path(&path, &args),
+        };
         icons::get_file_icon(resolved)
     })
     .await
@@ -927,23 +939,126 @@ async fn get_installed_steam_games() -> Vec<steam::SteamGame> {
         .unwrap_or_default()
 }
 
+/// The machine label shown in the Lemon Squeezy dashboard, e.g. "DOUG-PC [a1b2c3d4]".
+/// Surfaced to the UI so the feedback dialog can tell the user exactly what
+/// identifier is about to be sent rather than sending it invisibly.
 #[tauri::command]
-async fn send_feedback(message: String) -> Result<(), String> {
+fn get_machine_label() -> String {
+    machine_id::activation_label()
+}
+
+/// A copy of the config safe to email out, for attaching to feedback.
+///
+/// Three things are removed, all of them deliberate:
+///
+/// * `icon_data` — a base64 PNG per item, and per cached suggestion. Left in,
+///   a modest config serialises to several megabytes, which no mail provider
+///   will accept and which is useless for debugging anyway.
+/// * `cached_suggestions` — a scan of the machine's installed software. Not
+///   needed to reproduce a bug, and far more than someone consents to when
+///   they tick "include my configuration".
+/// * `license_key` — masked to the last four characters. Enough to match the
+///   sender against a Lemon Squeezy order (alongside `license_instance_id`,
+///   which is kept whole) without putting a live key in an inbox.
+fn sanitized_config_json(config: &config::AppConfig) -> Result<String, String> {
+    let mut value = serde_json::to_value(config).map_err(|e| e.to_string())?;
+
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("cached_suggestions".into(), serde_json::json!([]));
+
+        let masked = obj
+            .get("license_key")
+            .and_then(|k| k.as_str())
+            .map(|k| {
+                let tail: String = k.chars().rev().take(4).collect::<Vec<_>>()
+                    .into_iter().rev().collect();
+                format!("****{}", tail)
+            });
+        obj.insert(
+            "license_key".into(),
+            masked.map(serde_json::Value::String).unwrap_or(serde_json::Value::Null),
+        );
+
+        if let Some(groups) = obj.get_mut("groups").and_then(|g| g.as_array_mut()) {
+            for group in groups {
+                let Some(items) = group.get_mut("items").and_then(|i| i.as_array_mut()) else {
+                    continue;
+                };
+                for item in items {
+                    if let Some(item_obj) = item.as_object_mut() {
+                        item_obj.insert("icon_data".into(), serde_json::Value::Null);
+                    }
+                }
+            }
+        }
+    }
+
+    serde_json::to_string_pretty(&value).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn send_feedback(
+    state: State<'_, AppState>,
+    message: String,
+    include_config: Option<bool>,
+    reply_email: Option<String>,
+) -> Result<(), String> {
     if message.trim().is_empty() {
         return Err("Message is empty.".to_string());
     }
 
+    // Optional and deliberately unvalidated beyond length — the field exists so
+    // unlicensed users, who have no order to look up, can be replied to. A
+    // strict pattern here would only reject valid-but-unusual addresses and
+    // block the message entirely. The Worker decides whether it is usable as a
+    // Reply-To header; either way the raw text reaches the inbox.
+    let reply_email = reply_email
+        .map(|e| e.trim().chars().take(254).collect::<String>())
+        .filter(|e| !e.is_empty());
+
+    // Clone the config out before the async boundary — a MutexGuard is not Send,
+    // so it cannot be held across spawn_blocking.
+    let include_config = include_config.unwrap_or(false);
+    let config_json = if include_config {
+        let snapshot = state.0.lock().unwrap().clone();
+        Some(sanitized_config_json(&snapshot)?)
+    } else {
+        None
+    };
+
+    let machine = machine_id::activation_label();
+    let version = env!("CARGO_PKG_VERSION").to_string();
+
     tauri::async_runtime::spawn_blocking(move || {
         let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(20))
             .build()
             .map_err(|e| e.to_string())?;
 
-        client
+        let mut payload = serde_json::json!({
+            "message": message,
+            "machine": machine,
+            "version": version,
+        });
+        if let Some(json) = config_json {
+            payload["config"] = serde_json::Value::String(json);
+        }
+        if let Some(email) = reply_email {
+            payload["reply_email"] = serde_json::Value::String(email);
+        }
+
+        let res = client
             .post(format!("{}/feedback", WORKER_URL))
-            .json(&serde_json::json!({ "message": message }))
+            .json(&payload)
             .send()
             .map_err(|e| e.to_string())?;
+
+        // Previously the response was discarded, so a rejected send looked
+        // identical to a successful one. An attached config makes the request
+        // large enough that failures are a real possibility worth surfacing.
+        if !res.status().is_success() {
+            return Err(format!("Server returned {}", res.status()));
+        }
 
         Ok(())
     })
@@ -1156,10 +1271,18 @@ pub(crate) fn open_config_window_inner(app: tauri::AppHandle, group_id: Option<S
         .disable_drag_drop_handler()
         .decorations(true)
         .resizable(true)
-        .always_on_top(true)
+        // NOT always-on-top. This is a window people sit in for a while, often
+        // alongside a browser or Explorer while they gather paths, and pinning
+        // it above everything means clicking another window never actually
+        // brings that window forward. It still opens focused (below), and its
+        // own child windows — Add Item, the color pickers, the layout editors —
+        // stay on top so they are never lost behind it.
+        .always_on_top(false)
+        .focused(true)
         .build()
         {
             center_on_widget_monitor(&app2, &win, 840.0, 725.0);
+            let _ = win.set_focus();
         }
     });
 }
@@ -2407,59 +2530,82 @@ fn bring_widget_to_view(_app: &tauri::AppHandle) {}
 pub fn run() {
     let config = config::load_config();
 
-    // ── Single-instance guard (free tier only) ────────────────────────────────
-    // Licensed users may open as many instances as they like.
-    // Free-tier users get one. We check this BEFORE Tauri creates any windows
-    // so the second instance exits cleanly with nothing flashing on screen.
+    // ── Single-instance guard (everyone) ──────────────────────────────────────
+    //
+    // TakeOff runs as exactly one instance, licensed or not. This used to be a
+    // free-tier restriction, with multiple instances sold as a paid feature —
+    // but that feature silently destroyed user config:
+    //
+    //   load_config() runs ONCE at startup into AppState(Mutex<AppConfig>), and
+    //   nothing ever re-reads from disk. Each instance therefore holds its own
+    //   in-memory copy, and every save writes the WHOLE file. Two instances do
+    //   not diverge independently — they overwrite each other, last save wins,
+    //   with no warning and no way to recover the lost groups.
+    //
+    // Making it safe would need a file watcher plus a reload path through
+    // AppState and every open window, and concurrent edits would still conflict.
+    // Since detached groups already cover spreading the launcher around, one
+    // instance for everyone is both simpler and the only version that cannot
+    // lose data. Re-introducing multiple instances means solving config sharing
+    // first, not just relaxing this check.
+    //
+    // Checked BEFORE Tauri creates any windows, so a second launch exits
+    // cleanly with nothing flashing on screen.
     #[cfg(target_os = "windows")]
     {
-        let licensed = license::is_licensed(&config.license_key, &config.license_instance_id);
-        if !licensed {
-            extern "system" {
-                fn CreateMutexW(
-                    lp_mutex_attributes: *mut std::ffi::c_void,
-                    b_initial_owner: i32,
-                    lp_name: *const u16,
-                ) -> *mut std::ffi::c_void;
-                fn GetLastError() -> u32;
-                fn FindWindowW(
-                    lp_class_name: *const u16,
-                    lp_window_name: *const u16,
-                ) -> *mut std::ffi::c_void;
-                fn ShowWindow(hwnd: *mut std::ffi::c_void, n_cmd_show: i32) -> i32;
-                fn SetForegroundWindow(hwnd: *mut std::ffi::c_void) -> i32;
-            }
-            const ERROR_ALREADY_EXISTS: u32 = 183;
-            const SW_RESTORE: i32 = 9;
-
-            let mutex_name: Vec<u16> = "Local\\TakeOffSingleInstance\0"
-                .encode_utf16().collect();
-
-            // CreateMutex returns a handle even when ERROR_ALREADY_EXISTS,
-            // so we check GetLastError() to tell whether we created it fresh.
-            let _single_instance_mutex = unsafe {
-                CreateMutexW(std::ptr::null_mut(), 0, mutex_name.as_ptr())
-            };
-
-            if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
-                // Another instance is already running — bring its widget to
-                // the foreground, then exit this second instance immediately.
-                let title: Vec<u16> = "TakeOff\0".encode_utf16().collect();
-                unsafe {
-                    let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
-                    if !hwnd.is_null() {
-                        ShowWindow(hwnd, SW_RESTORE);
-                        SetForegroundWindow(hwnd);
-                    }
-                }
-                std::process::exit(0);
-            }
-            // First instance — _single_instance_mutex is a raw *mut c_void,
-            // no Drop impl, so the Windows HANDLE stays open for this process's
-            // entire lifetime. Windows closes it automatically on process exit.
-            // Do NOT call CloseHandle — that would free the mutex and allow
-            // a second free-tier instance to start.
+        extern "system" {
+            fn CreateMutexW(
+                lp_mutex_attributes: *mut std::ffi::c_void,
+                b_initial_owner: i32,
+                lp_name: *const u16,
+            ) -> *mut std::ffi::c_void;
+            fn GetLastError() -> u32;
+            fn FindWindowW(
+                lp_class_name: *const u16,
+                lp_window_name: *const u16,
+            ) -> *mut std::ffi::c_void;
+            fn ShowWindow(hwnd: *mut std::ffi::c_void, n_cmd_show: i32) -> i32;
+            fn SetForegroundWindow(hwnd: *mut std::ffi::c_void) -> i32;
         }
+        const ERROR_ALREADY_EXISTS: u32 = 183;
+        const SW_RESTORE: i32 = 9;
+
+        // "Global\" rather than "Local\": the Local namespace is per-logon
+        // session, so an elevated instance and a normal one could each hold
+        // their own copy and both run. Global covers the whole machine.
+        let mutex_name: Vec<u16> = "Global\\TakeOffSingleInstance\0"
+            .encode_utf16().collect();
+
+        // CreateMutex returns a valid handle even when the mutex already
+        // exists, so GetLastError is what distinguishes the two cases. Read
+        // immediately, with no intervening calls that could reset it.
+        let _single_instance_mutex = unsafe {
+            CreateMutexW(std::ptr::null_mut(), 0, mutex_name.as_ptr())
+        };
+        let already_running = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+
+        crate::debug_log::write_debug_log(&format!(
+            "STARTUP single-instance: already_running={}", already_running
+        ));
+
+        if already_running {
+            crate::debug_log::write_debug_log(
+                "STARTUP already running - focusing the existing widget and exiting"
+            );
+            let title: Vec<u16> = "TakeOff\0".encode_utf16().collect();
+            unsafe {
+                let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+                if !hwnd.is_null() {
+                    ShowWindow(hwnd, SW_RESTORE);
+                    SetForegroundWindow(hwnd);
+                }
+            }
+            std::process::exit(0);
+        }
+        // _single_instance_mutex is a raw *mut c_void with no Drop impl, so the
+        // HANDLE stays open for this process's lifetime and Windows releases it
+        // on exit. Do NOT call CloseHandle — that would free the mutex and let
+        // a second instance start.
     }
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -2597,7 +2743,11 @@ pub fn run() {
                             .center()
                             .decorations(true)
                             .resizable(false)
-                            .always_on_top(true)
+                            // Same reasoning as open_config_window_inner: this
+                            // is the same config.html and would otherwise sit
+                            // above whatever the user clicks next.
+                            .always_on_top(false)
+                            .focused(true)
                             .build();
                         }
                     });
@@ -2833,6 +2983,7 @@ pub fn run() {
             get_file_icon,
             get_installed_steam_games,
             send_feedback,
+            get_machine_label,
             open_url,
             download_and_install_update,
             create_command_file,

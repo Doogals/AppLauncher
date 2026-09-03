@@ -198,12 +198,103 @@ fn extract_acf_value(line: &str, key: &str) -> Option<String> {
     }
 }
 
+/// Ranks a file inside an app's librarycache folder as an icon candidate.
+/// Lower is better; `None` means "never use this one".
+///
+/// Steam caches several pieces of art per app and only some are square. A
+/// header or hero image dropped into a 20px slot reads as an unrecognisable
+/// smear, so those are excluded outright rather than ranked last.
+fn rank_icon_file(name: &str) -> Option<u8> {
+    let lower = name.to_ascii_lowercase();
+
+    if !(lower.ends_with(".jpg")
+        || lower.ends_with(".jpeg")
+        || lower.ends_with(".png")
+        || lower.ends_with(".ico"))
+    {
+        return None;
+    }
+
+    const WRONG_SHAPE: [&str; 6] = [
+        "header",
+        "hero",
+        "capsule",
+        "library_600x900",
+        "page_bg",
+        "broadcast",
+    ];
+    if WRONG_SHAPE.iter().any(|bad| lower.contains(bad)) {
+        return None;
+    }
+
+    if lower.contains("icon") {
+        Some(0)
+    } else if lower.contains("logo") {
+        Some(1)
+    } else {
+        // Newer clients name some cached assets by content hash, so an
+        // unrecognised name is still worth trying — just not first.
+        Some(2)
+    }
+}
+
+/// Where the icon lives has changed between Steam client versions:
+///
+///   older     appcache/librarycache/<appid>_icon.jpg
+///   current   appcache/librarycache/<appid>/<something>.jpg
+///
+/// The per-app folder does not use one fixed filename across installs, so
+/// after trying the names that are common we scan the folder and take the
+/// best-ranked image, breaking ties by file size — an icon is by far the
+/// smallest asset Steam caches.
 fn load_icon_base64(steam_path: &str, appid: &str) -> Option<String> {
-    let path = std::path::Path::new(steam_path)
+    let cache = std::path::Path::new(steam_path)
         .join("appcache")
-        .join("librarycache")
-        .join(format!("{}_icon.jpg", appid));
-    let bytes = std::fs::read(&path).ok()?;
+        .join("librarycache");
+
+    let read_nonempty = |p: std::path::PathBuf| -> Option<Vec<u8>> {
+        let bytes = std::fs::read(p).ok()?;
+        if bytes.is_empty() { None } else { Some(bytes) }
+    };
+
+    if let Some(bytes) = read_nonempty(cache.join(format!("{}_icon.jpg", appid))) {
+        return Some(base64_encode(&bytes));
+    }
+
+    let dir = cache.join(appid);
+    for name in ["icon.jpg", "icon.png", "logo.png", "logo.jpg"] {
+        if let Some(bytes) = read_nonempty(dir.join(name)) {
+            return Some(base64_encode(&bytes));
+        }
+    }
+
+    let mut best: Option<(u8, u64, std::path::PathBuf)> = None;
+    for entry in std::fs::read_dir(&dir).ok()?.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(file_name) = path.file_name().map(|f| f.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        let Some(rank) = rank_icon_file(&file_name) else {
+            continue;
+        };
+        let size = entry.metadata().map(|m| m.len()).unwrap_or(u64::MAX);
+        if size == 0 {
+            continue;
+        }
+        let better = match &best {
+            None => true,
+            Some((best_rank, best_size, _)) => (rank, size) < (*best_rank, *best_size),
+        };
+        if better {
+            best = Some((rank, size, path));
+        }
+    }
+
+    let (_, _, path) = best?;
+    let bytes = read_nonempty(path)?;
     Some(base64_encode(&bytes))
 }
 
@@ -252,5 +343,43 @@ mod tests {
     fn test_get_installed_steam_games_returns_vec_without_panic() {
         let games = get_installed_steam_games();
         let _ = games.len();
+    }
+
+    #[test]
+    fn test_rank_icon_file_prefers_icon_then_logo() {
+        assert_eq!(rank_icon_file("icon.jpg"), Some(0));
+        assert_eq!(rank_icon_file("730_icon.jpg"), Some(0));
+        assert_eq!(rank_icon_file("logo.png"), Some(1));
+        assert!(rank_icon_file("icon.jpg") < rank_icon_file("logo.png"));
+    }
+
+    #[test]
+    fn test_rank_icon_file_accepts_unknown_hash_names_last() {
+        assert_eq!(rank_icon_file("8f3c1a90b2.jpg"), Some(2));
+    }
+
+    #[test]
+    fn test_rank_icon_file_rejects_wrong_shaped_art() {
+        for name in [
+            "header.jpg",
+            "library_hero.jpg",
+            "library_600x900.jpg",
+            "capsule_616x353.jpg",
+            "page_bg_raw.jpg",
+        ] {
+            assert_eq!(rank_icon_file(name), None, "{name} should be rejected");
+        }
+    }
+
+    #[test]
+    fn test_rank_icon_file_rejects_non_images() {
+        assert_eq!(rank_icon_file("icon.json"), None);
+        assert_eq!(rank_icon_file("something.txt"), None);
+        assert_eq!(rank_icon_file(""), None);
+    }
+
+    #[test]
+    fn test_load_icon_base64_missing_steam_path_is_none() {
+        assert!(load_icon_base64("Z:\\definitely\\not\\steam", "730").is_none());
     }
 }
