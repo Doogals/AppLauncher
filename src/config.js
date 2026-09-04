@@ -1220,6 +1220,8 @@ async function init() {
     });
   }
 
+  await initStartupToggle();
+
   renderItems();
   await renderLicenseSection();
 
@@ -1249,12 +1251,122 @@ async function init() {
   }
 }
 
+// Read-only summary of the boot sequence. Toggling happens per group (editor
+// or widget right-click); this just answers "what actually happens when I boot?"
+async function renderStartupGroups() {
+  const list = document.getElementById('startup-groups-list');
+  if (!list) return;
+
+  let groups = [];
+  try { groups = await invoke('get_startup_groups'); } catch { /* leave empty */ }
+
+  list.innerHTML = '';
+  if (!groups.length) {
+    const empty = document.createElement('p');
+    empty.className = 'startup-empty';
+    empty.textContent = 'No groups set to launch at startup.';
+    list.appendChild(empty);
+    return;
+  }
+
+  groups.forEach((g, i) => {
+    const row = document.createElement('div');
+    row.className = 'startup-row';
+    const name  = String(g.name).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const icon  = String(g.icon).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const count = g.item_count === 1 ? '1 item' : `${g.item_count} items`;
+    row.innerHTML = `
+      <span class="startup-order">${i + 1}</span>
+      <span class="startup-icon">${icon}</span>
+      <span class="startup-name">${name}</span>
+      <span class="startup-count">${count}</span>
+    `;
+    list.appendChild(row);
+  });
+
+  // Only worth saying once there is actually a list to describe — shown above
+  // an empty list it reads as a contradiction. Reordering and the Shift escape
+  // hatch are explained on the Group tab, next to the toggle that sets this.
+  const note = document.createElement('p');
+  note.className = 'startup-summary-note';
+  note.textContent = 'Launched one at a time, in this order. Drag groups on the widget to reorder.';
+  list.appendChild(note);
+}
+
+// Paid feature: launch this group when Windows starts TakeOff.
+//
+// Only meaningful for a group that already exists in the backend's config —
+// same constraint as the colour button, since there is nothing to flag until
+// after the first Save & Close.
+async function initStartupToggle() {
+  const wrap   = document.getElementById('startup-toggle');
+  const check  = document.getElementById('startup-check');
+  const lock   = document.getElementById('startup-lock');
+  const status = document.getElementById('startup-status');
+  if (!wrap || !check) return;
+
+  // Kept separate from the explanatory note so the two never clobber each other.
+  const setStatus = (html) => {
+    status.innerHTML = html;
+    status.style.display = html ? '' : 'none';
+  };
+
+  const cfg = await invoke('get_config');
+  const licensed = Boolean(cfg.license_key && cfg.license_instance_id);
+
+  if (!existingGroup) {
+    wrap.classList.add('disabled');
+    check.disabled = true;
+    setStatus('Save the group first, then you can set it to launch at startup.');
+    return;
+  }
+
+  check.checked = Boolean(existingGroup.launch_at_startup);
+
+  if (!licensed) {
+    // Shown rather than hidden on purpose — a paid feature nobody knows about
+    // cannot sell anything. Still clickable enough to explain itself.
+    wrap.classList.add('disabled');
+    check.disabled = true;
+    lock.style.display = '';
+    setStatus('Available with a license. <a href="#" class="startup-buy">See license options</a>');
+    const buy = status.querySelector('.startup-buy');
+    if (buy) {
+      buy.addEventListener('click', (e) => {
+        e.preventDefault();
+        // Straight to the store rather than the License section at the foot of
+        // this window — someone who doesn't have a key yet has nothing to type
+        // into the activation box, so sending them there is a dead end.
+        invoke('open_url', { url: STORE_URL }).catch(console.error);
+      });
+    }
+    return;
+  }
+
+  check.addEventListener('change', async () => {
+    const enabled = check.checked;
+    try {
+      await invoke('set_group_launch_at_startup', { groupId: existingGroup.id, enabled });
+      existingGroup.launch_at_startup = enabled;
+      setStatus('');
+    } catch (err) {
+      // Revert the box so it never disagrees with what was actually saved.
+      check.checked = !enabled;
+      setStatus(typeof err === 'string' ? err : 'Could not save that setting.');
+    }
+  });
+}
+
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t =>
     t.classList.toggle('active', t.dataset.tab === name)
   );
   document.getElementById('tab-group').style.display = name === 'group' ? '' : 'none';
   document.getElementById('tab-settings').style.display = name === 'settings' ? '' : 'none';
+  // The startup summary is built from the backend, and the Group tab's toggle
+  // can change it while Settings is hidden — rebuild on the way in rather than
+  // showing a stale list.
+  if (name === 'settings') renderStartupGroups();
 }
 
 function initTabs() {
@@ -1282,6 +1394,8 @@ async function initSettingsTab() {
   document.getElementById('widget-color-btn').addEventListener('click', () => {
     invoke('open_widget_color_window').catch(err => console.error('open_widget_color_window error:', err));
   });
+
+  await renderStartupGroups();
 
   initHotkeyRecorder();
 

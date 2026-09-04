@@ -512,6 +512,94 @@ html, body {
   overflow: hidden;
 }
 
+/* ── Launch at startup (paid feature) ─────────────────────────────────────── */
+/* One line: checkbox, label, and status all inline. Wraps only if the window
+   is narrow enough that it genuinely cannot fit. */
+.startup-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 5px 10px;
+  background: #16213e;
+  border: 1px solid #0f3460;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: #d0d0e0;
+  line-height: 1.2;
+}
+.startup-toggle:hover { border-color: #1b9fdb; }
+.startup-toggle input[type="checkbox"] {
+  margin: 0;
+  flex-shrink: 0;
+  accent-color: #1b9fdb;
+  cursor: pointer;
+}
+.startup-toggle.disabled { cursor: default; opacity: 0.75; }
+.startup-toggle.disabled:hover { border-color: #0f3460; }
+.startup-toggle.disabled input[type="checkbox"] { cursor: default; }
+.startup-toggle-text {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  min-width: 0;
+}
+.startup-toggle-title { font-weight: 600; }
+.startup-lock { margin-left: 3px; font-size: 0.72rem; }
+.startup-toggle-note {
+  color: #8a8aa0;
+  font-size: 0.72rem;
+}
+
+/* Sits outside the toggle card, above the item list it describes. */
+.startup-hint {
+  margin: -4px 2px 10px;
+  color: #8a8aa0;
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+.startup-buy { color: #1b9fdb; text-decoration: none; }
+.startup-buy:hover { text-decoration: underline; }
+
+/* Settings tab summary — read-only, in launch order. */
+.startup-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 10px;
+  background: #16213e;
+  border: 1px solid #0f3460;
+  border-radius: 6px;
+  margin-bottom: 5px;
+  font-size: 0.85rem;
+  color: #e0e0e0;
+}
+.startup-order {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #0f3460;
+  color: #b9b9cc;
+  font-size: 0.68rem;
+  font-weight: 600;
+}
+.startup-icon { flex-shrink: 0; font-size: 15px; line-height: 1; }
+.startup-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.startup-count { flex-shrink: 0; color: #8a8aa0; font-size: 0.72rem; }
+.startup-empty, .startup-summary-note {
+  color: #8a8aa0;
+  font-size: 0.72rem;
+  margin: 6px 0 0;
+  line-height: 1.4;
+}
+.startup-empty { margin: 0; }
+
 .fb-email {
   width: 100%;
   margin-top: 8px;

@@ -15,7 +15,7 @@
 #>
 
 param(
-    [string]$Version = "0.6.3",
+    [string]$Version = "0.6.4",
     [string]$KeyPath = "$HOME\.tauri\applauncher.key",
     [string]$WebsiteRepo = "C:\Users\dougb\Desktop\tonic-tech-site",
     [string]$GitHubRepo = "Doogals/AppLauncher",

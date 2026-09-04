@@ -139,12 +139,32 @@
     </div>
     <div id="emoji-grid" class="emoji-grid" style="display:none"></div>
 
+    <!-- Paid feature. Rendered for everyone (so free users discover it exists)
+         but disabled with a lock and a buy link when unlicensed. -->
+    <label class="startup-toggle" id="startup-toggle">
+      <input type="checkbox" id="startup-check" />
+      <span class="startup-toggle-text">
+        <span class="startup-toggle-title">
+          Launch this group when Windows starts
+          <span class="startup-lock" id="startup-lock" style="display:none">🔒</span>
+        </span>
+        <span class="startup-toggle-note startup-status" id="startup-status" style="display:none"></span>
+      </span>
+    </label>
+
     <div class="suggested-wrap" id="suggested-wrap">
       <span class="suggested-label">Suggested Items</span>
       <div class="suggested-bar" id="suggested-bar">
         <div class="suggested-loading"><span class="suggested-spinner"></span>Finding suggestions…</div>
       </div>
     </div>
+
+    <!-- Sits directly above the list it describes. Applies to every launch,
+         not just startup ones, so it is not gated on the license. -->
+    <p class="startup-hint" id="startup-hint">
+      Items launch top to bottom, one at a time — drag to reorder.
+    </p>
+
     <div class="items-list" id="items-list"></div>
 
     <div id="add-item-area">
@@ -184,6 +204,12 @@
         <button class="btn btn-save" id="hotkey-save-btn">Save</button>
       </div>
       <div class="hotkey-save-status" id="hotkey-save-status"></div>
+    </div>
+    <div class="settings-section">
+      <p class="section-label">Launch at Startup</p>
+      <!-- Read-only. Toggling lives on each group (editor + right-click); this
+           is the only view that shows the whole boot sequence, in launch order. -->
+      <div id="startup-groups-list"></div>
     </div>
     <div class="settings-section">
       <p class="section-label">Config File</p>

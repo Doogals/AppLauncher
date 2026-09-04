@@ -106,6 +106,12 @@ pub struct Group {
     /// restored on license re-activation) but is not shown on the widget.
     #[serde(default)]
     pub hidden: bool,
+    /// Launch this group automatically when WINDOWS starts TakeOff — not when
+    /// the user opens it by hand. Licensed users only, enforced in Rust at
+    /// fire time rather than only in the UI, because config.json is plain text
+    /// in %LOCALAPPDATA% and a UI-only gate is not a gate.
+    #[serde(default)]
+    pub launch_at_startup: bool,
 }
 
 impl Group {
@@ -121,8 +127,28 @@ impl Group {
             detached_x: None,
             detached_y: None,
             hidden: false,
+            launch_at_startup: false,
         }
     }
+}
+
+/// Ids of the groups that should launch when Windows starts TakeOff, in widget
+/// order (which is config order, and which `reorder_group` already lets the
+/// user change).
+///
+/// `hidden` groups are excluded: that flag is set by free-tier enforcement when
+/// a license lapses, and a lapsed user must not get a surprise mass-launch. The
+/// `launch_at_startup` flag is deliberately left intact on them so re-activating
+/// restores the previous startup set without reconfiguration.
+///
+/// Pure and separate from the launching itself so it can be tested — the caller
+/// runs on a background thread at boot, which is not testable here.
+pub fn startup_group_ids(groups: &[Group]) -> Vec<String> {
+    groups
+        .iter()
+        .filter(|g| g.launch_at_startup && !g.hidden)
+        .map(|g| g.id.clone())
+        .collect()
 }
 
 fn default_true() -> bool { true }
@@ -247,6 +273,48 @@ mod tests {
         assert_ne!(g1.id, g2.id);
         assert_eq!(g1.name, "Work");
         assert_eq!(g1.icon, "💼");
+    }
+
+    fn startup_group(name: &str, on: bool, hidden: bool) -> Group {
+        Group { launch_at_startup: on, hidden, ..Group::new(name, "🧪") }
+    }
+
+    #[test]
+    fn startup_ids_keep_config_order() {
+        let groups = vec![
+            startup_group("first",  true,  false),
+            startup_group("skipme", false, false),
+            startup_group("second", true,  false),
+        ];
+        let ids = startup_group_ids(&groups);
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[0], groups[0].id);
+        assert_eq!(ids[1], groups[2].id, "order must follow the widget, not the filter");
+    }
+
+    #[test]
+    fn startup_ids_exclude_hidden_groups() {
+        // Free-tier enforcement hides groups rather than deleting them. A
+        // lapsed user must not get a surprise mass-launch, but the flag stays
+        // in the file so re-activating restores their startup set.
+        let groups = vec![startup_group("hidden-but-flagged", true, true)];
+        assert!(startup_group_ids(&groups).is_empty());
+    }
+
+    #[test]
+    fn startup_ids_empty_when_nothing_flagged() {
+        let groups = vec![startup_group("a", false, false), startup_group("b", false, false)];
+        assert!(startup_group_ids(&groups).is_empty());
+    }
+
+    #[test]
+    fn launch_at_startup_defaults_off_for_configs_written_before_the_feature() {
+        // Every existing user's config.json predates this field. Deserialising
+        // must not turn startup launching on for any of them.
+        let json = r#"{"id":"g1","name":"Work","icon":"💼","items":[]}"#;
+        let group: Group = serde_json::from_str(json).expect("should load without the field");
+        assert!(!group.launch_at_startup);
+        assert!(!group.hidden);
     }
 
     #[test]

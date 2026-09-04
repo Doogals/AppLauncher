@@ -130,7 +130,19 @@ pub fn move_window_to_virtual_desktop(hwnd: *mut std::ffi::c_void, guid: &[u8]) 
 /// Returns the list of virtual desktops from the registry, in Task View order.
 pub fn get_virtual_desktops() -> Vec<VirtualDesktop> {
     #[cfg(target_os = "windows")]
-    return get_virtual_desktops_windows();
+    {
+        let desktops = get_virtual_desktops_windows();
+        // An empty list disables every desktop feature silently. `VirtualDesktopIDs`
+        // is expected at the same path on both Windows 10 and 11 — unlike
+        // CurrentVirtualDesktop, which needed a per-session fallback — so if this
+        // ever fires on a Windows 10 machine, that assumption is what to revisit.
+        if desktops.is_empty() {
+            crate::debug_log::write_debug_log(
+                "VD desktop list is EMPTY - VirtualDesktopIDs missing or unreadable",
+            );
+        }
+        return desktops;
+    }
     #[cfg(not(target_os = "windows"))]
     return vec![];
 }
@@ -157,34 +169,132 @@ pub fn switch_virtual_desktop(from_guid: &[u8], to_guid: &[u8]) -> bool {
 }
 
 #[cfg(target_os = "windows")]
-fn get_current_vd_windows() -> Option<Vec<u8>> {
+fn reg_to_wide(s: &str) -> Vec<u16> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    fn to_wide(s: &str) -> Vec<u16> {
-        OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
-    }
-    extern "system" {
-        fn RegOpenKeyExW(hkey: *mut std::ffi::c_void, sub_key: *const u16, options: u32, desired: u32, result: *mut *mut std::ffi::c_void) -> i32;
-        fn RegQueryValueExW(hkey: *mut std::ffi::c_void, value_name: *const u16, reserved: *mut u32, typ: *mut u32, data: *mut u8, data_size: *mut u32) -> i32;
-        fn RegCloseKey(hkey: *mut std::ffi::c_void) -> i32;
-    }
-    const HKEY_CURRENT_USER: *mut std::ffi::c_void = 0x8000_0001usize as *mut _;
-    const KEY_READ: u32 = 0x2_0019;
+    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(target_os = "windows")]
+extern "system" {
+    fn RegOpenKeyExW(hkey: *mut std::ffi::c_void, sub_key: *const u16, options: u32, desired: u32, result: *mut *mut std::ffi::c_void) -> i32;
+    fn RegQueryValueExW(hkey: *mut std::ffi::c_void, value_name: *const u16, reserved: *mut u32, typ: *mut u32, data: *mut u8, data_size: *mut u32) -> i32;
+    fn RegCloseKey(hkey: *mut std::ffi::c_void) -> i32;
+    fn RegEnumKeyExW(
+        hkey: *mut std::ffi::c_void,
+        index: u32,
+        name: *mut u16,
+        name_len: *mut u32,
+        reserved: *mut u32,
+        class: *mut u16,
+        class_len: *mut u32,
+        last_write: *mut std::ffi::c_void,
+    ) -> i32;
+}
+
+#[cfg(target_os = "windows")]
+const HKCU: *mut std::ffi::c_void = 0x8000_0001usize as *mut _;
+#[cfg(target_os = "windows")]
+const REG_KEY_READ: u32 = 0x2_0019;
+
+/// Reads a 16-byte REG_BINARY GUID from `sub_key`. None if the key, the value,
+/// or the expected size is missing.
+#[cfg(target_os = "windows")]
+fn read_guid_value(sub_key: &str, value_name: &str) -> Option<Vec<u8>> {
+    let sub_key = reg_to_wide(sub_key);
+    let value_name = reg_to_wide(value_name);
     unsafe {
-        let sub_key = to_wide("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VirtualDesktops");
-        let value_name = to_wide("CurrentVirtualDesktop");
         let mut hkey: *mut std::ffi::c_void = std::ptr::null_mut();
-        if RegOpenKeyExW(HKEY_CURRENT_USER, sub_key.as_ptr(), 0, KEY_READ, &mut hkey) != 0 {
+        if RegOpenKeyExW(HKCU, sub_key.as_ptr(), 0, REG_KEY_READ, &mut hkey) != 0 {
             return None;
         }
         let mut buf = [0u8; 16];
         let mut size = 16u32;
         let mut typ = 0u32;
-        let ret = RegQueryValueExW(hkey, value_name.as_ptr(), std::ptr::null_mut(), &mut typ, buf.as_mut_ptr(), &mut size);
+        let ret = RegQueryValueExW(
+            hkey, value_name.as_ptr(), std::ptr::null_mut(), &mut typ,
+            buf.as_mut_ptr(), &mut size,
+        );
         RegCloseKey(hkey);
         if ret != 0 || size != 16 { return None; }
         Some(buf.to_vec())
     }
+}
+
+/// Subkey names directly under `HKCU\...\Explorer\SessionInfo`.
+///
+/// The session number is not knowable up front — it is the Terminal Services
+/// session id, which is 1 for a normal desktop login but not for RDP, fast user
+/// switching, or a machine where a session has been recycled. Enumerating is
+/// the only reliable way to find it.
+#[cfg(target_os = "windows")]
+fn session_info_subkeys() -> Vec<String> {
+    let sub_key = reg_to_wide("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\SessionInfo");
+    let mut out = Vec::new();
+    unsafe {
+        let mut hkey: *mut std::ffi::c_void = std::ptr::null_mut();
+        if RegOpenKeyExW(HKCU, sub_key.as_ptr(), 0, REG_KEY_READ, &mut hkey) != 0 {
+            return out;
+        }
+        let mut index = 0u32;
+        loop {
+            // 256 is the documented maximum length of a registry key name.
+            let mut name = [0u16; 256];
+            let mut name_len = name.len() as u32;
+            let ret = RegEnumKeyExW(
+                hkey, index, name.as_mut_ptr(), &mut name_len,
+                std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            );
+            if ret != 0 { break; }
+            out.push(String::from_utf16_lossy(&name[..name_len as usize]));
+            index += 1;
+        }
+        RegCloseKey(hkey);
+    }
+    out
+}
+
+/// The GUID of the virtual desktop currently in view.
+///
+/// **Windows 10 and Windows 11 store this in different places.** On 11 it sits
+/// directly under `Explorer\VirtualDesktops`. On 10 that value does not exist
+/// there at all — it lives per Terminal Services session under
+/// `Explorer\SessionInfo\<n>\VirtualDesktops`.
+///
+/// Reading only the Windows 11 location returned None on every Windows 10
+/// machine, which did not crash anything — it silently disabled desktop
+/// targeting, so items assigned to a specific desktop just opened on whichever
+/// desktop the user happened to be on. Failing quietly like that is worse than
+/// failing loudly, because the first symptom is a confused support email.
+///
+/// Ordered 11-first so the common case costs one registry read and the fallback
+/// never runs on a machine that doesn't need it.
+#[cfg(target_os = "windows")]
+fn get_current_vd_windows() -> Option<Vec<u8>> {
+    const VD_KEY: &str = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VirtualDesktops";
+
+    if let Some(guid) = read_guid_value(VD_KEY, "CurrentVirtualDesktop") {
+        return Some(guid);
+    }
+
+    for session in session_info_subkeys() {
+        let path = format!(
+            "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\SessionInfo\\{}\\VirtualDesktops",
+            session
+        );
+        if let Some(guid) = read_guid_value(&path, "CurrentVirtualDesktop") {
+            crate::debug_log::write_debug_log(&format!(
+                "VD current desktop read from SessionInfo\\{} (Windows 10 layout)", session
+            ));
+            return Some(guid);
+        }
+    }
+
+    crate::debug_log::write_debug_log(
+        "VD current desktop NOT FOUND in either the Windows 11 or Windows 10 location",
+    );
+    None
 }
 
 #[cfg(target_os = "windows")]

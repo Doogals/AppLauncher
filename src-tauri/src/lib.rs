@@ -42,6 +42,41 @@ async fn download_and_install_update(app: tauri::AppHandle) -> Result<(), String
 // Update this URL after deploying the Cloudflare Worker
 const WORKER_URL: &str = "https://app-launcher-proxy.dougbreaultjr.workers.dev";
 
+/// Appended to the HKCU Run command by `register_autostart`, and the only
+/// signal that Windows — rather than the user — started this process.
+const AUTOSTART_FLAG: &str = "--autostart";
+
+/// True when this process was started by the autostart registration.
+///
+/// Deliberately NOT inferred from anything ambient (parent process, session
+/// age, time since boot) — those are all guesses that would eventually be wrong
+/// on someone's machine, and being wrong here means silently launching a dozen
+/// applications the user did not ask for.
+fn launched_by_autostart() -> bool {
+    std::env::args().any(|a| a == AUTOSTART_FLAG)
+}
+
+/// True while the Shift key is physically down.
+///
+/// Same convention Windows itself uses for skipping startup items, and the
+/// escape hatch for a startup group that has started misbehaving. Checked once,
+/// immediately before the batch runs.
+#[cfg(target_os = "windows")]
+fn shift_key_held() -> bool {
+    extern "system" {
+        fn GetAsyncKeyState(v_key: i32) -> i16;
+    }
+    const VK_SHIFT: i32 = 0x10;
+    // The high bit means "currently down"; the low bit only means "pressed at
+    // some point since the last call", which would be far too eager here.
+    unsafe { (GetAsyncKeyState(VK_SHIFT) as u16 & 0x8000) != 0 }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn shift_key_held() -> bool {
+    false
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 enum LicenseStatus {
@@ -93,6 +128,10 @@ fn save_group(group: Group, state: State<AppState>, app: tauri::AppHandle) -> Re
         updated.detached_x  = config.groups[pos].detached_x;
         updated.detached_y  = config.groups[pos].detached_y;
         updated.hidden      = config.groups[pos].hidden;
+        // Set by set_group_launch_at_startup / the widget context menu, never
+        // by the editor's save payload. Omitting it here would clear the flag
+        // on every save — the same failure mode that reverted group colours.
+        updated.launch_at_startup = config.groups[pos].launch_at_startup;
         config.groups[pos] = updated;
     } else {
         if config.groups.len() >= limit {
@@ -543,6 +582,61 @@ fn save_group_color(group_id: String, color: String, state: State<AppState>, app
     config::save_config(&config)?;
     let _ = app.emit("groups-updated", ());
     Ok(())
+}
+
+/// Toggles whether a group launches when Windows starts TakeOff.
+///
+/// The license check is here as well as in the UI on purpose. Turning the flag
+/// OFF is always allowed, even unlicensed — a user whose license lapsed must be
+/// able to clear a flag they can no longer see the toggle for.
+#[tauri::command]
+fn set_group_launch_at_startup(
+    group_id: String,
+    enabled: bool,
+    state: State<AppState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let mut config = state.0.lock().unwrap();
+
+    if enabled
+        && !license::startup_groups_allowed(&config.license_key, &config.license_instance_id)
+    {
+        return Err("Launching groups at startup requires a license.".to_string());
+    }
+
+    let Some(group) = config.groups.iter_mut().find(|g| g.id == group_id) else {
+        return Err("Group not found".to_string());
+    };
+    group.launch_at_startup = enabled;
+    config::save_config(&config)?;
+    let _ = app.emit("groups-updated", ());
+    Ok(())
+}
+
+/// Groups that will launch at startup, in widget order — for the Settings
+/// summary, which is the only view that answers "what happens when I boot?".
+#[derive(serde::Serialize)]
+struct StartupGroupInfo {
+    id: String,
+    name: String,
+    icon: String,
+    item_count: usize,
+}
+
+#[tauri::command]
+fn get_startup_groups(state: State<AppState>) -> Vec<StartupGroupInfo> {
+    let config = state.0.lock().unwrap();
+    config
+        .groups
+        .iter()
+        .filter(|g| g.launch_at_startup && !g.hidden)
+        .map(|g| StartupGroupInfo {
+            id: g.id.clone(),
+            name: g.name.clone(),
+            icon: g.icon.clone(),
+            item_count: g.items.len(),
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -1774,25 +1868,30 @@ fn resize_detached_group(group_id: String, width: u32, height: u32, app: tauri::
 /// Right-click context menu popped from the detached group's own window.
 #[tauri::command]
 fn show_detached_group_context_menu(group_id: String, app: tauri::AppHandle) -> Result<(), String> {
-    let licensed = {
+    let (licensed, startup_on) = {
         let state = app.state::<AppState>();
         let config = state.0.lock().unwrap();
-        license::is_licensed(&config.license_key, &config.license_instance_id)
+        let lic = license::is_licensed(&config.license_key, &config.license_instance_id);
+        let on = config.groups.iter().find(|g| g.id == group_id)
+            .map(|g| g.launch_at_startup).unwrap_or(false);
+        (lic, on)
     };
     let window_label = detached_group_label(&group_id);
-    popup_group_menu(app, group_id, true, window_label, false, licensed)
+    popup_group_menu(app, group_id, true, window_label, false, licensed, startup_on)
 }
 
 #[tauri::command]
 fn show_group_context_menu(group_id: String, app: tauri::AppHandle) -> Result<(), String> {
-    let (is_detached, licensed) = {
+    let (is_detached, licensed, startup_on) = {
         let state = app.state::<AppState>();
         let config = state.0.lock().unwrap();
-        let detached = config.groups.iter().find(|g| g.id == group_id).map(|g| g.detached).unwrap_or(false);
+        let group = config.groups.iter().find(|g| g.id == group_id);
+        let detached = group.map(|g| g.detached).unwrap_or(false);
+        let on = group.map(|g| g.launch_at_startup).unwrap_or(false);
         let lic = license::is_licensed(&config.license_key, &config.license_instance_id);
-        (detached, lic)
+        (detached, lic, on)
     };
-    popup_group_menu(app, group_id, is_detached, "widget".to_string(), true, licensed)
+    popup_group_menu(app, group_id, is_detached, "widget".to_string(), true, licensed, startup_on)
 }
 
 /// Shared implementation for both group context menus (widget bar and detached pill).
@@ -1806,25 +1905,37 @@ fn popup_group_menu(
     window_label: String,
     is_widget: bool,
     licensed: bool,
+    startup_on: bool,
 ) -> Result<(), String> {
     let handle = app.clone();
     app.run_on_main_thread(move || {
-        use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+        use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
         let _ = (|| -> Result<(), String> {
             let detach_label = if is_detached { "Attach to Widget" } else { "Detach from Widget" };
             let detach_id    = if is_detached { format!("ctx-attach:{}", group_id) } else { format!("ctx-detach:{}", group_id) };
             let edit   = MenuItem::with_id(&handle, format!("ctx-edit:{}", group_id),   "Edit Group",    true, None::<&str>).map_err(|e| e.to_string())?;
             let color  = MenuItem::with_id(&handle, format!("ctx-color:{}", group_id),  "Change Color",  true, None::<&str>).map_err(|e| e.to_string())?;
             let detach = MenuItem::with_id(&handle, detach_id,                            detach_label,    true, None::<&str>).map_err(|e| e.to_string())?;
+            // Paid feature. Present but DISABLED when unlicensed rather than
+            // absent, so free users can see it exists — the same reasoning as
+            // the "Upgrade" item below.
+            let startup = CheckMenuItem::with_id(
+                &handle,
+                format!("ctx-startup:{}", group_id),
+                "Launch at Startup",
+                licensed,
+                startup_on && licensed,
+                None::<&str>,
+            ).map_err(|e| e.to_string())?;
             let sep    = PredefinedMenuItem::separator(&handle).map_err(|e| e.to_string())?;
             let delete = MenuItem::with_id(&handle, format!("ctx-delete:{}", group_id), "Delete Group",  true, None::<&str>).map_err(|e| e.to_string())?;
             let sep2   = PredefinedMenuItem::separator(&handle).map_err(|e| e.to_string())?;
             let share   = MenuItem::with_id(&handle, "ctx-share",   "Share TakeOff", true, None::<&str>).map_err(|e| e.to_string())?;
             let upgrade = MenuItem::with_id(&handle, "ctx-upgrade", "Upgrade",        true, None::<&str>).map_err(|e| e.to_string())?;
             let menu = if licensed {
-                Menu::with_items(&handle, &[&edit, &color, &detach, &sep, &delete, &sep2, &share]).map_err(|e| e.to_string())?
+                Menu::with_items(&handle, &[&edit, &color, &detach, &startup, &sep, &delete, &sep2, &share]).map_err(|e| e.to_string())?
             } else {
-                Menu::with_items(&handle, &[&edit, &color, &detach, &sep, &delete, &sep2, &share, &upgrade]).map_err(|e| e.to_string())?
+                Menu::with_items(&handle, &[&edit, &color, &detach, &startup, &sep, &delete, &sep2, &share, &upgrade]).map_err(|e| e.to_string())?
             };
             if let Some(win) = handle.get_webview_window(&window_label) {
                 if is_widget { force_foreground(&win); }
@@ -2229,7 +2340,14 @@ fn register_autostart(exe_path: &str) {
     //
     // The Run-key value is parsed as a command line, so wrap in double quotes
     // to handle paths with spaces (e.g. C:\Users\Doug Smith\...\TakeOff.exe).
-    let value = format!("\"{}\"", clean);
+    //
+    // AUTOSTART_FLAG is what distinguishes "Windows started us at login" from
+    // "the user opened TakeOff". Startup groups fire only in the first case —
+    // otherwise quitting and reopening the app would re-launch every flagged
+    // group, which would be intolerable. Because this function re-runs on every
+    // launch, existing installs pick the flag up on their next boot with no
+    // action from the user.
+    let value = format!("\"{}\" {}", clean, AUTOSTART_FLAG);
     let key_path   = HSTRING::from("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
     let value_name = HSTRING::from("TakeOff");
     crate::debug_log::write_debug_log(&format!("AUTOSTART register: {}", value));
@@ -2267,6 +2385,85 @@ fn register_autostart(exe_path: &str) {
         .args(["/Delete", "/F", "/TN", "TakeOff"])
         .creation_flags(0x08000000) // CREATE_NO_WINDOW
         .output();
+}
+
+/// Launches every group flagged `launch_at_startup`, in widget order.
+///
+/// Returns immediately; the work happens on a background thread so the widget
+/// is never held up behind it.
+///
+/// **Groups are launched strictly one at a time, and that is a correctness
+/// requirement rather than a stylistic one.** `launch_group_inner` calls
+/// `clear_claimed_hwnds()` at its top and hand-tracks the current virtual
+/// desktop across its whole sequence, because the registry lags behind
+/// keyboard-simulated switches. Two of them running concurrently would wipe
+/// each other's HWND claims and fire Win+Ctrl+Arrow presses into each other's
+/// desktop tracking, and windows would land essentially at random. `launch_group`
+/// is synchronous, so the plain `for` loop below is what keeps that safe — do
+/// not spawn per group.
+fn run_startup_groups(app: tauri::AppHandle) {
+    if !launched_by_autostart() {
+        return;
+    }
+
+    std::thread::spawn(move || {
+        if shift_key_held() {
+            crate::debug_log::write_debug_log(
+                "STARTUP GROUPS skipped: Shift held at launch",
+            );
+            return;
+        }
+
+        // Snapshot config once, then drop the lock — a launch takes seconds and
+        // holding AppState across it would block every command in the app.
+        let (allowed, group_ids): (bool, Vec<String>) = {
+            let state = app.state::<AppState>();
+            let cfg = state.0.lock().unwrap();
+            let allowed = license::startup_groups_allowed(
+                &cfg.license_key,
+                &cfg.license_instance_id,
+            );
+            (allowed, config::startup_group_ids(&cfg.groups))
+        };
+
+        if group_ids.is_empty() {
+            return;
+        }
+
+        // Enforced HERE, not only where the toggle is drawn: config.json is
+        // plain text in %LOCALAPPDATA%, so hand-editing it must not work.
+        if !allowed {
+            crate::debug_log::write_debug_log(&format!(
+                "STARTUP GROUPS skipped: not licensed ({} group(s) flagged)",
+                group_ids.len()
+            ));
+            return;
+        }
+
+        crate::debug_log::write_debug_log(&format!(
+            "STARTUP GROUPS launching {} group(s)",
+            group_ids.len()
+        ));
+
+        for id in group_ids {
+            // Re-read per group rather than reusing one clone: a launch takes
+            // seconds, and the user may well be editing groups in the meantime.
+            let config = {
+                let state = app.state::<AppState>();
+                let cfg = state.0.lock().unwrap();
+                cfg.clone()
+            };
+            // Blocking, and must stay that way. See the doc comment above.
+            if let Err(e) = launcher::launch_group_with_handle(&id, &config, app.clone()) {
+                crate::debug_log::write_debug_log(&format!(
+                    "STARTUP GROUPS: group {} failed: {}", id, e
+                ));
+                // Keep going — one bad group should not sink the rest.
+            }
+        }
+
+        crate::debug_log::write_debug_log("STARTUP GROUPS done");
+    });
 }
 
 #[cfg(target_os = "linux")]
@@ -2678,6 +2875,51 @@ pub fn run() {
                     tauri::async_runtime::spawn(async move {
                         open_group_color_window_inner(&app2, group_id).await;
                     });
+                } else if let Some(group_id) = id.strip_prefix("ctx-startup:") {
+                    let app2 = app.clone();
+                    let group_id = group_id.to_string();
+                    tauri::async_runtime::spawn(async move {
+                        let state = app2.state::<AppState>();
+                        let result = {
+                            let mut config = state.0.lock().unwrap();
+                            // Re-checked here even though the menu item is
+                            // disabled when unlicensed — the menu was built
+                            // from a snapshot and the license could have been
+                            // revoked in between.
+                            let allowed = license::startup_groups_allowed(
+                                &config.license_key,
+                                &config.license_instance_id,
+                            );
+                            // Resolved into a plain Result first so the mutable
+                            // borrow of `config.groups` is over before
+                            // save_config takes its shared borrow.
+                            let toggled = match config.groups.iter_mut().find(|g| g.id == group_id) {
+                                None => Err("Group not found".to_string()),
+                                Some(g) => {
+                                    let turning_on = !g.launch_at_startup;
+                                    // Turning it OFF stays allowed unlicensed,
+                                    // so a lapsed user can always clear a flag
+                                    // whose toggle they can no longer see.
+                                    if turning_on && !allowed {
+                                        Err("Launching groups at startup requires a license.".to_string())
+                                    } else {
+                                        g.launch_at_startup = turning_on;
+                                        Ok(())
+                                    }
+                                }
+                            };
+                            match toggled {
+                                Ok(()) => config::save_config(&config),
+                                Err(e) => Err(e),
+                            }
+                        };
+                        match result {
+                            Ok(()) => { let _ = app2.emit("groups-updated", ()); }
+                            Err(e) => crate::debug_log::write_debug_log(
+                                &format!("ctx-startup toggle failed: {}", e)
+                            ),
+                        }
+                    });
                 } else if let Some(group_id) = id.strip_prefix("ctx-delete:") {
                     if let Some(window) = app.get_webview_window("widget") {
                         let _ = window.emit("context-menu:delete", group_id);
@@ -2780,11 +3022,34 @@ pub fn run() {
             let handle = app.handle().clone();
             let tray_menu = build_tray_menu(&handle)?;
 
-            // Create tray icon with stable ID so we can update its menu later
+            // Create tray icon with stable ID so we can update its menu later.
+            // Left click brings the widget into view; the menu stays on right
+            // click (show_menu_on_left_click(false)), or the click handler below
+            // would never fire.
             TrayIconBuilder::with_id("main-tray")
                 .icon(tauri::include_image!("icons/32x32.png"))
                 .menu(&tray_menu)
                 .show_menu_on_left_click(false)
+                .on_tray_icon_event(|tray, event| {
+                    use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
+                    // Act on the release, not the press. Reacting to Down would
+                    // also fire at the start of a double-click and while the
+                    // user is dragging the icon within the tray.
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle().clone();
+                        // bring_widget_to_view does Win32 work (cursor monitor,
+                        // virtual-desktop move, SetForegroundWindow); keep it
+                        // off the event callback's thread.
+                        tauri::async_runtime::spawn(async move {
+                            bring_widget_to_view(&app);
+                        });
+                    }
+                })
                 .build(app)?;
 
             // Restore saved widget position, move to current VD, then show.
@@ -2848,6 +3113,9 @@ pub fn run() {
                     });
                 }
             }
+
+            // Launch any groups flagged to start with Windows.
+            run_startup_groups(app.handle().clone());
 
             // Re-register auto-start in the background (release builds only).
             // Running this on every launch ensures the registration stays
@@ -2984,6 +3252,8 @@ pub fn run() {
             get_installed_steam_games,
             send_feedback,
             get_machine_label,
+            set_group_launch_at_startup,
+            get_startup_groups,
             open_url,
             download_and_install_update,
             create_command_file,

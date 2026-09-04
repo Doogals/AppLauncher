@@ -147,24 +147,6 @@ fn is_non_launchable_appid(appid: &str) -> bool {
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn filters_steamworks_redistributables() {
-        assert!(is_non_launchable_appid("228980"));
-    }
-
-    #[test]
-    fn keeps_real_games() {
-        // Half-Life 2, Counter-Strike 2, Age of Mythology: Retold.
-        assert!(!is_non_launchable_appid("220"));
-        assert!(!is_non_launchable_appid("730"));
-        assert!(!is_non_launchable_appid("1934680"));
-    }
-}
-
 fn parse_acf(content: &str) -> Option<(String, String)> {
     let mut appid = None;
     let mut name = None;
@@ -314,9 +296,26 @@ fn base64_encode(data: &[u8]) -> String {
     out
 }
 
+// One tests module per file. There used to be a second one further up, next to
+// is_non_launchable_appid — it never tripped a build because `tauri build`
+// doesn't compile test targets, so it sat there until the first
+// `cargo check --tests`. Add new tests here.
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filters_steamworks_redistributables() {
+        assert!(is_non_launchable_appid("228980"));
+    }
+
+    #[test]
+    fn keeps_real_games() {
+        // Half-Life 2, Counter-Strike 2, Age of Mythology: Retold.
+        assert!(!is_non_launchable_appid("220"));
+        assert!(!is_non_launchable_appid("730"));
+        assert!(!is_non_launchable_appid("1934680"));
+    }
 
     #[test]
     fn test_parse_acf_extracts_appid_and_name() {
