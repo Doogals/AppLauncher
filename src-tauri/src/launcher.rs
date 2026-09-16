@@ -163,7 +163,7 @@ fn is_real_app_window(hwnd: usize) -> bool {
 // top-level windows in Z-order, so preserving its order gives a stable,
 // meaningful ranking with the most recently surfaced window first.
 #[cfg(target_os = "windows")]
-fn enumerate_candidate_windows() -> Vec<usize> {
+pub(crate) fn enumerate_candidate_windows() -> Vec<usize> {
     extern "system" {
         fn EnumWindows(callback: unsafe extern "system" fn(*mut std::ffi::c_void, isize) -> i32, data: isize) -> i32;
         fn IsWindowVisible(hwnd: *mut std::ffi::c_void) -> i32;
@@ -205,8 +205,206 @@ fn pick_best(candidates: &[usize]) -> Option<usize> {
         })
 }
 
+/// Full path of the exe backing `hwnd`, e.g. `C:\Program Files\...\Code.exe`.
+///
+/// Sibling of `exe_name_for_hwnd`, which lowercases and keeps only the filename
+/// because it exists for matching. Capture needs the real path — it is what
+/// gets launched.
+///
+/// Returns None for processes we cannot open. In practice that means elevated
+/// ones: `PROCESS_QUERY_LIMITED_INFORMATION` still fails against a higher
+/// integrity level from a medium-integrity caller. Callers should surface that
+/// as "couldn't identify" rather than silently dropping the window.
 #[cfg(target_os = "windows")]
-fn get_hwnd_pid(hwnd_usize: usize) -> u32 {
+pub(crate) fn exe_path_for_hwnd(hwnd_usize: usize) -> Option<String> {
+    extern "system" {
+        fn GetWindowThreadProcessId(hwnd: *mut std::ffi::c_void, pid: *mut u32) -> u32;
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut std::ffi::c_void;
+        fn QueryFullProcessImageNameW(process: *mut std::ffi::c_void, flags: u32, name: *mut u16, size: *mut u32) -> i32;
+        fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+    }
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    unsafe {
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd_usize as *mut _, &mut pid);
+        if pid == 0 { return None; }
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() { return None; }
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut len);
+        CloseHandle(handle);
+        if ok == 0 || len == 0 { return None; }
+        Some(String::from_utf16_lossy(&buf[..len as usize]))
+    }
+}
+
+/// AUMID (`PackageFamilyName!AppId`) of the packaged app backing `hwnd`, or
+/// None if the process isn't packaged.
+///
+/// This is what makes Store apps capturable. Their exe lives under
+/// `WindowsApps\` and cannot be launched directly — `shell:AppsFolder\<AUMID>`
+/// is the only way in — and the AUMID is not derivable from the exe path. But
+/// `GetApplicationUserModelId` hands it straight back for any packaged process,
+/// using the same handle we already open for the exe path.
+///
+/// Returns `APPMODEL_ERROR_NO_APPLICATION` (15703) for ordinary desktop apps,
+/// which is the expected, non-exceptional answer for most windows.
+#[cfg(target_os = "windows")]
+fn aumid_for_pid(pid: u32) -> Option<String> {
+    extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut std::ffi::c_void;
+        fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+        fn GetApplicationUserModelId(
+            process: *mut std::ffi::c_void,
+            length: *mut u32,
+            id: *mut u16,
+        ) -> i32;
+    }
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const ERROR_SUCCESS: i32 = 0;
+
+    if pid == 0 { return None; }
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() { return None; }
+
+        // Length is in characters INCLUDING the null terminator, and is an
+        // in/out parameter — it must start as the buffer capacity.
+        let mut len: u32 = 512;
+        let mut buf = vec![0u16; len as usize];
+        let rc = GetApplicationUserModelId(handle, &mut len, buf.as_mut_ptr());
+        CloseHandle(handle);
+
+        if rc != ERROR_SUCCESS { return None; }
+        let end = buf.iter().position(|&c| c == 0).unwrap_or(0);
+        if end == 0 { return None; }
+        Some(String::from_utf16_lossy(&buf[..end]))
+    }
+}
+
+/// Child windows of `hwnd`, direct and nested.
+#[cfg(target_os = "windows")]
+fn child_windows(hwnd_usize: usize) -> Vec<usize> {
+    extern "system" {
+        fn EnumChildWindows(
+            parent: *mut std::ffi::c_void,
+            callback: unsafe extern "system" fn(*mut std::ffi::c_void, isize) -> i32,
+            data: isize,
+        ) -> i32;
+    }
+    unsafe extern "system" fn cb(hwnd: *mut std::ffi::c_void, data: isize) -> i32 {
+        let list = &mut *(data as *mut Vec<usize>);
+        list.push(hwnd as usize);
+        1
+    }
+    let mut list: Vec<usize> = Vec::new();
+    unsafe { EnumChildWindows(hwnd_usize as *mut _, cb, &mut list as *mut _ as isize); }
+    list
+}
+
+/// AUMID (`PackageFamilyName!AppId`) of the packaged app backing `hwnd`, or
+/// None if nothing packaged is behind it.
+///
+/// This is what makes Store apps capturable. Their exe lives under
+/// `WindowsApps\` and cannot be launched directly — `shell:AppsFolder\<AUMID>`
+/// is the only way in — and the AUMID is not derivable from the exe path.
+///
+/// Two cases, because Windows hosts UWP windows two different ways:
+///
+/// 1. **The app owns its own window** (Windows Terminal, Claude, most modern
+///    MSIX apps). Asking its own process is enough.
+/// 2. **`ApplicationFrameHost.exe` owns the window** (Calculator, Photos,
+///    Settings — the older UWP model). The frame host is not packaged, so
+///    asking it returns nothing. The real app lives in a child `CoreWindow`
+///    belonging to a *different* process, so we walk the children for a
+///    foreign PID and ask that one instead. No COM required, unlike the
+///    `SHGetPropertyStoreForWindow` route to the same answer.
+#[cfg(target_os = "windows")]
+pub(crate) fn aumid_for_hwnd(hwnd_usize: usize) -> Option<String> {
+    let own_pid = get_hwnd_pid(hwnd_usize);
+    if let Some(aumid) = aumid_for_pid(own_pid) {
+        return aumid.into();
+    }
+
+    for child in child_windows(hwnd_usize) {
+        let child_pid = get_hwnd_pid(child);
+        // Same PID means it is just a control on the same window — only a
+        // different process can be the hosted app.
+        if child_pid == 0 || child_pid == own_pid {
+            continue;
+        }
+        if let Some(aumid) = aumid_for_pid(child_pid) {
+            return Some(aumid);
+        }
+    }
+    None
+}
+
+/// Window title, or None if it has none.
+#[cfg(target_os = "windows")]
+pub(crate) fn window_title(hwnd_usize: usize) -> Option<String> {
+    extern "system" {
+        fn GetWindowTextW(hwnd: *mut std::ffi::c_void, text: *mut u16, max: i32) -> i32;
+    }
+    unsafe {
+        let mut buf = [0u16; 512];
+        let n = GetWindowTextW(hwnd_usize as *mut _, buf.as_mut_ptr(), buf.len() as i32);
+        if n <= 0 { return None; }
+        Some(String::from_utf16_lossy(&buf[..n as usize]))
+    }
+}
+
+/// Restored position and size as `(x, y, width, height)` in physical pixels.
+///
+/// **Uses `GetWindowPlacement`, not `GetWindowRect`, and that matters.** A
+/// minimized window's `GetWindowRect` reports roughly `-32000, -32000`; saving
+/// that as an item's launch position would park it permanently off-screen.
+/// `rcNormalPosition` is the restored rect, which is the arrangement the user
+/// actually means to capture.
+///
+/// Note `rcNormalPosition` is in workspace coordinates, which differ from screen
+/// coordinates only when the taskbar is on the top or left edge of the primary
+/// monitor. Accepted: the layout editor lets anyone nudge a window afterwards.
+#[cfg(target_os = "windows")]
+pub(crate) fn window_placement(hwnd_usize: usize) -> Option<(i32, i32, u32, u32)> {
+    #[repr(C)]
+    struct Point { x: i32, y: i32 }
+    #[repr(C)]
+    struct Rect { left: i32, top: i32, right: i32, bottom: i32 }
+    #[repr(C)]
+    struct WindowPlacement {
+        length: u32,
+        flags: u32,
+        show_cmd: u32,
+        min_position: Point,
+        max_position: Point,
+        normal_position: Rect,
+    }
+    extern "system" {
+        fn GetWindowPlacement(hwnd: *mut std::ffi::c_void, wp: *mut WindowPlacement) -> i32;
+    }
+    unsafe {
+        let mut wp = WindowPlacement {
+            length: std::mem::size_of::<WindowPlacement>() as u32,
+            flags: 0,
+            show_cmd: 0,
+            min_position: Point { x: 0, y: 0 },
+            max_position: Point { x: 0, y: 0 },
+            normal_position: Rect { left: 0, top: 0, right: 0, bottom: 0 },
+        };
+        if GetWindowPlacement(hwnd_usize as *mut _, &mut wp) == 0 {
+            return None;
+        }
+        let r = &wp.normal_position;
+        let (w, h) = (r.right - r.left, r.bottom - r.top);
+        if w <= 0 || h <= 0 { return None; }
+        Some((r.left, r.top, w as u32, h as u32))
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn get_hwnd_pid(hwnd_usize: usize) -> u32 {
     extern "system" {
         fn GetWindowThreadProcessId(hwnd: *mut std::ffi::c_void, pid: *mut u32) -> u32;
     }

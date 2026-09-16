@@ -512,6 +512,26 @@ html, body {
   overflow: hidden;
 }
 
+/* Capture sits to the RIGHT of Add Item, on the same row. It lives outside
+   #add-item-buttons because renderAddButtons() rebuilds that container's
+   contents on every render and would wipe it. */
+#add-item-area {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+#add-item-buttons { flex: 1; min-width: 0; }
+
+/* Sized to its label. Padding and line-height match .add-item-btn so the two
+   sit level on the same row. */
+#capture-btn {
+  flex-shrink: 0;
+  padding: 8px 14px;
+  font-size: 0.9rem;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
 /* ── Launch at startup (paid feature) ─────────────────────────────────────── */
 /* One line: checkbox, label, and status all inline. Wraps only if the window
    is narrow enough that it genuinely cannot fit. */
@@ -1398,13 +1418,23 @@ html, body {
 /* Build version, bottom of the Settings tab. Intentionally low-contrast: it
    exists for bug reports, not for reading every day. Selectable so it can be
    copied into a support message. */
+/* Clicking it opens this version's What's New notes, so the whole element is a
+   link. It used to be selectable text (so it could be copied into a bug
+   report), and that user-select: text is exactly what kept showing an I-beam
+   over something clickable — the version is repeated in the What's New window
+   itself, so nothing is lost by making it non-selectable here. */
 .app-version {
   margin: 18px 0 0;
   text-align: center;
   font-size: 0.68rem;
   color: rgba(255, 255, 255, 0.22);
   letter-spacing: 0.02em;
-  user-select: text;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
   transition: color 0.15s;
 }
-.app-version:hover { color: rgba(255, 255, 255, 0.45); }
+.app-version:hover {
+  color: #1b9fdb;
+  text-decoration: underline;
+}

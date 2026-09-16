@@ -3,6 +3,7 @@ mod launcher;
 mod license;
 mod machine_id;
 mod apps;
+mod capture;
 mod browsers;
 mod icons;
 mod steam;
@@ -422,6 +423,147 @@ fn open_add_item_window(app: tauri::AppHandle, target: Option<String>) {
             center_on_widget_monitor(&app2, &win, 340.0, 430.0);
         }
     });
+}
+
+/// Which What's New entry, if any, this launch should show.
+///
+/// Returns the key into `whats-new.json`: `"welcome"` for a first run, the
+/// version string after an update, `None` when nothing has changed.
+///
+/// Called for its SIDE EFFECT as well as its answer — it records the running
+/// version, so the window appears exactly once per version no matter how many
+/// times the app is started.
+fn whats_new_entry_for_launch(state: &AppState) -> Option<String> {
+    let current = env!("CARGO_PKG_VERSION").to_string();
+
+    let mut config = state.0.lock().unwrap();
+    let previous = config.last_seen_version.clone();
+
+    if previous.as_deref() == Some(current.as_str()) {
+        return None;
+    }
+
+    // No stored version means one of two things, and they need opposite
+    // treatment: a genuinely new install, or an upgrade from a build that
+    // predates this field (0.6.4 and earlier — i.e. every existing user, once).
+    //
+    // Having no groups is what separates them. A first-run config has none;
+    // anyone who has actually used TakeOff has at least one, since the free
+    // tier still allows a single group. Someone who deleted all their groups
+    // gets a welcome screen, which is a harmless way to be wrong.
+    let looks_like_first_run = config.groups.is_empty();
+
+    config.last_seen_version = Some(current.clone());
+    // Recorded before the window is shown, deliberately. If saving failed and
+    // we showed it anyway, it would reappear on every single launch — far more
+    // annoying than missing it once.
+    if let Err(e) = config::save_config(&config) {
+        crate::debug_log::write_debug_log(&format!(
+            "WHATS NEW: could not record version ({}), skipping to avoid a loop", e
+        ));
+        return None;
+    }
+
+    match previous {
+        None if looks_like_first_run => Some("welcome".to_string()),
+        _ => Some(current),
+    }
+}
+
+/// Shows the What's New window for `entry` (a key in `whats-new.json`).
+///
+/// Normally reached after `app.restart()` from the in-app updater, where the
+/// desktop is quiet — so it is NOT pinned on top. The exception is a manual MSI
+/// install followed by a reboot: that launch carries `--autostart`, startup
+/// groups may be about to open a dozen windows, and an unpinned notice would be
+/// buried before it was ever read.
+fn open_whats_new_window(app: tauri::AppHandle, entry: String) {
+    const W: f64 = 560.0;
+    const H: f64 = 520.0;
+
+    tauri::async_runtime::spawn(async move {
+        if let Some(existing) = app.get_webview_window("whats-new") {
+            let _ = existing.set_focus();
+            return;
+        }
+        let url = format!("whats-new.html?entry={}", percent_encode(&entry));
+        if let Ok(win) = tauri::WebviewWindowBuilder::new(
+            &app,
+            "whats-new",
+            tauri::WebviewUrl::App(url.into()),
+        )
+        .title("What's New in TakeOff")
+        .inner_size(W, H)
+        .min_inner_size(440.0, 360.0)
+        .resizable(true)
+        .decorations(true)
+        .always_on_top(launched_by_autostart())
+        .focused(true)
+        .build()
+        {
+            center_on_widget_monitor(&app, &win, W, H);
+            let _ = win.set_focus();
+        }
+    });
+}
+
+/// Scans every open window and returns what could become group items.
+///
+/// Read-only — nothing is written until the user confirms in the capture
+/// preview and then saves the group.
+#[tauri::command]
+async fn capture_current_windows() -> Vec<capture::CapturedWindow> {
+    // Enumerating windows and opening a process handle each is enough Win32
+    // work to be worth keeping off the UI thread.
+    tauri::async_runtime::spawn_blocking(capture::capture_open_windows)
+        .await
+        .unwrap_or_default()
+}
+
+/// Opens the capture preview. Its own window, following add-item: the config
+/// window rebuilds its item list constantly, so anything parented into that
+/// list gets destroyed on the next render.
+#[tauri::command]
+fn open_capture_window(app: tauri::AppHandle) {
+    const W: f64 = 560.0;
+    const H: f64 = 560.0;
+    tauri::async_runtime::spawn(async move {
+        if let Some(existing) = app.get_webview_window("capture") {
+            let _ = existing.set_focus();
+            return;
+        }
+        if let Ok(win) = tauri::WebviewWindowBuilder::new(
+            &app,
+            "capture",
+            tauri::WebviewUrl::App("capture.html".into()),
+        )
+        .title("Capture Current Windows")
+        .inner_size(W, H)
+        .min_inner_size(440.0, 380.0)
+        .resizable(true)
+        .decorations(true)
+        // On top of the group editor, which is not on top of anything since
+        // 0.6.4 — without this the preview can end up behind its own parent.
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .build()
+        {
+            center_on_widget_monitor(&app, &win, W, H);
+            let _ = win.set_focus();
+        }
+    });
+}
+
+/// Reopens the current version's notes on demand, from the version number in
+/// Settings.
+///
+/// Bypasses `whats_new_entry_for_launch` entirely: that function is about
+/// showing the notes exactly once and it rewrites `last_seen_version` as a side
+/// effect. Asking to see them again should neither be rationed nor change
+/// anything on disk.
+#[tauri::command]
+fn show_whats_new(app: tauri::AppHandle) {
+    open_whats_new_window(app, env!("CARGO_PKG_VERSION").to_string());
 }
 
 /// Opens a small centered window where the user picks which group to keep
@@ -2770,8 +2912,23 @@ pub fn run() {
         // "Global\" rather than "Local\": the Local namespace is per-logon
         // session, so an elevated instance and a normal one could each hold
         // their own copy and both run. Global covers the whole machine.
-        let mutex_name: Vec<u16> = "Global\\TakeOffSingleInstance\0"
-            .encode_utf16().collect();
+        // Debug builds get their OWN name so `npm run tauri dev` is not blocked
+        // by an installed TakeOff that is already running — which it usually is,
+        // since it launches at startup. Without this the dev build exits
+        // immediately, hands focus to the installed app, and every frontend
+        // change appears to do nothing because you are looking at the release
+        // build. Dev instances still single-instance among themselves.
+        //
+        // NOTE: both share %LOCALAPPDATA%\TakeOff\config.json, and neither
+        // re-reads it after startup, so running dev alongside the installed app
+        // can still have them overwrite each other's config. Quit the installed
+        // one before doing anything that saves.
+        let name = if cfg!(debug_assertions) {
+            "Global\\TakeOffSingleInstance-dev\0"
+        } else {
+            "Global\\TakeOffSingleInstance\0"
+        };
+        let mutex_name: Vec<u16> = name.encode_utf16().collect();
 
         // CreateMutex returns a valid handle even when the mutex already
         // exists, so GetLastError is what distinguishes the two cases. Read
@@ -3114,6 +3271,20 @@ pub fn run() {
                 }
             }
 
+            // Show What's New if the version changed since the last launch.
+            // Before run_startup_groups so the window exists first and any
+            // apps that batch opens come up behind it rather than over an
+            // empty gap. Records the version even when it decides not to show.
+            {
+                let entry = {
+                    let state = app.state::<AppState>();
+                    whats_new_entry_for_launch(&state)
+                };
+                if let Some(entry) = entry {
+                    open_whats_new_window(app.handle().clone(), entry);
+                }
+            }
+
             // Launch any groups flagged to start with Windows.
             run_startup_groups(app.handle().clone());
 
@@ -3254,6 +3425,9 @@ pub fn run() {
             get_machine_label,
             set_group_launch_at_startup,
             get_startup_groups,
+            show_whats_new,
+            capture_current_windows,
+            open_capture_window,
             open_url,
             download_and_install_update,
             create_command_file,

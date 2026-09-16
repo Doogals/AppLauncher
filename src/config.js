@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { listen, emitTo } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
@@ -1383,9 +1383,20 @@ async function initSettingsTab() {
 
   // Build version at the foot of the tab. Sourced from the binary itself
   // (CARGO_PKG_VERSION) rather than anything in config, so it can't drift.
+  const versionEl = document.getElementById('app-version');
+
+  // Wired synchronously, and the class/title live in the HTML. Both used to be
+  // applied inside the get_app_version promise below, which meant the element
+  // was inert until that resolved — and never became clickable at all if the
+  // call failed.
+  if (versionEl) {
+    versionEl.addEventListener('click', () => {
+      invoke('show_whats_new').catch(console.error);
+    });
+  }
+
   invoke('get_app_version').then(v => {
-    const el = document.getElementById('app-version');
-    if (el) el.textContent = `TakeOff v${v}`;
+    if (versionEl) versionEl.textContent = `TakeOff v${v}`;
   }).catch(() => {});
 
   // Widget color picking moved to its own window (same tabbed picker the
@@ -2352,6 +2363,65 @@ listen('add-item-type', ({ payload }) => {
 // Cancelled — drop the pending desktop so it can't be applied to some later,
 // unrelated add.
 listen('add-item-cancel', () => { pendingAdd = null; });
+
+// ── Capture Current ─────────────────────────────────────────────────────────
+// The scan and the preview live in capture.html; the chosen windows come back
+// here and join currentItems like any other add path, so nothing is written
+// until the group is saved.
+
+document.getElementById('capture-btn').addEventListener('click', () => {
+  invoke('open_capture_window').catch(console.error);
+});
+
+// The preview asks for this on load so it can flag windows already in the group.
+// Answered on request rather than pushed, so a Rescan always compares against
+// the list as it stands now, not as it stood when the window opened.
+listen('capture-window-ready', () => {
+  const paths = currentItems.map(i => i.path).filter(Boolean);
+  emitTo('capture', 'capture-existing-paths', { paths }).catch(() => {});
+});
+
+listen('capture-add-items', async ({ payload }) => {
+  const captured = payload?.items || [];
+  if (!captured.length) return;
+
+  const added = [];
+  captured.forEach(win => {
+    added.push({
+      item_type: win.kind === 'uwp' ? 'uwp' : 'app',
+      path: win.path,
+      value: null,
+      display_name: win.display_name,
+      icon_data: null,
+      // Position and virtual desktop are the point of capturing rather than
+      // adding by hand — carried straight through to the item.
+      launch_virtual_desktop: win.launch_virtual_desktop ?? null,
+      launch_desktop_index: null,
+      launch_x: win.launch_x ?? null,
+      launch_y: win.launch_y ?? null,
+      launch_width: win.launch_width ?? null,
+      launch_height: win.launch_height ?? null,
+    });
+  });
+
+  currentItems.push(...added);
+  // Render first so the rows appear immediately, then fill icons in — one
+  // Win32 round-trip per item, and without this captured items would keep the
+  // placeholder emoji forever while every other add path shows a real icon.
+  renderItems();
+  fitWindow();
+
+  let gotAny = false;
+  for (const item of added) {
+    // An AUMID is not a file, so get_file_icon can do nothing with a uwp item.
+    if (item.item_type !== 'app' || !item.path) continue;
+    try {
+      const data = await invoke('get_file_icon', { path: item.path });
+      if (data) { item.icon_data = data; gotAny = true; }
+    } catch { /* keep the placeholder */ }
+  }
+  if (gotAny) renderItems();
+});
 
 // One add button, belonging to a single group. Rendered INSIDE the items list
 // at the end of that group's section, so the button sits exactly where the new

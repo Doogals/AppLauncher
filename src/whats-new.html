@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>What's New</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #1a1a2e;
+      color: #e0e0e0;
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 14px;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    header {
+      flex-shrink: 0;
+      padding: 22px 26px 14px;
+      border-bottom: 1px solid #0f3460;
+    }
+    h1 {
+      font-size: 17px;
+      font-weight: 600;
+      color: #fff;
+      line-height: 1.3;
+    }
+    .subtitle {
+      margin-top: 6px;
+      font-size: 12.5px;
+      color: #9a9ab0;
+      line-height: 1.5;
+    }
+
+    /* The only scrolling region — the heading and the button stay put, so a
+       long changelog never pushes Continue off the bottom of the window. */
+    main {
+      flex: 1;
+      overflow-y: auto;
+      padding: 18px 26px 6px;
+    }
+    main::-webkit-scrollbar { width: 9px; }
+    main::-webkit-scrollbar-thumb {
+      background: #0f3460;
+      border-radius: 5px;
+    }
+    main::-webkit-scrollbar-thumb:hover { background: #1a4a7a; }
+
+    .section { margin-bottom: 20px; }
+    .section:last-child { margin-bottom: 8px; }
+    .section-heading {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: #1b9fdb;
+      margin-bottom: 9px;
+    }
+    ul { list-style: none; }
+    li {
+      position: relative;
+      padding-left: 17px;
+      margin-bottom: 8px;
+      font-size: 13px;
+      line-height: 1.55;
+      color: #d4d4e4;
+    }
+    li::before {
+      content: '';
+      position: absolute;
+      left: 3px;
+      top: 8px;
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: #e94560;
+    }
+    li:last-child { margin-bottom: 0; }
+
+    .empty {
+      font-size: 13px;
+      color: #8a8aa0;
+      line-height: 1.6;
+    }
+
+    footer {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 26px 18px;
+      border-top: 1px solid #0f3460;
+    }
+    .version {
+      flex: 1;
+      font-size: 11.5px;
+      color: #6f6f88;
+    }
+    #close-btn {
+      padding: 9px 26px;
+      background: #e94560;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.12s;
+    }
+    #close-btn:hover { background: #c73652; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 id="title">What's New</h1>
+    <p class="subtitle" id="subtitle" style="display:none"></p>
+  </header>
+  <main id="content"></main>
+  <footer>
+    <span class="version" id="version"></span>
+    <button id="close-btn">Continue</button>
+  </footer>
+  <script type="module" src="whats-new.js"></script>
+</body>
+</html>

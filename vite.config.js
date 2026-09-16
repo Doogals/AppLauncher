@@ -24,6 +24,8 @@ export default defineConfig({
         detachedGroup: resolve(__dirname, 'src/detached-group.html'),
         groupPicker: resolve(__dirname, 'src/group-picker.html'),
         addItem: resolve(__dirname, 'src/add-item.html'),
+        whatsNew: resolve(__dirname, 'src/whats-new.html'),
+        capture: resolve(__dirname, 'src/capture.html'),
       },
     },
   },

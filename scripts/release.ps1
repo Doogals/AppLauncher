@@ -15,7 +15,7 @@
 #>
 
 param(
-    [string]$Version = "0.6.4",
+    [string]$Version = "0.6.5",
     [string]$KeyPath = "$HOME\.tauri\applauncher.key",
     [string]$WebsiteRepo = "C:\Users\dougb\Desktop\tonic-tech-site",
     [string]$GitHubRepo = "Doogals/AppLauncher",
@@ -463,30 +463,32 @@ $finalMsiName = "TakeOff_${Version}_x64_en-US.msi"
 $releaseAsset = Join-Path $RepoRoot $finalMsiName
 Copy-Item $signTarget $releaseAsset -Force
 
-$notes = @"
-**Launch order and virtual desktops**
-- Items in the group editor are now grouped by the virtual desktop they launch on, so the list shows the real launch order instead of hiding it.
-- Drag items to reorder them, and drag a desktop heading to change which desktop launches first. Dragging an item into another desktop's section moves it to that desktop.
-- Every item now has Desktop and Screen dropdowns, so you no longer need to open Edit Layout just to change where something opens.
+# Release notes come from src\whats-new.json -- the SAME file the app's What's
+# New window reads -- so the two can never disagree.
+#
+# This used to be a hardcoded here-string, and it went stale without anyone
+# noticing: 0.6.3 and 0.6.4 both shipped to GitHub carrying 0.6.2's notes,
+# because nothing ever read it back. Hence the hard failure below rather than a
+# warning -- a missing entry stops the release instead of silently publishing
+# the wrong text again.
+$notesJsonPath = Join-Path $RepoRoot "src\whats-new.json"
+if (-not (Test-Path $notesJsonPath)) {
+    throw "Release notes file not found at $notesJsonPath"
+}
+$notesJson = Get-Content $notesJsonPath -Raw | ConvertFrom-Json
+$notesEntry = $notesJson.$Version
+if (-not $notesEntry) {
+    throw "No entry for version $Version in src\whats-new.json. Add one (this is also what the app's What's New window shows), then re-run."
+}
 
-**Adding items**
-- Add Item is now its own window rather than a menu inside the group editor.
-- When your items span several desktops you get an Add button for each one, so a new item goes straight into the right section.
-- Steamworks Common Redistributables no longer appears in the Steam list. It is not a game and could not be launched.
-
-**Fixes**
-- Drag-and-drop in the group editor never actually worked; Tauri's own file-drop handler was swallowing the events.
-- A virtual desktop switch that timed out was recorded as successful, which threw off every later switch in the same launch and scattered windows across the wrong desktops.
-- Creating a missing desktop then immediately switching away from it.
-- Editing a URL item's bookmarks silently cleared its desktop assignment.
-- Edit Layout could not be reopened while a layout window was still open on another desktop.
-- Layout editor windows opened at a fixed size that was far too small on scaled displays; they now size to your monitor and show the app name rather than its full path.
-- Bookmarks: a Clear All button, press Enter to add several custom URLs or IP addresses, and Just Open Browser is available when editing.
-
-**Appearance**
-- The launcher bar and floating groups no longer have a drop shadow, and the bar's rounded corners are back.
-- The group editor window is twice as wide, with more room for each item.
-"@
+$notesLines = @()
+foreach ($section in $notesEntry.sections) {
+    if ($section.heading) { $notesLines += "**$($section.heading)**" }
+    foreach ($item in $section.items) { $notesLines += "- $item" }
+    $notesLines += ""
+}
+$notes = ($notesLines -join "`n").TrimEnd()
+Write-Host "Release notes loaded from whats-new.json ($($notesEntry.sections.Count) section(s))."
 
 # --notes-file instead of --notes $notes -- same reasoning as the commit
 # message above: the embedded "quotes" in the text broke PowerShell's

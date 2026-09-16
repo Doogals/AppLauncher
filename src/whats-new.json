@@ -1,0 +1,92 @@
+{
+  "_comment": "Single source of truth for release notes. The What's New window reads the entry matching the running version, and scripts/release.ps1 reads the same entry for the GitHub release body. Keep both fed by adding one entry per release BEFORE running release.ps1 — the script refuses to release a version with no entry here, which is what stops the notes silently going stale the way the old hardcoded heredoc did.",
+
+  "welcome": {
+    "title": "Welcome to TakeOff",
+    "subtitle": "Open everything you need, exactly where you want it, in one click.",
+    "sections": [
+      {
+        "heading": "Getting started",
+        "items": [
+          "Click the + on the launcher bar to make your first group.",
+          "Add apps, files, folders, websites and Steam games to it.",
+          "Click the group to launch everything in it at once."
+        ]
+      },
+      {
+        "heading": "Worth knowing",
+        "items": [
+          "Every item can open on a specific monitor and virtual desktop — set it with the Desktop and Screen dropdowns, or drag windows where you want them with Edit Layout.",
+          "Items launch top to bottom; drag them to change the order.",
+          "Right-click the launcher bar for settings, or press Ctrl+Alt+Space to summon it from anywhere."
+        ]
+      }
+    ]
+  },
+
+  "0.6.5": {
+    "title": "What's New in TakeOff 0.6.5",
+    "sections": [
+      {
+        "heading": "Capture Current",
+        "items": [
+          "Build a group from the windows you already have open. Arrange things how you like them, then press Capture Current in the group editor.",
+          "It records each window's monitor, position, size and virtual desktop — so launching the group puts everything back exactly where it was.",
+          "You get a preview first, with everything ticked, so you can leave out anything you don't want.",
+          "Windows you've already added are flagged, so capturing twice won't duplicate them.",
+          "Browser tabs aren't included — add those with the bookmark picker as usual."
+        ]
+      },
+      {
+        "heading": "What's New",
+        "items": [
+          "This window. After an update, TakeOff shows you what changed.",
+          "Click the version number at the bottom of Settings to read it again any time."
+        ]
+      }
+    ]
+  },
+
+  "0.6.4": {
+    "title": "What's New in TakeOff 0.6.4",
+    "sections": [
+      {
+        "heading": "Launch groups when Windows starts",
+        "items": [
+          "Any group can now open automatically when Windows starts. Turn it on in the group editor, or right-click a group on the launcher bar.",
+          "Groups launch one at a time, in the order they appear on the bar — drag them to change it.",
+          "Hold Shift while Windows is starting to skip the launch entirely.",
+          "Requires a license."
+        ]
+      },
+      {
+        "heading": "Improvements",
+        "items": [
+          "Left-click the TakeOff icon in the system tray to bring the launcher bar back into view.",
+          "The group editor and settings windows no longer stay on top of everything else, so clicking another window now brings it forward properly.",
+          "Bigger, clearer icons and text throughout the item and app lists."
+        ]
+      },
+      {
+        "heading": "Fixes",
+        "items": [
+          "Fixed launching items onto specific virtual desktops on Windows 10, which previously opened them on whichever desktop you were already on."
+        ]
+      }
+    ]
+  },
+
+  "0.6.3": {
+    "title": "What's New in TakeOff 0.6.3",
+    "sections": [
+      {
+        "heading": "Fixes",
+        "items": [
+          "Windows apps now show their real icons instead of a generic placeholder.",
+          "Steam games show their icons again.",
+          "Feedback now reaches us with the details we need to actually reproduce a problem — and you can include your setup and an email address if you'd like a reply."
+        ]
+      }
+    ]
+  }
+}

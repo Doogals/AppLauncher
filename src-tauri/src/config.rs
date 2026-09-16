@@ -181,6 +181,14 @@ pub struct AppConfig {
     /// background so the bar appears instantly on subsequent opens.
     #[serde(default)]
     pub cached_suggestions: Vec<InstalledApp>,
+    /// Version that last showed its What's New window.
+    ///
+    /// `None` means this config predates the field — either a genuinely fresh
+    /// install, or an upgrade from 0.6.4 or earlier. Those two are
+    /// indistinguishable, so both get the welcome screen rather than a
+    /// changelog for a version they may never have run.
+    #[serde(default)]
+    pub last_seen_version: Option<String>,
 }
 
 fn default_hotkey() -> String { "Ctrl+Alt+Space".to_string() }
@@ -202,6 +210,7 @@ impl Default for AppConfig {
             hotkey: default_hotkey(),
             low_profile: false,
             cached_suggestions: vec![],
+            last_seen_version: None,
         }
     }
 }
