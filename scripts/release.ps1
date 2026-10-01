@@ -102,6 +102,20 @@ function Invoke-CodeSignTool($toolPath, [string[]]$arguments) {
     }
     $cmdLine = '"{0}" {1}' -f $toolPath, ($quoted -join ' ')
 
+    # Trust the WINDOWS certificate store, not the bundled JDK's cacerts.
+    # CodeSignTool ships Java 11.0.2 (2019), whose cacerts has no SSL.com roots
+    # at all. When SSL.com moved login/cs.ssl.com onto "SSL.com TLS RSA Root CA
+    # 2022" (Sept 2026), every call failed with "PKIX path building failed".
+    # Downloading CodeSignTool again does not help -- the current package is the
+    # same 1.3.3 with a byte-identical cacerts. Windows-ROOT is kept current by
+    # Windows Update, so this survives SSL.com's future rotations too.
+    $prevJto = $env:JAVA_TOOL_OPTIONS
+    $env:JAVA_TOOL_OPTIONS = "-Djavax.net.ssl.trustStoreType=Windows-ROOT"
+    # Java announces JAVA_TOOL_OPTIONS on stderr, and under the script-wide
+    # ErrorActionPreference=Stop, PowerShell 5.1 turns any native stderr line
+    # into a terminating error -- even on success. The exit code is what
+    # decides success here, so stderr is just output.
+    $ErrorActionPreference = "Continue"
     Push-Location $dir
     try {
         # Out-Host, NOT a bare call. A PowerShell function returns everything
@@ -113,6 +127,7 @@ function Invoke-CodeSignTool($toolPath, [string[]]$arguments) {
         return $LASTEXITCODE
     } finally {
         Pop-Location
+        $env:JAVA_TOOL_OPTIONS = $prevJto
     }
 }
 
