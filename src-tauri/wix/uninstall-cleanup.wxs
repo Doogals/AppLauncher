@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MSI counterpart of NSIS_HOOK_POSTUNINSTALL in preinstall.nsh: removes the
+  logon task and Run value so an uninstall leaves nothing that tries to start
+  a missing exe at every sign-in.
+
+  Skipped during an upgrade (UPGRADINGPRODUCTCODE is set while the old version
+  is removed) - the updater installs MSIs, and the new version re-registers on
+  its first launch anyway.
+
+  Impersonate="yes" because the task and Run value belong to the user, not to
+  SYSTEM. Return="ignore" because nothing being there is the normal case.
+
+  Linked in through the empty ComponentGroup, which tauri.conf.json references.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <ComponentGroup Id="TakeOffUninstallCleanup" />
+
+    <CustomAction Id="TakeOffRemoveAutostart"
+                  Directory="INSTALLDIR"
+                  Execute="deferred"
+                  Impersonate="yes"
+                  Return="ignore"
+                  ExeCommand="cmd.exe /c schtasks /Delete /F /TN TakeOffAutostart &amp; schtasks /Delete /F /TN TakeOff &amp; reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v TakeOff /f" />
+
+    <InstallExecuteSequence>
+      <Custom Action="TakeOffRemoveAutostart" Before="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+    </InstallExecuteSequence>
+  </Fragment>
+</Wix>

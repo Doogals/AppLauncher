@@ -24,6 +24,26 @@
     ]
   },
 
+  "0.6.6": {
+    "title": "What's New in TakeOff 0.6.6",
+    "sections": [
+      {
+        "heading": "Faster at startup",
+        "items": [
+          "TakeOff now starts right as your desktop appears, instead of up to a minute later. Startup groups launch sooner too.",
+          "Nothing to set up — it switches over the first time this version runs."
+        ]
+      },
+      {
+        "heading": "Fixes",
+        "items": [
+          "Uninstalling TakeOff now fully removes it from startup.",
+          "The installer now closes a running TakeOff before updating it."
+        ]
+      }
+    ]
+  },
+
   "0.6.5": {
     "title": "What's New in TakeOff 0.6.5",
     "sections": [

@@ -43,7 +43,7 @@ async fn download_and_install_update(app: tauri::AppHandle) -> Result<(), String
 // Update this URL after deploying the Cloudflare Worker
 const WORKER_URL: &str = "https://app-launcher-proxy.dougbreaultjr.workers.dev";
 
-/// Appended to the HKCU Run command by `register_autostart`, and the only
+/// Appended to the autostart command by `register_autostart`, and the only
 /// signal that Windows — rather than the user — started this process.
 const AUTOSTART_FLAG: &str = "--autostart";
 
@@ -2424,15 +2424,46 @@ fn show_widget_context_menu(app: tauri::AppHandle, state: State<AppState>) -> Re
     }).map_err(|e| e.to_string())
 }
 
+/// The Task Scheduler task that starts TakeOff at logon.
+///
+/// Deliberately NOT "TakeOff": that name belongs to the 0.5.8 task, which
+/// `delete_task(LEGACY_AUTOSTART_TASK)` removes on every launch. Reusing it
+/// would have the cleanup delete the task it had just created.
 #[cfg(target_os = "windows")]
-fn deregister_autostart() {
+const AUTOSTART_TASK: &str = "TakeOffAutostart";
+
+/// The 0.5.8-era task, created with `/SC ONLOGON`. Still deleted everywhere.
+#[cfg(target_os = "windows")]
+const LEGACY_AUTOSTART_TASK: &str = "TakeOff";
+
+/// The HKCU Run value used by 0.5.9–0.6.5, and still the fallback when the
+/// scheduled task cannot be created.
+#[cfg(target_os = "windows")]
+const RUN_VALUE: &str = "TakeOff";
+
+#[cfg(target_os = "windows")]
+fn schtasks(args: &[&str]) -> bool {
     use std::os::windows::process::CommandExt;
+    std::process::Command::new("schtasks")
+        .args(args)
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "windows")]
+fn delete_task(name: &str) {
+    let _ = schtasks(&["/Delete", "/F", "/TN", name]);
+}
+
+#[cfg(target_os = "windows")]
+fn delete_run_value() {
     use windows::core::HSTRING;
     use windows::Win32::System::Registry::{RegOpenKeyExW, RegDeleteValueW, RegCloseKey, HKEY, HKEY_CURRENT_USER, KEY_WRITE};
 
-    // Remove the Run-key entry (current mechanism).
-    let key_path  = HSTRING::from("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-    let value_name = HSTRING::from("TakeOff");
+    let key_path   = HSTRING::from("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
+    let value_name = HSTRING::from(RUN_VALUE);
     unsafe {
         let mut hkey = HKEY::default();
         if RegOpenKeyExW(HKEY_CURRENT_USER, &key_path, 0, KEY_WRITE, &mut hkey).is_ok() {
@@ -2440,13 +2471,79 @@ fn deregister_autostart() {
             let _ = RegCloseKey(hkey);
         }
     }
+}
 
-    // Also remove any Task Scheduler task left over from older versions
-    // (v0.5.8 used Task Scheduler; v0.5.9+ uses the Run key instead).
-    let _ = std::process::Command::new("schtasks")
-        .args(["/Delete", "/F", "/TN", "TakeOff"])
-        .creation_flags(0x08000000) // CREATE_NO_WINDOW
-        .output();
+#[cfg(target_os = "windows")]
+fn deregister_autostart() {
+    delete_run_value();
+    delete_task(AUTOSTART_TASK);
+    delete_task(LEGACY_AUTOSTART_TASK);
+}
+
+#[cfg(target_os = "windows")]
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+/// Registers `AUTOSTART_TASK` with a logon trigger scoped to the current user.
+/// Returns false on any failure so the caller can fall back to the Run key.
+///
+/// Measured 2026-09-30 (docs/superpowers/plans/2026-09-30-startup-delay-investigation.md):
+/// the Run key started us 56s after the desktop appeared, this task started us
+/// alongside Explorer (-0.7s, -0.5s across two boots).
+///
+/// **The trigger MUST name the user.** `schtasks /SC ONLOGON` creates an
+/// any-user trigger, which needs admin and fails with "Access is denied" for a
+/// normal user. A `<LogonTrigger>` carrying `<UserId>` registers fine without
+/// elevation — which is why this goes through `/XML` rather than plain args.
+///
+/// `<Priority>5</Priority>` is normal priority. The Task Scheduler default is 7,
+/// which runs the whole process at below-normal CPU priority for its lifetime.
+#[cfg(target_os = "windows")]
+fn register_logon_task(exe: &str) -> bool {
+    let (Ok(domain), Ok(name)) = (std::env::var("USERDOMAIN"), std::env::var("USERNAME")) else {
+        crate::debug_log::write_debug_log("AUTOSTART task: USERDOMAIN/USERNAME missing");
+        return false;
+    };
+    let user = xml_escape(&format!("{}\\{}", domain, name));
+    let xml = format!(
+r#"<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>Starts TakeOff when you sign in.</Description></RegistrationInfo>
+  <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{user}</UserId></LogonTrigger></Triggers>
+  <Principals><Principal id="Author"><UserId>{user}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>5</Priority>
+  </Settings>
+  <Actions Context="Author"><Exec><Command>"{exe}"</Command><Arguments>{flag}</Arguments></Exec></Actions>
+</Task>"#,
+        user = user,
+        exe = xml_escape(exe),
+        flag = AUTOSTART_FLAG,
+    );
+
+    // schtasks reads the file as UTF-16 LE; the BOM is what tells it so.
+    let mut bytes = vec![0xFF, 0xFE];
+    for u in xml.encode_utf16() {
+        bytes.extend_from_slice(&u.to_le_bytes());
+    }
+    let path = std::env::temp_dir().join(format!("takeoff-autostart-{}.xml", std::process::id()));
+    if std::fs::write(&path, &bytes).is_err() {
+        crate::debug_log::write_debug_log("AUTOSTART task: could not write XML");
+        return false;
+    }
+    let ok = schtasks(&["/Create", "/F", "/TN", AUTOSTART_TASK, "/XML", &path.to_string_lossy()]);
+    let _ = std::fs::remove_file(&path);
+    crate::debug_log::write_debug_log(&format!("AUTOSTART task: create {}", if ok { "OK" } else { "FAILED" }));
+    ok
 }
 
 #[cfg(target_os = "linux")]
@@ -2463,35 +2560,49 @@ fn deregister_autostart() {
     }
 }
 
+/// Starts TakeOff at logon. Prefers a Task Scheduler task and falls back to
+/// the HKCU Run key only if the task cannot be created.
+///
+/// History, because this has flipped twice: 0.5.8 used Task Scheduler with an
+/// any-user `/SC ONLOGON` trigger; 0.5.9 moved to the Run key believing logon
+/// tasks wait 30–60s for the Task Scheduler service. That was never measured,
+/// and when it finally was, the Run key was the slow one (56s). See
+/// `register_logon_task`.
+///
+/// Exactly one mechanism is left in place, so TakeOff is never started twice.
+/// (The single-instance mutex would absorb a double start, but the second
+/// process would still pop the widget forward.)
+///
+/// AUTOSTART_FLAG is what distinguishes "Windows started us at login" from
+/// "the user opened TakeOff". Startup groups fire only in the first case —
+/// otherwise quitting and reopening the app would re-launch every flagged
+/// group. Because this function re-runs on every launch, existing installs
+/// migrate from the Run key to the task on their first launch after updating.
 #[cfg(target_os = "windows")]
 fn register_autostart(exe_path: &str) {
-    use std::os::windows::process::CommandExt;
+    // current_exe() sometimes returns a \\?\ extended-path prefix — strip it.
+    let clean = exe_path.strip_prefix(r"\\?\").unwrap_or(exe_path);
+
+    if register_logon_task(clean) {
+        delete_run_value();
+    } else {
+        write_run_value(clean);
+    }
+    delete_task(LEGACY_AUTOSTART_TASK);
+}
+
+#[cfg(target_os = "windows")]
+fn write_run_value(clean: &str) {
     use windows::core::HSTRING;
     use windows::Win32::System::Registry::{
         RegOpenKeyExW, RegSetValueExW, RegCloseKey, HKEY, HKEY_CURRENT_USER, KEY_WRITE, REG_SZ,
     };
 
-    // current_exe() sometimes returns a \\?\ extended-path prefix — strip it.
-    let clean = exe_path.strip_prefix(r"\\?\").unwrap_or(exe_path);
-
-    // Use HKCU\Run instead of Task Scheduler. Task Scheduler ONLOGON tasks
-    // don't fire until the Task Scheduler *service* is ready, which can be
-    // 30-60 seconds into the session on machines under load at boot. The Run
-    // key is processed by userinit.exe during shell initialisation — much
-    // earlier, before most services are even started.
-    //
     // The Run-key value is parsed as a command line, so wrap in double quotes
     // to handle paths with spaces (e.g. C:\Users\Doug Smith\...\TakeOff.exe).
-    //
-    // AUTOSTART_FLAG is what distinguishes "Windows started us at login" from
-    // "the user opened TakeOff". Startup groups fire only in the first case —
-    // otherwise quitting and reopening the app would re-launch every flagged
-    // group, which would be intolerable. Because this function re-runs on every
-    // launch, existing installs pick the flag up on their next boot with no
-    // action from the user.
     let value = format!("\"{}\" {}", clean, AUTOSTART_FLAG);
     let key_path   = HSTRING::from("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-    let value_name = HSTRING::from("TakeOff");
+    let value_name = HSTRING::from(RUN_VALUE);
     crate::debug_log::write_debug_log(&format!("AUTOSTART register: {}", value));
     unsafe {
         let mut hkey = HKEY::default();
@@ -2520,13 +2631,6 @@ fn register_autostart(exe_path: &str) {
             crate::debug_log::write_debug_log("AUTOSTART register: RegOpenKeyExW FAILED");
         }
     }
-
-    // Remove any Task Scheduler task from v0.5.8 so the app doesn't launch
-    // twice (once from the Run key and once from the old task).
-    let _ = std::process::Command::new("schtasks")
-        .args(["/Delete", "/F", "/TN", "TakeOff"])
-        .creation_flags(0x08000000) // CREATE_NO_WINDOW
-        .output();
 }
 
 /// Launches every group flagged `launch_at_startup`, in widget order.
@@ -3292,7 +3396,7 @@ pub fn run() {
             // Running this on every launch ensures the registration stays
             // current after an app update even if the install path changed.
             // Spawned on a separate thread so it never blocks the widget from
-            // appearing — the schtasks cleanup inside register_autostart can
+            // appearing — the schtasks calls inside register_autostart can
             // take a second or two on some machines.
             #[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), not(debug_assertions)))]
             {
