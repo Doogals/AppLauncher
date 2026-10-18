@@ -189,6 +189,25 @@ pub struct AppConfig {
     /// changelog for a version they may never have run.
     #[serde(default)]
     pub last_seen_version: Option<String>,
+    /// Whether anonymous usage data is shared. Disclosed in Settings and in the
+    /// What's New window for the release that introduced it; on by default,
+    /// off the moment the user says so.
+    #[serde(default = "default_true")]
+    pub analytics_enabled: bool,
+    /// Random UUID identifying this INSTALL — not this machine and not this
+    /// person.
+    ///
+    /// **Deliberately not `machine_id::machine_fingerprint()`.** That one is
+    /// derived from the SMBIOS motherboard UUID so it survives a Windows
+    /// reinstall, which is exactly what license activation needs and exactly
+    /// what analytics must not have. Reusing it would tie usage data to the
+    /// same identifier as someone's purchase. This resets on uninstall, as it
+    /// should.
+    #[serde(default)]
+    pub analytics_id: Option<String>,
+    /// Date (YYYY-MM-DD) of the last successful ping, for the weekly gate.
+    #[serde(default)]
+    pub analytics_last_sent: Option<String>,
 }
 
 fn default_hotkey() -> String { "Ctrl+Alt+Space".to_string() }
@@ -211,6 +230,9 @@ impl Default for AppConfig {
             low_profile: false,
             cached_suggestions: vec![],
             last_seen_version: None,
+            analytics_enabled: true,
+            analytics_id: None,
+            analytics_last_sent: None,
         }
     }
 }

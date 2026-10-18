@@ -3,9 +3,18 @@ const LS_BASE = 'https://api.lemonsqueezy.com/v1/licenses';
 // so a stale one from the same machine can be reclaimed. Requires an API key
 // with access to the license-key-instances endpoint.
 const LS_INSTANCES = 'https://api.lemonsqueezy.com/v1/license-key-instances';
-// @ts-ignore — injected by Cloudflare as environment variables
-const LS_API_KEY = globalThis['LS_API_KEY'];
-const RESEND_API_KEY = globalThis['RESEND_API_KEY'];
+// Secrets and bindings arrive on `env` per invocation (ES-module format — D1
+// bindings are not available to the old service-worker format). bindEnv copies
+// them here so the handlers below can keep using plain names.
+let LS_API_KEY;
+let RESEND_API_KEY;
+let ANALYTICS;
+
+function bindEnv(env) {
+  LS_API_KEY = env.LS_API_KEY;
+  RESEND_API_KEY = env.RESEND_API_KEY;
+  ANALYTICS = env.ANALYTICS;
+}
 const FEEDBACK_TO = 'tonictech.inquiry@gmail.com';
 
 const CORS_HEADERS = {
@@ -14,9 +23,17 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 
-addEventListener('fetch', event => {
-  event.respondWith(handleRequest(event.request));
-});
+export default {
+  async fetch(request, env) {
+    bindEnv(env);
+    return handleRequest(request);
+  },
+  // Weekly report. Cron is configured in wrangler.toml.
+  async scheduled(event, env, ctx) {
+    bindEnv(env);
+    ctx.waitUntil(sendWeeklyReport());
+  },
+};
 
 async function handleRequest(request) {
   // Handle CORS preflight
@@ -35,7 +52,7 @@ async function handleRequest(request) {
     return new Response('Method not allowed', { status: 405, headers: CORS_HEADERS });
   }
 
-  if (!['activate', 'deactivate', 'validate', 'feedback'].includes(action)) {
+  if (!['activate', 'deactivate', 'validate', 'feedback', 'ping'].includes(action)) {
     return new Response('Not found', { status: 404, headers: CORS_HEADERS });
   }
 
@@ -44,6 +61,11 @@ async function handleRequest(request) {
     body = await request.json();
   } catch {
     return json({ error: 'Invalid JSON body' }, 400);
+  }
+
+  // Anonymous weekly usage ping. Does not touch LemonSqueezy.
+  if (action === 'ping') {
+    return handlePing(body);
   }
 
   // Handle feedback separately — does not touch LemonSqueezy
@@ -251,6 +273,162 @@ async function handleDownloads() {
   return new Response(JSON.stringify({ total }), {
     headers: { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=300', ...CORS_HEADERS },
   });
+}
+
+// ── Usage analytics ─────────────────────────────────────────────────────────
+
+/// The ONLY fields stored. Anything else in the body is discarded.
+///
+/// This duplicates the allow-list the Rust client already enforces, on purpose:
+/// a future client bug cannot start sending something it shouldn't without the
+/// Worker being changed too. Two independent gates, not one.
+const PING_COUNT_FIELDS = [
+  'group_count',
+  'item_count',
+  'items_by_type',
+  'startup_group_count',
+  'detached_count',
+  'positioned_item_count',
+];
+
+function isoWeek(date) {
+  // ISO-8601: week 1 is the one containing the first Thursday.
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const week = Math.ceil(((d - yearStart) / 86400000 + 1) / 7);
+  return `${d.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+}
+
+function sane(s, max) {
+  return typeof s === 'string' && s.length > 0 && s.length <= max ? s : null;
+}
+
+async function handlePing(body) {
+  const db = ANALYTICS;
+  // No database bound yet — accept and drop, so a half-finished deploy never
+  // makes the app look broken. The client ignores the response either way.
+  if (!db) return json({ ok: true });
+
+  const installId = sane(body.install_id, 64);
+  if (!installId) return json({ error: 'bad install_id' }, 400);
+
+  // The week is computed HERE, never taken from the client. A wrong clock on
+  // someone's PC must not be able to write into another week's bucket.
+  const week = isoWeek(new Date());
+
+  const stats = {};
+  for (const key of PING_COUNT_FIELDS) {
+    const v = body[key];
+    if (typeof v === 'number' && Number.isFinite(v)) stats[key] = v;
+    // items_by_type is an object of numbers; copy only numeric members.
+    else if (key === 'items_by_type' && v && typeof v === 'object') {
+      const out = {};
+      for (const [k, n] of Object.entries(v)) {
+        if (typeof n === 'number' && Number.isFinite(n)) out[k] = n;
+      }
+      stats[key] = out;
+    }
+  }
+
+  try {
+    await db
+      .prepare(
+        `INSERT OR REPLACE INTO pings (install_id, week, version, licensed, os, stats)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .bind(
+        installId,
+        week,
+        sane(body.version, 20),
+        body.licensed ? 1 : 0,
+        sane(body.os, 40),
+        JSON.stringify(stats)
+      )
+      .run();
+  } catch {
+    // Never surface a storage failure to the app.
+    return json({ ok: true });
+  }
+
+  return json({ ok: true });
+}
+
+async function sendWeeklyReport() {
+  const db = ANALYTICS;
+  if (!db) return;
+
+  // Report on the week that just ENDED. The cron fires Monday, so "now" is
+  // already in the new week.
+  const lastWeek = isoWeek(new Date(Date.now() - 3 * 86400000));
+  const weekBefore = isoWeek(new Date(Date.now() - 10 * 86400000));
+
+  const rows = (await db.prepare('SELECT * FROM pings WHERE week = ?').bind(lastWeek).all()).results || [];
+  const prevCount =
+    (await db.prepare('SELECT COUNT(*) AS n FROM pings WHERE week = ?').bind(weekBefore).first())?.n ?? 0;
+
+  const total = rows.length;
+  const licensed = rows.filter(r => r.licensed === 1).length;
+
+  const byVersion = {};
+  for (const r of rows) byVersion[r.version || 'unknown'] = (byVersion[r.version || 'unknown'] || 0) + 1;
+  const versionLine = Object.entries(byVersion)
+    .sort((a, b) => b[1] - a[1])
+    .map(([v, n]) => `${v}: ${n}`)
+    .join('    ') || '(none)';
+
+  const stats = rows.map(r => { try { return JSON.parse(r.stats); } catch { return {}; } });
+  const median = key => {
+    const xs = stats.map(s => s[key]).filter(n => typeof n === 'number').sort((a, b) => a - b);
+    return xs.length ? xs[Math.floor(xs.length / 2)] : 0;
+  };
+  const countWhere = pred => stats.filter(pred).length;
+  const pct = (n, d) => (d ? ` (${Math.round((n / d) * 100)}%)` : '');
+
+  const usingStartup = countWhere(s => (s.startup_group_count || 0) > 0);
+  const usingDetached = countWhere(s => (s.detached_count || 0) > 0);
+  const usingPlacement = countWhere(s => (s.positioned_item_count || 0) > 0);
+
+  const delta = total - prevCount;
+  const deltaStr = prevCount ? `  (${delta >= 0 ? '+' : ''}${delta} vs previous week)` : '';
+
+  const text = [
+    `TakeOff — ${lastWeek}`,
+    '',
+    `Active installs:  ${total}${deltaStr}`,
+    `  Licensed:       ${licensed}`,
+    `  Free:           ${total - licensed}`,
+    '',
+    `Versions:  ${versionLine}`,
+    '',
+    `Median groups per install:  ${median('group_count')}`,
+    `Median items per install:   ${median('item_count')}`,
+    '',
+    `Using startup groups:   ${usingStartup}${pct(usingStartup, licensed)} of licensed`,
+    `Using saved placement:  ${usingPlacement}${pct(usingPlacement, total)}`,
+    `Detached a group:       ${usingDetached}${pct(usingDetached, total)}`,
+  ].join('\n');
+
+  await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${RESEND_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: 'TakeOff Analytics <onboarding@resend.dev>',
+      to: FEEDBACK_TO,
+      subject: `TakeOff weekly — ${total} active`,
+      text,
+    }),
+  });
+
+  // Retention: per-install rows older than ~26 weeks serve no question being
+  // asked, and keeping them would be hard to defend.
+  const cutoff = isoWeek(new Date(Date.now() - 26 * 7 * 86400000));
+  try {
+    await db.prepare('DELETE FROM pings WHERE week < ?').bind(cutoff).run();
+  } catch { /* pruning is best-effort */ }
 }
 
 function json(data, status = 200) {

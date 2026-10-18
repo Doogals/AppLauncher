@@ -215,6 +215,22 @@
       <div id="startup-groups-list"></div>
     </div>
     <div class="settings-section">
+      <p class="section-label">Privacy</p>
+      <label class="startup-toggle" id="analytics-toggle">
+        <input type="checkbox" id="analytics-check" />
+        <span class="startup-toggle-text">
+          <span class="startup-toggle-title">Share anonymous usage data</span>
+          <span class="startup-toggle-note">
+            Helps me see which features get used. Never includes your group names, file paths or web addresses.
+          </span>
+        </span>
+      </label>
+      <p class="startup-hint">
+        <a href="#" id="analytics-preview-link">See exactly what's sent</a>
+      </p>
+      <div id="analytics-status" class="hotkey-save-status"></div>
+    </div>
+    <div class="settings-section">
       <p class="section-label">Config File</p>
       <div class="io-row">
         <button class="btn btn-cancel" id="export-btn">⬆ Export Config</button>

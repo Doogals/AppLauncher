@@ -44,6 +44,33 @@
     ]
   },
 
+  "0.6.7": {
+    "title": "What's New in TakeOff 0.6.7",
+    "sections": [
+      {
+        "heading": "Anonymous usage data — please read",
+        "items": [
+          "TakeOff now sends a short weekly message so I can see how many people use it and which features are worth building on. This is on by default.",
+          "It contains only numbers: how many groups and items you have, which item types, your TakeOff and Windows versions, and whether you have a license.",
+          "It never includes your group names, file paths, web addresses, or which apps you launch. Counts, never content.",
+          "See exactly what it sends, from your own installation, in Settings → Privacy. Turn it off there too — it stops immediately."
+        ]
+      }
+    ]
+  },
+
+  "0.6.6": {
+    "title": "What's New in TakeOff 0.6.6",
+    "sections": [
+      {
+        "heading": "Faster startup",
+        "items": [
+          "TakeOff now appears almost immediately after you log in, instead of up to a minute later. Windows was holding it back; it now starts a different way."
+        ]
+      }
+    ]
+  },
+
   "0.6.5": {
     "title": "What's New in TakeOff 0.6.5",
     "sections": [

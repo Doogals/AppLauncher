@@ -2,6 +2,7 @@ mod config;
 mod launcher;
 mod license;
 mod machine_id;
+mod analytics;
 mod apps;
 mod capture;
 mod browsers;
@@ -552,6 +553,46 @@ fn open_capture_window(app: tauri::AppHandle) {
             let _ = win.set_focus();
         }
     });
+}
+
+#[tauri::command]
+fn get_analytics_enabled(state: State<AppState>) -> bool {
+    state.0.lock().unwrap().analytics_enabled
+}
+
+/// Takes effect immediately — no "next launch" caveat. The weekly check reads
+/// this flag at send time, so switching it off mid-session genuinely stops it.
+#[tauri::command]
+fn set_analytics_enabled(
+    enabled: bool,
+    state: State<AppState>,
+) -> Result<(), String> {
+    let mut config = state.0.lock().unwrap();
+    config.analytics_enabled = enabled;
+    config::save_config(&config)
+}
+
+/// The exact payload this install would send, for the "See exactly what's sent"
+/// window.
+///
+/// Built by the same `build_payload` the real ping uses — if it ever showed
+/// something assembled separately, it would be a promise rather than a fact.
+#[tauri::command]
+fn get_analytics_preview(state: State<AppState>) -> Result<String, String> {
+    let config = state.0.lock().unwrap();
+    let install_id = config
+        .analytics_id
+        .clone()
+        // Not yet minted (no ping sent). Shown as a placeholder rather than
+        // generating one here, since previewing shouldn't have side effects.
+        .unwrap_or_else(|| "(generated on first send)".to_string());
+    let payload = analytics::build_payload(
+        &config,
+        &install_id,
+        env!("CARGO_PKG_VERSION"),
+        &analytics::os_version(),
+    );
+    serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())
 }
 
 /// Reopens the current version's notes on demand, from the version number in
@@ -3392,6 +3433,11 @@ pub fn run() {
             // Launch any groups flagged to start with Windows.
             run_startup_groups(app.handle().clone());
 
+            // Weekly usage ping, if one is due and the user hasn't opted out.
+            // Last, on its own thread, after the widget is up — it must never
+            // be the reason anything else is slower.
+            analytics::maybe_send_weekly(app.handle().clone());
+
             // Re-register auto-start in the background (release builds only).
             // Running this on every launch ensures the registration stays
             // current after an app update even if the install path changed.
@@ -3530,6 +3576,9 @@ pub fn run() {
             set_group_launch_at_startup,
             get_startup_groups,
             show_whats_new,
+            get_analytics_enabled,
+            set_analytics_enabled,
+            get_analytics_preview,
             capture_current_windows,
             open_capture_window,
             open_url,

@@ -1,3 +1,16 @@
 name = "app-launcher-proxy"
 main = "worker.js"
 compatibility_date = "2024-01-01"
+
+# Weekly usage report. Mondays 13:00 UTC.
+[triggers]
+crons = ["0 13 * * 1"]
+
+# Create once with:
+#   npx wrangler d1 create takeoff-analytics
+# then paste the returned database_id below, and apply the schema:
+#   npx wrangler d1 execute takeoff-analytics --remote --file=schema.sql
+[[d1_databases]]
+binding = "ANALYTICS"
+database_name = "takeoff-analytics"
+database_id = "88ce396a-e186-485d-a8bb-df9ad058fc1b"

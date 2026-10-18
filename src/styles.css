@@ -532,6 +532,27 @@ html, body {
   white-space: nowrap;
 }
 
+/* The actual JSON the weekly ping would send, shown verbatim. Monospace and
+   scrollable — it is meant to be read, not skimmed past. */
+.analytics-preview {
+  max-height: 260px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px 12px;
+  background: #16213e;
+  border: 1px solid #0f3460;
+  border-radius: 6px;
+  color: #cfd6e6;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre;
+  user-select: text;
+  -webkit-user-select: text;
+}
+#analytics-preview-link { color: #1b9fdb; text-decoration: none; }
+#analytics-preview-link:hover { text-decoration: underline; }
+
 /* ── Launch at startup (paid feature) ─────────────────────────────────────── */
 /* One line: checkbox, label, and status all inline. Wraps only if the window
    is narrow enough that it genuinely cannot fit. */

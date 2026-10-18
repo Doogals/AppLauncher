@@ -1251,6 +1251,79 @@ async function init() {
   }
 }
 
+// Anonymous usage reporting. On by default and disclosed — both in Settings
+// here and in the What's New window for the release that introduced it.
+async function initAnalyticsToggle() {
+  const check  = document.getElementById('analytics-check');
+  const status = document.getElementById('analytics-status');
+  const link   = document.getElementById('analytics-preview-link');
+  if (!check) return;
+
+  try {
+    check.checked = await invoke('get_analytics_enabled');
+  } catch {
+    // Can't read it — leave unchecked rather than claiming it's on.
+    check.checked = false;
+  }
+
+  check.addEventListener('change', async () => {
+    const enabled = check.checked;
+    try {
+      await invoke('set_analytics_enabled', { enabled });
+      status.style.color = '#4caf50';
+      status.textContent = enabled ? 'Sharing enabled.' : 'Sharing turned off.';
+      setTimeout(() => { status.textContent = ''; }, 2500);
+    } catch (e) {
+      // Never leave the box disagreeing with what was actually saved.
+      check.checked = !enabled;
+      status.style.color = '#e94560';
+      status.textContent = typeof e === 'string' ? e : 'Could not save that setting.';
+    }
+  });
+
+  // Shows the REAL payload from this install, built by the same Rust function
+  // the ping uses. "Trust me" vs "look for yourself".
+  link?.addEventListener('click', async (e) => {
+    e.preventDefault();
+    let body;
+    try {
+      body = await invoke('get_analytics_preview');
+    } catch (err) {
+      body = `Could not build the preview: ${err}`;
+    }
+    showAnalyticsPreview(body);
+  });
+}
+
+function showAnalyticsPreview(json) {
+  const modal = document.createElement('div');
+  modal.className = 'winapp-modal';
+  const safe = String(json)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  modal.innerHTML = `
+    <div class="feedback-card" style="width:460px;">
+      <div class="winapp-header">
+        <span class="url-step-title">What gets sent</span>
+        <button class="winapp-close" id="ap-close">✕</button>
+      </div>
+      <div style="padding:12px 12px 8px;">
+        <p style="font-size:0.78rem;color:#888;margin-bottom:8px;">
+          This is the whole message, exactly as it would be sent from this computer — once a week, nothing else.
+        </p>
+        <pre class="analytics-preview">${safe}</pre>
+      </div>
+      <div style="padding:0 12px 12px;">
+        <button class="btn btn-cancel" id="ap-ok" style="width:100%;">Close</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  const close = () => modal.remove();
+  modal.querySelector('#ap-close').addEventListener('click', close);
+  modal.querySelector('#ap-ok').addEventListener('click', close);
+  modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+}
+
 // Read-only summary of the boot sequence. Toggling happens per group (editor
 // or widget right-click); this just answers "what actually happens when I boot?"
 async function renderStartupGroups() {
@@ -1407,6 +1480,7 @@ async function initSettingsTab() {
   });
 
   await renderStartupGroups();
+  await initAnalyticsToggle();
 
   initHotkeyRecorder();
 

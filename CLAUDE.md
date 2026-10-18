@@ -190,10 +190,45 @@ them, so long-time users don't get a "Welcome to TakeOff" screen. The version is
 recorded **before** the window opens, so a failed save cannot cause it to
 reappear on every launch.
 
-**Startup speed is a known problem**, currently under investigation — see
-`docs/superpowers/plans/2026-09-30-startup-delay-investigation.md`. Measured:
-the process does not start until ~56s after the desktop appears, so the delay is
-entirely outside our code.
+**Startup speed: FIXED in 0.6.6**, by moving autostart from the Run key to the
+Task Scheduler task described above. Measured on the same machine: Run key 56s
+after the desktop appeared, scheduled task ~0s. The delay was never in our code —
+the process simply did not exist for 56s. Investigation and method:
+`docs/superpowers/plans/2026-09-30-startup-delay-investigation.md`.
+
+### Usage analytics (`analytics.rs`) — 0.6.7
+
+Anonymous weekly ping: active-install count and feature usage, emailed to Doug
+by a Cloudflare cron. On by default, disclosed in Settings and in What's New,
+with an opt-out that takes effect immediately.
+
+**The rule: counts, never content.** `12 app items` is a count. A file path,
+group name, URL or Steam title is personal data and must never be in the
+payload. `build_payload` is pure and returns a fixed set of keys; the test
+`payload_leaks_no_personal_data` builds a deliberately realistic config and
+asserts none of it appears in the serialised JSON. The Worker independently
+drops unknown fields, so a client bug alone cannot start sending something new.
+
+**`analytics_id` is a random UUID, NOT `machine_fingerprint()`.** The
+fingerprint is derived from the SMBIOS motherboard UUID so it survives a Windows
+reinstall — right for license activation, wrong for analytics, and reusing it
+would tie usage data to the same identifier as a purchase.
+
+`analytics_last_sent` is written **before** the request (same reasoning as
+`last_seen_version`), so a failed send loses that week rather than retrying
+every launch. The numbers undercount people often offline at startup.
+
+**The Worker is ES-module format (`export default { fetch, scheduled }`)** —
+Cloudflare refuses a D1 binding on the old `addEventListener` format, so do not
+revert it. Secrets arrive on `env` and `bindEnv()` copies them to module vars.
+
+Worker: `POST /ping` → D1 `pings` table keyed `(install_id, week)` so repeat
+pings are idempotent and weekly actives is a plain `COUNT`. The week is computed
+server-side; a wrong clock on a user's PC must not write into another week's
+bucket. Rows older than ~26 weeks are pruned on each cron run.
+
+**The Settings toggle promises a privacy policy at tonic-tech.com/privacy.html.
+Never ship a build whose toggle points at a policy that is not live.**
 
 ### Item struct
 
