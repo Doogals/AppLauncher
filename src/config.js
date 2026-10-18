@@ -1293,6 +1293,11 @@ async function initAnalyticsToggle() {
     }
     showAnalyticsPreview(body);
   });
+
+  document.getElementById('privacy-policy-link')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    invoke('open_url', { url: 'https://tonic-tech.com/privacy.html' }).catch(() => {});
+  });
 }
 
 function showAnalyticsPreview(json) {

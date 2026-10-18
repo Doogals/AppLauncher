@@ -48,6 +48,12 @@ runs BEFORE `npx tauri signer sign` and that order must not change —
 Authenticode rewrites the MSI bytes and the updater signature hashes those
 bytes, so reversing it publishes an update every install rejects as corrupt.
 
+**Git remotes must not embed a token.** Both repos' `origin` once carried a
+GitHub PAT in the URL; `release.ps1` runs non-interactively, so git could not
+prompt and the `latest.json` push failed AFTER the GitHub release was already
+public — the updater feed lagged until it was pushed by hand. Remotes are now
+plain `https://github.com/...` with `gh auth setup-git` as the credential helper.
+
 **Signing note:** `TAURI_SIGNING_PRIVATE_KEY_PATH` env vars are NOT picked up by `npm run tauri build`. Sign post-build with `npx tauri signer sign`. MSI filename must have no spaces — copy to `app.msi` first. Key at `C:\Users\dougb\.tauri\applauncher.key` (no password).
 
 ## Traps that will waste your time — read before debugging
@@ -227,7 +233,8 @@ pings are idempotent and weekly actives is a plain `COUNT`. The week is computed
 server-side; a wrong clock on a user's PC must not write into another week's
 bucket. Rows older than ~26 weeks are pruned on each cron run.
 
-**The Settings toggle promises a privacy policy at tonic-tech.com/privacy.html.
+**The Settings toggle links to the privacy policy at tonic-tech.com/privacy.html
+(from 0.6.8; 0.6.7 shipped with only the What's New mention).
 Never ship a build whose toggle points at a policy that is not live.**
 
 ### Item struct

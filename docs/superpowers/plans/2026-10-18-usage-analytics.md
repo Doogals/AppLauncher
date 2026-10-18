@@ -28,10 +28,10 @@ Written and in the tree:
 
 1. ~~`cargo check --tests`~~ — passes cleanly; dev run checked by Doug (2026-10-18).
 2. ~~D1 database~~ — created and schema applied 2026-10-18. (Was: `database_id` in `wrangler.toml` was the
-   placeholder. **The Worker accepts and drops pings while that is true**, on
+   placeholder, and the Worker accepted and dropped pings while it was, on
    purpose, so a half-finished deploy could not make the app look broken.)
-3. ~~`privacy.html`~~ — reviewed and published 2026-10-18. Footer link still
-   only on that page.
+3. ~~`privacy.html`~~ — reviewed and published 2026-10-18. Linked from every
+   site footer, and from Settings → Privacy from 0.6.8 (0.6.7 shipped without it).
 
 ## Deployment order — this matters
 

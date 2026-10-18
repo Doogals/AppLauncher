@@ -329,29 +329,25 @@ git add -A
 git reset -- app.msi app.msi.sig 2>$null | Out-Null   # belt-and-suspenders; .gitignore already excludes these
 $pending = git status --porcelain
 if ($pending) {
-    $commitMsg = @"
-Release v$Version
-
-- New: Items grouped by virtual desktop in the group editor
-- New: Drag items and desktop sections to set launch order
-- New: Desktop and screen dropdowns on every item
-- New: Add Item is its own window, with per-desktop add buttons
-- Fix: Drag-and-drop never worked - Tauri's handler was swallowing DOM drag events
-- Fix: Failed desktop switches no longer corrupt later switches in the same launch
-- Fix: Creating a missing desktop no longer switches away from it
-- Fix: Editing a URL item's bookmarks no longer wipes its desktop assignment
-- Fix: Edit Layout can be reopened while windows are still open elsewhere
-- Fix: Layout windows size to the monitor instead of a fixed 800x600
-- Fix: Steamworks Common Redistributables removed from the Steam picker
-- Style: Widget drop shadow removed, rounded corners restored
-- Style: Group editor is twice as wide
-"@
+    # Body comes from src\whats-new.json, the same source as the GitHub release
+    # notes in step 5. This was a hardcoded list from an old release that went
+    # stale exactly the way the release notes once did.
+    $commitLines = @("Release v$Version", "")
+    $commitNotes = (Get-Content (Join-Path $RepoRoot "src\whats-new.json") -Raw | ConvertFrom-Json).$Version
+    if ($commitNotes) {
+        foreach ($section in $commitNotes.sections) {
+            foreach ($item in $section.items) { $commitLines += "- $item" }
+        }
+    }
+    $commitMsg = $commitLines -join "`n"
     # Writing to a temp file and using -F instead of -m $commitMsg directly --
     # passing a string with embedded "quotes" as a native-command argument
     # confuses PowerShell's own argument parsing (same issue hit below with
     # gh release create --notes), so this sidesteps it entirely.
     $commitMsgFile = Join-Path $env:TEMP "takeoff-commit-msg.txt"
-    Set-Content -Path $commitMsgFile -Value $commitMsg -NoNewline
+    # UTF-8 without BOM: the notes contain characters like — and →, which
+    # Windows PowerShell's Set-Content would write as ANSI bytes git misreads.
+    [IO.File]::WriteAllText($commitMsgFile, $commitMsg, (New-Object Text.UTF8Encoding $false))
     git commit -F $commitMsgFile
     Remove-Item $commitMsgFile -Force
     Write-Host "Committed."
